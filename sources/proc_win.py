@@ -220,7 +220,11 @@ def arch_for_machine(machine: int) -> Arch:
 
 
 def _last_error(what: str) -> ProcessError:
-    return ProcessError(f"{what} failed (Windows error {ctypes.get_last_error()})")
+    # typeshed only declares ctypes.get_last_error on Windows, though the
+    # function exists wherever ctypes does; route through Any so the module
+    # type-checks on every platform.
+    platform_ctypes: Any = ctypes
+    return ProcessError(f"{what} failed (Windows error {platform_ctypes.get_last_error()})")
 
 
 @dataclass(frozen=True, slots=True)
