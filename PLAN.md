@@ -388,4 +388,22 @@ merging is the planned fix).**
   is supported by `merge()` but only the x64+arm64 pair is measured; the IDA
   plugin (M5) is the next milestone.
 
-**Not started:** M5 onward.
+**M5 — implemented; the dialog glue needs an IDA host to exercise.**
+
+- `sources/ida.py` exposes `IdaSource` behind an injectable `IdaApi` facade:
+  the only IDA-SDK import site (AGENTS.md rule 1), so tests inject a fake and
+  CI never needs IDA. IDA function bounds are recovery hints, making IDA the
+  authoritative bounder; `bounds_disagreement` reports divergence explicitly.
+- `ida_plugin.py` is UI glue: a generate action on the disassembly, Functions,
+  and pseudocode right-click menus plus Edit > Plugins (quality report, save
+  YAML, add file/PID samples, merge without leaving IDA), and a locate action
+  that scans the current IDB with a saved signature and jumps to the match.
+- Pinned hosts: IDA 8.4+/9.x with Python 3.10+, capstone installed via pip.
+- Exit criterion: "output identical to CLI for the same inputs" is
+  test-verified two ways in `tests/test_ida_source.py` — against every golden
+  vector's recorded features and, over corpus binaries, byte-identical YAML
+  from `IdaSource` and `FileSource` for the same function. The dialog and
+  menu glue cannot run in CI (no IDA host); it is deliberately thin, and the
+  first IDA-session check should follow `README.md` "In IDA".
+
+**Not started:** M6 onward.

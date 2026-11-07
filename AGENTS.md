@@ -138,6 +138,17 @@ second image or process. The bench measures merged recall and FP per target
 arch (`merged->arm32`, ...). Cross-arch recall targets and the merged FP
 budget are **not met** on the purpose-written corpus; the numbers and causes
 are recorded in `PLAN.md` section 12.
+
+M5 is implemented: `sources/ida.py` exposes `IdaSource` over an injectable
+`IdaApi` facade (the only IDA-SDK import site; tests inject a fake), with IDA
+function bounds as recovery hints and an explicit
+`bounds_disagreement` note. `ida_plugin.py` is the thin UI glue: generate
+here (report dialog, save, add file/PID sample, merge), and locate in this
+IDB. Pinned hosts: IDA 8.4+/9.x, Python 3.10+, capstone from pip. The exit
+criterion "output identical to CLI for the same inputs" is test-verified
+(`tests/test_ida_source.py`, over golden vectors and corpus binaries); the
+dialog and menu glue itself is not exercised by CI because no IDA host runs
+there.
 See `PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)

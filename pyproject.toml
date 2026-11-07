@@ -36,6 +36,21 @@ python_version = "3.10"
 module = ["capstone", "capstone.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# The IDA SDK only exists inside an IDA installation; the facade is the only
+# place that touches it, and tests inject a fake api instead.
+module = [
+    "ida_bytes",
+    "ida_entry",
+    "ida_funcs",
+    "ida_ida",
+    "ida_kernwin",
+    "ida_nalt",
+    "ida_segment",
+    "idautils",
+]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

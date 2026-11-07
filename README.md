@@ -19,6 +19,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 | M2 generation | core, file CLI, and Windows PID mode implemented; Linux process source pending |
 | M3 validation harness | implemented: reference matcher with hint-free discovery, mandatory self-test, recall/FP harness in `bench.py` with a committed baseline and CI gate, negative-corpus FP scan at 0 hits |
 | M4 cross-arch | implemented: ARM32/Thumb extraction, multi-sample merging (`sigtool merge`), auto-locate (`sigtool locate`); merged cross-arch recall 0.707 same-opt / FP budget unmet — see PLAN §12 |
+| M5 IDA plugin | implemented: `IdaSource` over an injectable IDA facade with bounds hints and disagreement notes; generate/merge/locate actions; output test-verified identical to the CLI (UI glue untested in CI — no IDA host) |
 
 ARM32/Thumb are detected and rejected with a clear error until M4.
 
@@ -84,13 +85,32 @@ the corpus build, pytest, and the baseline regression on Linux, plus the live
 Windows PID-mode tests on a Windows runner. Recall is tracked per discovery
 mode (hinted and hint-free).
 
+### In IDA
+
+`ida_plugin.py` adds sigtool to IDA (8.4+ / 9.x, Python 3.10+, capstone from
+pip): install the package into IDA's Python (`pip install -e .`), then copy
+`ida_plugin.py` into the user plugins directory (`%IDAUSR%/plugins`). Actions
+appear under Edit > Plugins and on the right-click menus of the disassembly
+and Functions views:
+
+* **generate signature here** — quality report (including any
+  recovery/IDA-bounds disagreement), save as YAML, then optionally merge
+  further samples (an image file or a live Windows PID) into a multi-arch
+  signature without leaving IDA.
+* **locate signature in this IDB** — scan the database with a saved signature
+  and jump to the best match.
+
+Output is byte-identical to the CLI for the same inputs; the plugin is UI
+glue only.
+
 ## Layout
 
 ```
 core/       source, arch, normalize, recover, features, score, sigfile, validate, generate, match, merge
-sources/    file (ELF, PE), proc_win (read-only live Windows process); IDA follows
+sources/    file (ELF, PE), proc_win (read-only live Windows process), ida (IDB)
 spec/       signature spec and changelog
 corpus/     build script, C samples, ground truth (binaries ignored)
 tests/      vectors/ (golden), unit, property, live/ (Windows process tests)
 cli.py      front-end: gen, merge, and locate over files and Windows PID mode
+ida_plugin.py  IDA front-end (UI glue only)
 ```
