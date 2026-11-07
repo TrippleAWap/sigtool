@@ -62,7 +62,7 @@ python -m ruff format . && python -m ruff check .
 python -m mypy core sources         # type check
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld)
 python corpus/build.py              # rebuild corpus + ground truth (clang + ld.lld)
-python -m sigtool.bench             # corpus recall/FP report (M3)
+python bench.py                     # corpus recall/FP report (M3)
 sigtool gen --pid P --addr A        # generate a signature from a live process (M2, CLI pending)
 python -c "from core.generate import generate"  # library use; front-ends call this
 ```

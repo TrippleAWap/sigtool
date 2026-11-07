@@ -17,7 +17,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 | M0 spec and corpus | started: spec v1 written, corpus build script and samples present |
 | M1 extraction (x64, AArch64) | implemented and passing: bounds agreement 1.00 on x64, 0.94 on arm64 (criterion 0.90) |
 | M2 generation | core implemented: weighted deterministic YAML plus quality report; CLI and process sources pending |
-| M3 validation harness | not started |
+| M3 validation harness | reference matcher and mandatory self-test implemented; corpus recall/FP harness in `bench.py`, negative corpus still M0 work |
 
 ARM32/Thumb are detected and rejected with a clear error until M4.
 
@@ -42,7 +42,14 @@ The corpus (bounds ground truth) is built locally; binaries are never committed:
 ```bash
 python corpus/build.py
 pytest tests/test_corpus_bounds.py
+python bench.py                      # recall per arch/opt level, false positives
+python bench.py --json corpus/report.json
 ```
+
+Current harness numbers (x64 and arm64, two source files): 102/102 signatures pass
+self-test, same-build recall 1.000, cross-optimization recall 0.448, and zero
+false positives for 40 strong signatures against unrelated binaries. The
+negative corpus is still M0 work, so the FP number is a floor.
 
 ## Layout
 

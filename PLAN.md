@@ -281,7 +281,7 @@ Updated during M2.
   open), the CLI, and self-test. Self-test needs the M3 matcher, so a generated
   signature is currently checked structurally and by round-trip only.
 
-**M3 — reference matcher and self-test implemented; harness pending.**
+**M3 — implemented; recall target not yet met.**
 
 - `core/match.py`: Tier 0 anchor needles (constants in both byte orders, strings
   narrow and UTF-16LE), Tier 1 candidates from known function starts plus a
@@ -296,7 +296,15 @@ Updated during M2.
   references a string needs the M6 data-reference index; until then a source
   that cannot enumerate function starts also cannot self-test a string-only
   signature, and generation refuses rather than guessing.
-- Remaining M3 work: the corpus harness (recall per arch and opt level, FP scan
-  against the negative corpus), CI wiring, and the CLI.
+- `bench.py` measures recall per arch and optimization level plus false
+  positives. Current run (x64 and arm64, `loops.elf` and `parser.elf`):
+  102/102 signatures pass self-test, same-build recall 1.000, cross-build
+  recall 0.448 (86/192), and 0 of 40 strong signatures hit an unrelated
+  binary. The 70 percent cross-opt target in section 6 is **not met**;
+  multi-sample merging in M4 is the planned fix, and thresholds were not
+  loosened to move the number.
+- Remaining M3 work: the negative corpus (still M0), CI wiring, the CLI, and a
+  hint-free discovery mode (the harness currently uses ELF symbols as
+  candidates, so it measures comparison quality rather than discovery).
 
 **Not started:** M4 onward.
