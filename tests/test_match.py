@@ -15,7 +15,7 @@ from core.match import (
     self_test,
 )
 from core.sigfile import SampleProvenance, Signature, SignatureFeature
-from tests.support import HELPER, strong_source, tiny_source
+from tests.support import HELPER, deep_source, strong_source, tiny_source
 
 
 def signature_for(*, name: str = "fixture_fn", **overrides: object) -> Signature:
@@ -135,6 +135,20 @@ def test_scan_finds_the_function_without_symbol_hints() -> None:
     source = strong_source(with_hints=False)
     signature = generate(source, 0x1000).signature
     assert [match.address for match in scan(source, signature)] == [0x1000]
+
+
+def test_hints_flag_controls_whether_symbol_starts_are_used() -> None:
+    source = deep_source()
+    signature = generate(source, 0x1000).signature
+
+    # Hinted: function_starts reaches the prologue even though the anchor
+    # constant sits beyond the backward-sweep window.
+    assert [match.address for match in scan(source, signature, hints=True)] == [0x1000]
+
+    # Hint-free: only the sweep can reach the function, and the window is too
+    # short, so the accepted matches (if any) start inside the padding.
+    hint_free = scan(source, signature, hints=False)
+    assert 0x1000 not in {match.address for match in hint_free}
 
 
 def test_scan_reports_one_match_per_span() -> None:

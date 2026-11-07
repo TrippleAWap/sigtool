@@ -139,13 +139,21 @@ def scan(
     *,
     limits: RecoveryLimits | None = None,
     max_candidates: int = MAX_CANDIDATE_STARTS,
+    hints: bool = True,
 ) -> tuple[Match, ...]:
-    """Find accepted matches for ``signature`` in ``source``, best first."""
+    """Find accepted matches for ``signature`` in ``source``, best first.
+
+    ``hints=False`` is the hint-free discovery mode: known function starts and
+    front-end bounds are ignored, so candidates come only from anchor hits and
+    the bounded backward sweep. That is how a scanner sees memory without
+    symbols (M6), and the harness measures recall both ways so comparison
+    quality and discovery stay separate numbers.
+    """
     hits = _anchor_hits(source, signature)
     matches: list[Match] = []
-    for start in _candidate_starts(source, hits, max_candidates=max_candidates):
+    for start in _candidate_starts(source, hits, max_candidates=max_candidates, use_hints=hints):
         try:
-            recovered = recover(source, start, limits=limits)
+            recovered = recover(source, start, limits=limits, hints=hints)
         except DecodeError:
             continue
         result = compare(signature, extract(source, recovered))
@@ -204,6 +212,7 @@ def self_test(
         source,
         _anchor_hits(source, signature),
         max_candidates=max_candidates,
+        use_hints=True,
     )
     if start in candidates:
         if not matches:
@@ -313,21 +322,23 @@ def _unescape(value: str) -> str | None:
 
 
 def _candidate_starts(
-    source: ByteSource, hits: Sequence[tuple[int, str]], *, max_candidates: int
+    source: ByteSource, hits: Sequence[tuple[int, str]], *, max_candidates: int, use_hints: bool
 ) -> tuple[int, ...]:
     """Candidate function starts, ranked by closeness to a code-side anchor hit.
 
-    Sources that can enumerate symbols give exact starts. Otherwise the matcher
-    sweeps backwards from each code hit over real instruction boundaries, so a
-    function whose constant was found mid-body can still be recovered from its
-    prologue.
+    With ``use_hints`` (the default), sources that can enumerate symbols give
+    exact starts. Hint-free mode sweeps backwards from each code hit over real
+    instruction boundaries instead, so a function whose constant was found
+    mid-body can still be recovered from its prologue.
     """
     code_hits = sorted({address for address, _ in hits if source.is_executable(address)})
-    starts = {start for start in source.function_starts() if source.is_executable(start)}
+    starts: set[int] = set()
+    if use_hints:
+        starts.update(start for start in source.function_starts() if source.is_executable(start))
     # Known starts are only a shortcut when they cover the hit; otherwise the
     # matcher still has to find the enclosing function from the bytes.
     for address in code_hits:
-        hint = source.hint_function(address)
+        hint = source.hint_function(address) if use_hints else None
         if hint is not None:
             starts.add(hint[0])
         else:

@@ -16,9 +16,12 @@ The baseline is the compact metrics document written by ``--save-baseline``;
 ``--tolerance``. Rates are compared rather than counts because a different clang
 rebuild changes which functions exist.
 
-The negative corpus planned in M0 does not exist yet, so false positives are
-measured against corpus binaries built from other source files. Reported
-recall and FP numbers are therefore a floor standard, not the final metric.
+False positives are measured two ways: against corpus binaries built from
+other source files, and against the dedicated negative corpus under
+`corpus/negative/`. Recall is measured twice per arch and opt level: hinted
+(the target's symbol table may seed candidate starts) and hint-free
+(candidates must come from anchor bytes and the backward sweep alone, as a
+scanner without symbols sees the target).
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from core.errors import SigToolError
 from core.generate import generate
@@ -43,6 +47,13 @@ DEFAULT_CORPUS = Path("corpus/build")
 # Five points still catches a real regression without pinning a toolchain.
 DEFAULT_TOLERANCE = 0.05
 SUPPORTED_ARCHES = ("x64", "arm64")
+
+# Discovery modes: "hinted" lets the matcher use the target's symbol table as
+# candidate starts (comparison quality); "hint-free" forbids them, so a match
+# has to be found from anchor bytes alone (discovery, as a scanner sees it).
+HINTED: Final[str] = "hinted"
+HINT_FREE: Final[str] = "hint-free"
+DISCOVERY_MODES: Final[tuple[str, ...]] = (HINTED, HINT_FREE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +74,7 @@ class RecallCell:
     arch: str
     source_opt: str
     target_opt: str
+    discovery: str
     hits: int
     attempts: int
 
@@ -125,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         sources.setdefault(path, FileSource.from_path(args.corpus / path))
 
     samples, refused = _build_samples(binaries, sources)
-    recall = _recall(samples, binaries, sources)
+    recall = _recall(samples, binaries, sources, hints=True, discovery=HINTED)
+    recall += _recall(samples, binaries, sources, hints=False, discovery=HINT_FREE)
     false_positives = _false_positives(samples, binaries, sources)
     negative_false_positives = _negative_false_positives(samples, negatives, sources)
 
@@ -258,9 +271,12 @@ def _recall(
     samples: list[Sample],
     binaries: list[dict[str, object]],
     sources: dict[str, FileSource],
+    *,
+    hints: bool,
+    discovery: str,
 ) -> list[RecallCell]:
     targets = _function_table(binaries)
-    cells: dict[tuple[str, str, str], list[int]] = defaultdict(lambda: [0, 0])
+    cells: dict[tuple[str, str, str, str], list[int]] = defaultdict(lambda: [0, 0])
     cache: dict[tuple[int, str], tuple[int, ...]] = {}
 
     for index, sample in enumerate(samples):
@@ -273,16 +289,16 @@ def _recall(
                 continue
             addresses = cache.get((index, path))
             if addresses is None:
-                addresses = _scan_addresses(sample.signature, sources[path])
+                addresses = _scan_addresses(sample.signature, sources[path], hints=hints)
                 cache[(index, path)] = addresses
-            cell = cells[(sample.arch, sample.opt, opt)]
+            cell = cells[(sample.arch, sample.opt, opt, discovery)]
             cell[1] += 1
             if expected in addresses:
                 cell[0] += 1
 
     return [
-        RecallCell(arch, source_opt, target_opt, hits, attempts)
-        for (arch, source_opt, target_opt), (hits, attempts) in sorted(cells.items())
+        RecallCell(arch, source_opt, target_opt, discovery, hits, attempts)
+        for (arch, source_opt, target_opt, discovery), (hits, attempts) in sorted(cells.items())
     ]
 
 
@@ -368,8 +384,10 @@ def _kind(path: str) -> tuple[str, str, str]:
     return arch, source_file, opt
 
 
-def _scan_addresses(signature: Signature, source: FileSource) -> tuple[int, ...]:
-    return tuple(match.address for match in scan(source, signature))
+def _scan_addresses(
+    signature: Signature, source: FileSource, *, hints: bool = True
+) -> tuple[int, ...]:
+    return tuple(match.address for match in scan(source, signature, hints=hints))
 
 
 # -- baselines ---------------------------------------------------------------
@@ -442,17 +460,21 @@ def _compare(
     for arch in sorted(baseline_arches - current_arches):
         failures.append(f"{arch}: missing from the current run")
     for arch in sorted(baseline_arches & current_arches):
-        for label, same_build in (("same-build", True), ("cross-build", False)):
-            base = _recall_rate(baseline_recall, arch, same_build)
-            current = _recall_rate(recall, arch, same_build)
-            if base is None:
-                continue
-            if current is None:
-                failures.append(f"{arch} {label} recall: no attempts in the current run")
-            elif current + tolerance < base:
-                failures.append(
-                    f"{arch} {label} recall {current:.3f} < baseline {base:.3f} - {tolerance:.2f}"
-                )
+        for discovery in DISCOVERY_MODES:
+            for label, same_build in (("same-build", True), ("cross-build", False)):
+                base = _recall_rate(baseline_recall, arch, same_build, discovery)
+                current = _recall_rate(recall, arch, same_build, discovery)
+                if base is None:
+                    continue
+                if current is None:
+                    failures.append(
+                        f"{arch} {discovery} {label} recall: no attempts in the current run"
+                    )
+                elif current + tolerance < base:
+                    failures.append(
+                        f"{arch} {discovery} {label} recall {current:.3f} < "
+                        f"baseline {base:.3f} - {tolerance:.2f}"
+                    )
 
     _compare_false_positives(
         "cross-source false positives", baseline_fp, false_positives, tolerance, failures
@@ -493,6 +515,7 @@ def _recall_document(cells: list[RecallCell]) -> list[dict[str, object]]:
             "arch": cell.arch,
             "source_opt": cell.source_opt,
             "target_opt": cell.target_opt,
+            "discovery": cell.discovery,
             "hits": cell.hits,
             "attempts": cell.attempts,
         }
@@ -519,11 +542,15 @@ def _read_recall(value: object) -> list[RecallCell] | None:
     for item in value:
         if not isinstance(item, dict):
             return None
+        discovery = item.get("discovery")
+        if not isinstance(discovery, str):
+            return None  # a baseline from before the discovery split is unusable
         cells.append(
             RecallCell(
                 str(item.get("arch", "")),
                 str(item.get("source_opt", "")),
                 str(item.get("target_opt", "")),
+                discovery,
                 _as_int(item.get("hits")),
                 _as_int(item.get("attempts")),
             )
@@ -556,11 +583,15 @@ def _as_int(value: object) -> int:
         return 0
 
 
-def _recall_rate(cells: list[RecallCell], arch: str, same_build: bool) -> float | None:
+def _recall_rate(
+    cells: list[RecallCell], arch: str, same_build: bool, discovery: str
+) -> float | None:
     selected = [
         cell
         for cell in cells
-        if cell.arch == arch and (cell.source_opt == cell.target_opt) == same_build
+        if cell.arch == arch
+        and cell.discovery == discovery
+        and (cell.source_opt == cell.target_opt) == same_build
     ]
     attempts = sum(cell.attempts for cell in selected)
     return sum(cell.hits for cell in selected) / attempts if attempts else None
@@ -594,17 +625,19 @@ def _report(
     for arch, counts in sorted(per_arch.items()):
         print(f"  {arch}: strong={counts['strong']} weak={counts['weak']} small={counts['small']}")
 
-    print("\nrecall (same function, same and cross optimization level)")
-    for cell in recall:
-        marker = "" if cell.source_opt != cell.target_opt else "  (same build)"
-        print(
-            f"  {cell.arch} {cell.source_opt}->{cell.target_opt}: "
-            f"{cell.hits}/{cell.attempts} = {cell.rate:.3f}{marker}"
-        )
-    same = [cell for cell in recall if cell.source_opt == cell.target_opt]
-    cross = [cell for cell in recall if cell.source_opt != cell.target_opt]
-    _print_total("same build", same)
-    _print_total("cross build", cross)
+    for discovery in DISCOVERY_MODES:
+        mode_cells = [cell for cell in recall if cell.discovery == discovery]
+        print(f"\nrecall ({discovery}: same function, same and cross optimization level)")
+        for cell in mode_cells:
+            marker = "" if cell.source_opt != cell.target_opt else "  (same build)"
+            print(
+                f"  {cell.arch} {cell.source_opt}->{cell.target_opt}: "
+                f"{cell.hits}/{cell.attempts} = {cell.rate:.3f}{marker}"
+            )
+        same = [cell for cell in mode_cells if cell.source_opt == cell.target_opt]
+        cross = [cell for cell in mode_cells if cell.source_opt != cell.target_opt]
+        _print_total("same build", same)
+        _print_total("cross build", cross)
 
     print("\nfalse positives (strong signatures vs unrelated source file)")
     if not false_positives:

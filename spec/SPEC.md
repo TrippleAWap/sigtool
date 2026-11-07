@@ -251,6 +251,11 @@ generation and never decodes with its own tables.
   proximity to a constant hit, then by address, and capped at 256 per
   signature. Each candidate is recovered with the same bounded recovery used
   for generation.
+* **Hint-free discovery.** Scanning may forbid symbol hints entirely
+  (`scan(..., hints=False)`): candidate starts come only from the backward
+  sweep, and recovery runs without symbol bounds. This is the mode a scanner
+  without symbols runs in; the harness reports recall for both modes so
+  comparison quality (hinted) and discovery (hint-free) are separate numbers.
 * **Tier 2 — comparison.** Accepted only when both gates pass:
   `score >= thresholds.match` and `matched_required >= min_distinct`.
 

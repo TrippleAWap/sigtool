@@ -52,6 +52,34 @@ def strong_source(*, with_hints: bool = False) -> MemorySource:
     return MemorySource(Arch.X64, regions, [module], hints=hints)
 
 
+def deep_source() -> MemorySource:
+    """A function whose only constants sit past the 512-byte backward sweep.
+
+    With symbol hints the matcher reaches ``0x1000`` from ``function_starts``;
+    hint-free, the sweep from the constant hit cannot walk back far enough, so
+    discovery fails. Used to prove the ``hints`` flag actually changes reach.
+    """
+    code = bytearray(b"\x48\x8d\x3d" + (0x2000 - 0x1007).to_bytes(4, "little", signed=True))
+    code += b"\x90" * 600  # nop padding; the sweep window is 512 bytes
+    code += b"\xb8\x34\x12\x00\x00"  # mov eax, 0x1234
+    code += b"\x05\x11\x11\x00\x00"  # add eax, 0x1111
+    code += b"\xc3"
+    text = bytes(code)
+    rodata = b"generate banner literal\x00"
+    regions = [
+        Region("text", 0x1000, len(text), text, executable=True),
+        Region("rodata", 0x2000, len(rodata), rodata),
+    ]
+    module = Module(
+        name="deep",
+        base=0x1000,
+        size=0x2000 + len(rodata) - 0x1000,
+        regions=tuple(regions),
+        functions={0x1000: "deep_fn"},
+    )
+    return MemorySource(Arch.X64, regions, [module])
+
+
 def tiny_source() -> MemorySource:
     """A three-instruction function with no data features."""
     code = b"\x31\xc0\xc3"  # xor eax, eax; ret

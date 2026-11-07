@@ -38,6 +38,9 @@ stays `1`.
   are deliberately not searchable (SPEC.md §8).
 * Candidate generation from known function starts plus a bounded backward
   instruction sweep from constant hits, ranked and capped.
+* Hint-free discovery mode (`hints=False`): no symbol starts, no symbol bounds
+  during recovery; candidates come from the sweep alone. Reported separately by
+  the harness so comparison quality and discovery are distinct measurements.
 * Weighted comparison where optional features can only add evidence, gated by
   `thresholds.match` and `min_distinct`; overlapping spans collapse to one
   match.

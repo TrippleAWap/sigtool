@@ -299,7 +299,8 @@ Updated during M2.
 - Not done in M2: the Linux process source, on-disk fallback for pages the
   target will not share, and the IDA plugin.
 
-**M3 — implemented; recall target not yet met.**
+**M3 — implemented; cross-opt recall target not yet met (M4's multi-sample
+merging is the planned fix).**
 
 - `core/match.py`: Tier 0 anchor needles (constants in both byte orders, strings
   narrow and UTF-16LE), Tier 1 candidates from known function starts plus a
@@ -332,11 +333,21 @@ Updated during M2.
   and arm32) is built by `corpus/build.py`, and `bench.py` scans every strong
   signature against it. Current result: 0 hits for all 40 strong signatures.
   Both FP measurements are compared against the baseline in CI.
+- Hint-free discovery is implemented and measured (spec §8, `scan(hints=False)`):
+  candidate starts come only from the backward sweep and recovery runs without
+  symbol bounds. The harness reports recall per discovery mode. Hinted:
+  same-build 1.000, cross-build 0.427. Hint-free: same-build 0.088 (9/102),
+  cross-build 0.036 (7/192) — honest numbers, not a defect: only 22/102
+  signatures have any searchable code anchor, and the sweep reaches the
+  prologue in 19 of those. arm64 is 0.000 because `movz`/`movk` split constants
+  never appear as contiguous bytes, so byte needles cannot hit; instruction
+  aware Tier 0 anchors are M4/M6 work.
 - `.github/workflows/ci.yml` runs format, lint, types, the corpus build, tests,
   and the baseline regression on Linux, and the live process tests on Windows.
   `tests/test_spec.py` checks that `SPEC_VERSION`, the hash person string, and
   the written spec and changelog agree.
-- Remaining M3 work: hint-free discovery (the harness currently uses ELF symbols
-  as candidates, so it measures comparison quality rather than discovery).
+- M3 exit criteria are met: self-test refusal, FP rates reported against both
+  the negative corpus and unrelated source files, and CI running the full
+  harness.
 
 **Not started:** M4 onward.

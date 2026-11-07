@@ -106,12 +106,17 @@ def recover(
     addr: int,
     *,
     limits: RecoveryLimits | None = None,
+    hints: bool = True,
 ) -> RecoveredFunction:
-    """Recover the function containing ``addr`` from ``source``."""
+    """Recover the function containing ``addr`` from ``source``.
+
+    ``hints=False`` ignores front-end function bounds, as a scanner without
+    symbols would; the walk then ends at the first terminator or budget edge.
+    """
     arch = ensure_supported(source.arch)
     bounds = limits or RecoveryLimits()
 
-    hint = source.hint_function(addr)
+    hint = source.hint_function(addr) if hints else None
     hinted = hint is not None and hint[0] <= addr < hint[1]
     function_end = hint[1] if hinted and hint is not None else addr + bounds.max_function_bytes
     if addr < 0 or function_end <= addr:

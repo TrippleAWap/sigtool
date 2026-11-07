@@ -7,6 +7,8 @@ from pathlib import Path
 
 from bench import (
     DEFAULT_TOLERANCE,
+    HINT_FREE,
+    HINTED,
     FalsePositiveCell,
     RecallCell,
     _compare,
@@ -18,8 +20,10 @@ from bench import (
 from core.spec import SPEC_VERSION
 
 
-def _recall(arch: str = "x64", *, source_opt: str = "O2", target_opt: str = "O2") -> RecallCell:
-    return RecallCell(arch, source_opt, target_opt, 10, 10)
+def _recall(
+    arch: str = "x64", *, source_opt: str = "O2", target_opt: str = "O2", discovery: str = HINTED
+) -> RecallCell:
+    return RecallCell(arch, source_opt, target_opt, discovery, 10, 10)
 
 
 def _false_positive(arch: str = "x64", *, signatures_with_hits: int = 0) -> FalsePositiveCell:
@@ -62,11 +66,17 @@ def test_baseline_rejects_a_recall_drop(tmp_path: Path) -> None:
         path,
         20,
         0,
-        [RecallCell("x64", "O2", "O2", 10, 10), RecallCell("x64", "O2", "Os", 10, 10)],
+        [
+            RecallCell("x64", "O2", "O2", HINTED, 10, 10),
+            RecallCell("x64", "O2", "Os", HINTED, 10, 10),
+        ],
         [_false_positive()],
         [_false_positive()],
     )
-    dropped = [RecallCell("x64", "O2", "O2", 5, 10), RecallCell("x64", "O2", "Os", 5, 10)]
+    dropped = [
+        RecallCell("x64", "O2", "O2", HINTED, 5, 10),
+        RecallCell("x64", "O2", "Os", HINTED, 5, 10),
+    ]
 
     failures = _compare(path, 0, dropped, [_false_positive()], [_false_positive()], 0.02)
 
@@ -74,9 +84,42 @@ def test_baseline_rejects_a_recall_drop(tmp_path: Path) -> None:
     assert any("cross-build recall" in failure for failure in failures)
 
 
+def test_baseline_rejects_a_hint_free_recall_drop(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.json"
+    _save_baseline(
+        path, 10, 0, [_recall(discovery=HINT_FREE)], [_false_positive()], [_false_positive()]
+    )
+    dropped = [RecallCell("x64", "O2", "O2", HINT_FREE, 5, 10)]
+
+    failures = _compare(path, 0, dropped, [_false_positive()], [_false_positive()], 0.02)
+
+    assert any("hint-free" in failure and "same-build" in failure for failure in failures)
+    assert not any("hinted" in failure for failure in failures)
+
+
+def test_baseline_without_discovery_fields_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.json"
+    document = {
+        "spec_version": SPEC_VERSION,
+        "refused": 0,
+        "recall": [
+            {"arch": "x64", "source_opt": "O2", "target_opt": "O2", "hits": 10, "attempts": 10}
+        ],
+        "false_positives": [],
+        "negative_false_positives": [],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    failures = _compare(
+        path, 0, [_recall()], [_false_positive()], [_false_positive()], DEFAULT_TOLERANCE
+    )
+
+    assert any("has no recall" in failure for failure in failures)
+
+
 def test_baseline_tolerance_absorbs_a_small_recall_drop(tmp_path: Path) -> None:
     baseline = _saved(tmp_path)
-    slightly_worse = [RecallCell("x64", "O2", "O2", 99, 100)]
+    slightly_worse = [RecallCell("x64", "O2", "O2", HINTED, 99, 100)]
 
     assert (
         _compare(baseline, 0, slightly_worse, [_false_positive()], [_false_positive()], 0.02) == []
