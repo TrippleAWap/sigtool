@@ -549,7 +549,12 @@ def _compare(
 
     Rates are compared rather than raw counts because rebuilding the corpus with
     a different clang can legitimately change which functions exist. Merged
-    refusals are informational only (see :func:`_save_baseline`).
+    refusals are informational only (see :func:`_save_baseline`), and merged
+    false positives are reported but not gated: the merged FP budget is unmet
+    by design (PLAN.md section 12), and on this corpus the denominator is 13-15
+    strong merged signatures, so one compiler-version swing moves the rate by
+    more than any useful tolerance. Single-arch false positives stay hard-gated
+    at zero tolerance for an increase above ``tolerance``.
     """
     if not path.exists():
         return [f"no baseline file at {path}"]
@@ -612,7 +617,14 @@ def _compare_false_positives(
     tolerance: float,
     failures: list[str],
 ) -> None:
-    baseline_arches = {cell.arch for cell in baseline}
+    """Compare per-arch false-positive rates; the ``merged`` bucket never gates.
+
+    A merged signature's evidence is the sample intersection by design, so its
+    FP budget is a tracked open item (PLAN.md section 12) rather than a
+    regression gate; on this corpus its denominator is 13-15 strong signatures,
+    too small to gate across compiler versions.
+    """
+    baseline_arches = {cell.arch for cell in baseline} - {MERGED_ARCH}
     current_arches = {cell.arch for cell in current}
     for arch in sorted(baseline_arches - current_arches):
         failures.append(f"{label} {arch}: missing from the current run")

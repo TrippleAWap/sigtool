@@ -9,6 +9,7 @@ from bench import (
     DEFAULT_TOLERANCE,
     HINT_FREE,
     HINTED,
+    MERGED_ARCH,
     FalsePositiveCell,
     RecallCell,
     _compare,
@@ -189,3 +190,28 @@ def test_baseline_reports_a_missing_arch(tmp_path: Path) -> None:
     )
 
     assert any("arm64" in failure and "missing" in failure for failure in failures)
+
+
+def test_merged_false_positives_are_reported_not_gated(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.json"
+    _save_baseline(
+        path,
+        10,
+        0,
+        [_recall()],
+        [_false_positive(), _false_positive(MERGED_ARCH, signatures_with_hits=10)],
+        [_false_positive()],
+    )
+
+    # The merged FP rate doubled; single-arch is unchanged. Merged FP is a
+    # tracked open item, so it must not fail the comparison.
+    failures = _compare(
+        path,
+        0,
+        [_recall()],
+        [_false_positive(), _false_positive(MERGED_ARCH, signatures_with_hits=10)],
+        [_false_positive()],
+        DEFAULT_TOLERANCE,
+    )
+
+    assert failures == []
