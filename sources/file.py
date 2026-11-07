@@ -99,6 +99,10 @@ class FileSource(ByteSource):
             raise ReadError(f"read of {size} bytes at 0x{addr:x} is unmapped")
         return b"".join(chunks)
 
+    def function_starts(self) -> tuple[int, ...]:
+        """Symbol starts from the ELF symbol table or PE function table."""
+        return tuple(start for start, _ in self._bounds)
+
     def hint_function(self, addr: int) -> tuple[int, int] | None:
         """Symbol bounds from the ELF symbol table, if they cover ``addr``."""
         if not self._bounds:

@@ -231,11 +231,50 @@ Every document carries `spec_version`. Changing feature semantics,
 canonicalization, buckets, hashing, weights, or thresholds requires a version
 bump and a changelog entry.
 
-## 8. Matching tiers (M3/M6)
+## 8. Matching
 
-* **Tier 0** — data anchors via Aho-Corasick, indexed in both byte orders.
-* **Tier 1** — bounded decode and feature extraction around anchor hits.
-* **Tier 2** — weighted comparison against the shortlisted signatures only.
+`core/match.py` is the reference matcher. It uses the same extractor as
+generation and never decodes with its own tables.
+
+* **Tier 0 — anchors as bytes.** `const` anchors are searched at 4 and 8 bytes
+  in both byte orders because a value may be materialized by `mov` or
+  `movabs`; constants below `0x100` are not searchable (they match almost
+  anywhere). `str` anchors are searched narrow (Latin-1) and as UTF-16LE;
+  hashed `long:` literals are not searchable. Constant needles are searched in
+  executable regions, string needles in data regions. `callee` anchors are
+  names and are compared only after recovery, where symbol resolution has
+  already happened.
+* **Tier 1 — candidates.** Known function starts from the source
+  (`ByteSource.function_starts`) are candidates; for every constant hit that no
+  symbol covers, the matcher also sweeps backwards over real instruction
+  boundaries (bounded window) and offers those starts. Candidates are ranked by
+  proximity to a constant hit, then by address, and capped at 256 per
+  signature. Each candidate is recovered with the same bounded recovery used
+  for generation.
+* **Tier 2 — comparison.** Accepted only when both gates pass:
+  `score >= thresholds.match` and `matched_required >= min_distinct`.
+
+Score definition, rounded to six decimals:
+
+```
+score = min(1, (matched_required_weight + matched_optional_weight) / required_weight)
+```
+
+Optional features can only add evidence: the denominator is the required
+weight, so a candidate that lost a required feature scores below the threshold
+instead of being rejected outright (subset matching). Matches are sorted by
+descending score then address, and overlapping spans collapse to the best
+match, so one function is reported once even when a sweep can recover its body
+from an interior address.
+
+**Self-test.** Generation runs the matcher on the same source and requires an
+accepted match at the recovered function start; a signature that cannot be
+re-found is never emitted (AGENTS.md rule 7).
+
+**Known limitation.** String anchors currently only rank candidates. Locating
+code that references a string needs a data-reference index, which arrives with
+the M6 scanner; until then a signature whose only anchors are strings needs a
+source that can enumerate function starts.
 
 Small functions cannot anchor in Tier 0; their signatures add caller/callee
 names, neighbour position, and a tight op-class sequence, and match near an

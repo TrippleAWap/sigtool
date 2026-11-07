@@ -28,3 +28,7 @@ class DecodeError(SigToolError):
 
 class SignatureError(SigToolError):
     """A signature is malformed, has an unknown spec version, or fails validation."""
+
+
+class SelfTestError(SigToolError):
+    """A signature did not match the function it was generated from."""

@@ -32,4 +32,15 @@ stays `1`.
 * Confidence tags `single-arch`, `multi-arch`, `low`.
 * Quality report with `strong`, `weak`, and `small` verdicts.
 
-Not yet specified: `multi-arch` merging and per-tier match thresholds (M3).
+## v1 — M3 reference matcher
+
+* Anchor needles per kind, with the searchable encodings and the constants that
+  are deliberately not searchable (SPEC.md §8).
+* Candidate generation from known function starts plus a bounded backward
+  instruction sweep from constant hits, ranked and capped.
+* Weighted comparison where optional features can only add evidence, gated by
+  `thresholds.match` and `min_distinct`; overlapping spans collapse to one
+  match.
+
+Not yet specified: `multi-arch` merging, a data-reference index for string
+candidate discovery, and reference-scanner budgets (M4–M6).

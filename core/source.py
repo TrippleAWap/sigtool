@@ -104,6 +104,16 @@ class ByteSource(abc.ABC):
         """Optional known function bounds ``(start, end)`` from the front-end."""
         return None
 
+    def function_starts(self) -> Sequence[int]:
+        """Optional known function entry points.
+
+        Sources that can enumerate symbols override this so the reference
+        matcher can compare candidates exactly. The result is never treated as
+        exhaustive: sources without symbol information return nothing and the
+        matcher falls back to scanning.
+        """
+        return ()
+
     # -- helpers built on the contract -------------------------------------
 
     def try_read(self, addr: int, size: int) -> bytes | None:
@@ -194,6 +204,13 @@ class MemorySource(ByteSource):
         self._modules: tuple[Module, ...] = tuple(sorted(modules, key=lambda m: m.base))
         self._hints: tuple[tuple[int, int], ...] = tuple(sorted(hints))
         self._hint_starts = [start for start, _ in self._hints]
+
+    def function_starts(self) -> Sequence[int]:
+        starts = {start for start, _ in self._hints}
+        for module in self._modules:
+            starts.update(module.functions)
+            starts.update(module.exports.values())
+        return tuple(sorted(starts))
 
     def hint_function(self, addr: int) -> tuple[int, int] | None:
         if not self._hints:
