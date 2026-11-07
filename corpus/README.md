@@ -10,10 +10,14 @@ python bench.py --baseline tests/baseline/bench.json
 
 * Sources live in `corpus/src/`. They are freestanding (no libc) so they link
   for Linux targets with `ld.lld` and `-nostdlib`.
-* Each source is built for x64, arm64, and arm32 (Thumb) at `-O0`, `-O2`, `-Os`.
+* Each source is built for x64, arm64, arm32, and thumb (`-mthumb`) at
+  `-O0`, `-O2`, `-Os`. arm32 and thumb binaries share the `arm32` arch id;
+  Thumb functions are recognized per symbol via the ELF Thumb bit.
 * `build/ground_truth.json` maps each binary to `(name, start, size)` from the
   ELF symbol table. Symbol sizes are exact for non-inlined, non-aliased
-  functions, which is what the M1 exit criterion measures.
+  functions, which is what the M1 exit criterion measures. arm32 symbol sizes
+  include the function's inline literal pool, and recovery extends bounds over
+  referenced pool cells to match.
 * The negative corpus lives in `corpus/negative/`: purpose-written code that is
   unrelated to `corpus/src/`. It is built at `-O2` for all three targets into
   `build/negative/` and listed under the `negative` key of

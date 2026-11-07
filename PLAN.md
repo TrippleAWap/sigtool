@@ -350,4 +350,42 @@ merging is the planned fix).**
   the negative corpus and unrelated source files, and CI running the full
   harness.
 
-**Not started:** M4 onward.
+**M4 — implemented; cross-arch recall targets not yet met.**
+
+- ARM32 and Thumb extraction is implemented: per-address mode from the ELF
+  Thumb bit (sources canonicalize code addresses to the byte address),
+  condition-suffix stripping with `it`-block normalization, `movw`/`movt` and
+  `mvn` materialization, literal-pool resolution, and pool cells extending
+  function bounds (arm32 pools are inline and symbol sizes count them).
+  Bounds agreement on the corpus with no symbol-size hint: arm32 51/51 (1.000)
+  and thumb 50/51, on top of x64 1.000 and arm64 0.941; the corpus-bounds gate
+  now includes arm32 and thumb (0.90 criterion). Golden vectors include arm32
+  and thumb (`-mthumb`) at `-O0/-O2/-Os`; the corpus grew to 24 binaries plus
+  12 negative ones, and the ASLR property test relocates arm32 pool pointers
+  like a loader would.
+- Multi-sample merging (`core/merge.py`, `sigtool merge`): features in every
+  sample stay required, subset features are demoted to optional half weight,
+  anchors come only from stable features, and the merged document must
+  self-test on every sample (7 of 48 merges on this corpus are refused that
+  way, which is the design working). `sigtool locate` scans a second image or
+  process with an existing signature.
+- Measured (x64+arm64 merged samples, clang 18): merged same-arch recall is
+  1.000 (merging loses nothing), merged same-opt recall on arm32 0.707
+  (29/41), cross-opt 0.476; arm32 single-arch cross-opt recall 0.583, the best
+  of the three arches. The 90/70 percent targets in section 6 are **not met**.
+  Two causes, both measured: a 64-bit constant splits across two arm32
+  registers so the halves never join the x64/arm64 feature (mix64), and the
+  merged required set is the sample intersection, which arm32 builds diverge
+  from half the time. Instruction-aware Tier 0 anchors (M6) and the
+  real-library corpus (licensing decision) are the planned fixes.
+- False positives: single-arch signatures stay clean (0 hits for all strong
+  signatures, all arches). Merged signatures hit unrelated binaries: 4/15
+  strong cross-source, 2/15 on the negative corpus. The intersection required
+  set is weaker evidence than a single sample's full set, so the zero-FP
+  budget is **not met** for merged signatures; the harness gates and reports
+  them separately so the trade stays visible.
+- Not done in M4: multi-sample merging from more than two arches in one call
+  is supported by `merge()` but only the x64+arm64 pair is measured; the IDA
+  plugin (M5) is the next milestone.
+
+**Not started:** M5 onward.

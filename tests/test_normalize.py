@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from core.arch import Arch
-from core.errors import UnsupportedArchError
-from core.normalize import Normalizer, canonical_const
+from core.normalize import COND_JUMP, IGNORED, NORMAL, RET, Normalizer, canonical_const
 from core.source import MemorySource, Module, Region
 
 # Bytes below are copied from clang 22 output for x86_64 (`-O2`, `-O0`) and are
@@ -99,6 +96,23 @@ def test_noreturn_callee_marks_block_end() -> None:
     assert insns[0].kind == "noreturn_call"
 
 
-def test_thumb_is_rejected_until_m4() -> None:
-    with pytest.raises(UnsupportedArchError):
-        Normalizer(MemorySource(Arch.THUMB, []))
+def test_thumb_normalizes_it_blocks_and_conditional_returns() -> None:
+    # push {r4, lr}; itt eq; movs r0, #1; bx lr; movs r0, #0; pop {r4, pc}
+    code = bytes.fromhex("10b504bf01207047002010bd")
+    region = Region("t", 0x1000, len(code), code, executable=True)
+    normalizer = Normalizer(MemorySource(Arch.THUMB, [region]))
+
+    # A conditional `bx eq lr` ends this block like any conditional jump; the
+    # fall-through is a separate block.
+    first = normalizer.decode_block(0x1000, 64)
+    assert [insn.kind for insn in first] == [NORMAL, IGNORED, NORMAL, COND_JUMP]
+    assert [insn.op for insn in first] == ["stack", "misc", "move", "cond"]
+
+    tail = normalizer.decode_block(0x1008, 64)
+    assert [insn.kind for insn in tail] == [NORMAL, RET]
+    assert tail[1].op == "ret"  # pop {..., pc}
+
+
+def test_normalizer_supports_arm32_and_thumb() -> None:
+    assert Normalizer(MemorySource(Arch.THUMB, [])) is not None
+    assert Normalizer(MemorySource(Arch.ARM32, [])) is not None

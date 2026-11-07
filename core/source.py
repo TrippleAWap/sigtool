@@ -114,6 +114,15 @@ class ByteSource(abc.ABC):
         """
         return ()
 
+    def is_thumb(self, addr: int) -> bool:
+        """ARM32 family: whether ``addr`` decodes as Thumb (default: ARM mode).
+
+        Code addresses are always the real byte address (low bit cleared); the
+        Thumb bit is per-address metadata. Sources that know per-symbol modes
+        override this; an image whose container says Thumb is Thumb everywhere.
+        """
+        return self.arch is Arch.THUMB
+
     # -- helpers built on the contract -------------------------------------
 
     def try_read(self, addr: int, size: int) -> bytes | None:
@@ -198,12 +207,14 @@ class MemorySource(ByteSource):
         regions: Iterable[Region],
         modules: Iterable[Module] = (),
         hints: Iterable[tuple[int, int]] = (),
+        thumb_ranges: Iterable[tuple[int, int]] = (),
     ) -> None:
         self._arch = arch
         self._regions: tuple[Region, ...] = tuple(sorted(regions, key=lambda r: r.start))
         self._modules: tuple[Module, ...] = tuple(sorted(modules, key=lambda m: m.base))
         self._hints: tuple[tuple[int, int], ...] = tuple(sorted(hints))
         self._hint_starts = [start for start, _ in self._hints]
+        self._thumb_ranges: tuple[tuple[int, int], ...] = tuple(sorted(thumb_ranges))
 
     def function_starts(self) -> Sequence[int]:
         starts = {start for start, _ in self._hints}
@@ -220,6 +231,11 @@ class MemorySource(ByteSource):
             return None
         start, end = self._hints[index]
         return (start, end) if start <= addr < end else None
+
+    def is_thumb(self, addr: int) -> bool:
+        if self._thumb_ranges:
+            return any(low <= addr < high for low, high in self._thumb_ranges)
+        return self.arch is Arch.THUMB
 
     @property
     def arch(self) -> Arch:

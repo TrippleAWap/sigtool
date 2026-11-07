@@ -96,6 +96,8 @@ TARGETS = {
     "arm64": ("aarch64-linux-gnu", ()),
     "arm64-pac": ("aarch64-linux-gnu", ("-mbranch-protection=standard",)),
     "x64-cet": ("x86_64-linux-gnu", ("-fcf-protection=full",)),
+    "arm32": ("armv7-linux-gnueabihf", ()),
+    "thumb": ("armv7-linux-gnueabihf", ("-mthumb",)),
 }
 OPT_LEVELS = ("-O0", "-O2", "-Os")
 FUNCTIONS = (

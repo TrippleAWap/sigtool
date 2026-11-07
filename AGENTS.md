@@ -68,6 +68,8 @@ python bench.py --save-baseline tests/baseline/bench.json  # update baseline, re
 sigtool gen --file IMAGE --addr A   # generate a signature from an ELF/PE image
 sigtool gen --file IMAGE --module M --rva R  # module+rva addressing
 sigtool gen --pid P --addr A        # generate a signature from a live Windows process (read-only)
+sigtool merge --sample F1:A1 --sample F2:A2 --name N  # merge samples of one function
+sigtool locate --signature S.yaml --file IMAGE  # find a signature in a second image
 python -c "from core.generate import generate"  # library use; front-ends call this
 ```
 
@@ -77,9 +79,9 @@ commit the vectors, never the corpus binaries.
 
 ## Testing requirements
 
-- **Golden vectors** (`tests/vectors/`): bytes in, feature records out, per architecture. Never hand-edit; regenerate with `python tests/vectors/generate.py` and review the diff. A vector change must be justified in the PR description. Vectors are generated from real clang + lld output (x64 and arm64 at -O0/-O2/-Os, plus CET and PAC variants), not hand-written snippets.
+- **Golden vectors** (`tests/vectors/`): bytes in, feature records out, per architecture (x64, arm64 with PAC, x64 with CET, arm32, thumb). Never hand-edit; regenerate with `python tests/vectors/generate.py` and review the diff. A vector change must be justified in the PR description. Vectors are generated from real clang + lld output, not hand-written snippets.
 - **Property tests:** normalization is idempotent; the same code at two ASLR bases yields identical features; random bytes never crash recovery.
-- **Corpus regression:** recall (per discovery mode: hinted and hint-free) and false-positive numbers are compared against `tests/baseline/bench.json` with a 0.05 tolerance (compiler versions move cross-build rates by about 0.02); a drop or an FP increase fails `bench.py --baseline` and CI. `bench.py` scans strong signatures against the negative corpus (`corpus/negative/`) as well as unrelated source files, and both FP rates are gated. Update the baseline only for an intentional improvement, with `--save-baseline`, and review the diff. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint, and requires at least 0.90 agreement (M1 exit criterion); it also checks ground-truth coverage against the M0 0.95 criterion.
+- **Corpus regression:** recall (per discovery mode: hinted and hint-free) and false-positive numbers are compared against `tests/baseline/bench.json` with a 0.05 tolerance (compiler versions move cross-build rates by about 0.02); a drop or an FP increase fails `bench.py --baseline` and CI. `bench.py` scans strong signatures against the negative corpus (`corpus/negative/`) as well as unrelated source files, and both FP rates are gated; merged-pair refusals are reported but never gate (refusing an unmergeable pair is the design working). Update the baseline only for an intentional improvement, with `--save-baseline`, and review the diff. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint across x64, arm64, arm32, and thumb, and requires at least 0.90 agreement (M1 exit criterion); it also checks ground-truth coverage against the M0 0.95 criterion.
 - **Spec version check:** `tests/test_spec.py` asserts that `SPEC_VERSION`, `HASH_PERSON`, `spec/SPEC.md`, and `spec/CHANGELOG.md` agree.
 - **Live tests:** scripted target processes with known functions, including a hooked function and an injected region. These need a real or QEMU user-mode host for each architecture.
 - New normalization rules need a vector from at least one real compiler output, not just a hand-written snippet.
@@ -102,30 +104,40 @@ commit the vectors, never the corpus binaries.
 
 ## Current implementation state
 
-M1 is implemented for x64 and AArch64: `core/source.py`, `core/arch.py`,
-`core/normalize.py`, `core/recover.py`, `core/features.py`, and
-`sources/file.py` (ELF and PE). ARM32/Thumb are detected but rejected with
-`UnsupportedArchError` until M4.
+M1 is implemented for x64, AArch64, ARM32, and Thumb: `core/source.py`,
+`core/arch.py`, `core/normalize.py`, `core/recover.py`, `core/features.py`,
+and `sources/file.py` (ELF and PE). ARM32/Thumb mode is tracked per address
+via the ELF Thumb bit; there are no remaining rejected architectures for file
+extraction (32-bit x86 is rejected by design, never decoded as x64).
 
 M2 core is implemented: `core/score.py`, `core/sigfile.py`, `core/validate.py`,
 and `core/generate.py`. `generate(source, addr)` is the single generation entry
 point; front-ends must not recombine scoring and serialisation themselves.
 
-M3 core is implemented: `core/match.py` is the reference matcher (anchor
-needles, candidate starts, weighted comparison) and `generate` now self-tests
-every signature before returning it, raising `SelfTestError` instead of
-emitting one it cannot re-find. `scan(..., hints=False)` is the hint-free
-discovery mode (sweep-only candidates, recovery without symbol bounds).
-`bench.py` reports recall per discovery mode (hinted and hint-free) plus both
-false-positive rates, and compares against `tests/baseline/bench.json`
-(`--baseline`, 0.05 tolerance; `--save-baseline` to update intentionally).
-`.github/workflows/ci.yml` runs lint, types, the spec-version check, the
-corpus build and regression on Linux, plus the live PID-mode tests on Windows.
-`cli.py` is the front-end (`gen --file ...` or `gen --pid ...` with `--addr` or
-`--module ... --rva`); it emits YAML on stdout plus a quality report on stderr.
-`sources/proc_win.py` is the read-only Windows process source; Linux PID mode
-is still pending. The M3 exit criteria are met; only the cross-opt recall
-target waits on M4 multi-sample merging.
+M3 is implemented: `core/match.py` is the reference matcher (anchor needles,
+candidate starts, weighted comparison); `generate` self-tests every signature
+and raises `SelfTestError` instead of emitting one it cannot re-find.
+`scan(..., hints=False)` is the hint-free discovery mode (sweep-only
+candidates, recovery without symbol bounds). `bench.py` reports recall per
+discovery mode plus both false-positive rates, and compares against
+`tests/baseline/bench.json` (`--baseline`, 0.05 tolerance; `--save-baseline`
+to update intentionally). `.github/workflows/ci.yml` runs lint, types, the
+spec-version check, the corpus build and regression on Linux, plus the live
+PID-mode tests on Windows. `cli.py` is the front-end (`gen`, `merge`, and
+`locate` over `--file`/`--pid`); it emits YAML on stdout plus a quality
+report on stderr. `sources/proc_win.py` is the read-only Windows process
+source; Linux PID mode is still pending. The M3 exit criteria are met.
+
+M4 is implemented: `core/normalize.py` extracts ARM32 and Thumb (per-address
+mode from the ELF Thumb bit, condition stripping, `it`-block normalization,
+`movw`/`movt` and `mvn` materialization, literal pools with pool cells
+extending function bounds). `core/merge.py` merges samples of one function
+(intersect stable features, demote subset features, mandatory per-sample
+self-test) behind `sigtool merge`; `sigtool locate` re-finds a signature in a
+second image or process. The bench measures merged recall and FP per target
+arch (`merged->arm32`, ...). Cross-arch recall targets and the merged FP
+budget are **not met** on the purpose-written corpus; the numbers and causes
+are recorded in `PLAN.md` section 12.
 See `PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)

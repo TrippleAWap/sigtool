@@ -7,6 +7,8 @@ addresses or paths are hardcoded (AGENTS.md: build the corpus first).
 from __future__ import annotations
 
 import json
+import struct
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -138,8 +140,15 @@ def test_output_and_json_report_paths(tmp_path: Path, capsys: pytest.CaptureFixt
 
 
 def test_unsupported_arch_exits_three(capsys: pytest.CaptureFixture[str]) -> None:
-    path, _name, start = _corpus_function("arm32", "O2", "loops")
-    code = cli.main(["gen", "--file", str(path), "--addr", hex(start)])
+    # A 32-bit x86 image is rejected instead of being decoded as x64.
+    header = bytearray(0x80)
+    header[:4] = b"\x7fELF"
+    header[4] = 1  # ELFCLASS32
+    struct.pack_into("<H", header, 18, 0x03)  # EM_386
+    path = Path(tempfile.gettempdir()) / "sigtool-i386.elf"
+    path.write_bytes(bytes(header))
+
+    code = cli.main(["gen", "--file", str(path), "--addr", "0x1000"])
     captured = capsys.readouterr()
 
     assert code == cli.EXIT_UNSUPPORTED

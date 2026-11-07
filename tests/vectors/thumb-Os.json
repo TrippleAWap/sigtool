@@ -1,0 +1,679 @@
+{
+ "arch": "thumb",
+ "flags": [
+  "-mthumb"
+ ],
+ "functions": {
+  "banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131632,
+   "entry": 131620,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": " banner literal"
+    }
+   ],
+   "loops": 0
+  },
+  "banner_direct": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131644,
+   "entry": 131632,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffeff4c"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "branchy": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131738,
+   "entry": 131706,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "const",
+     "value": "0xa"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:5"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_one": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131604,
+   "entry": 131590,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5679"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_two": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131618,
+   "entry": 131604,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x55df"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "classify": {
+   "blocks": 2,
+   "degraded": false,
+   "edges": 1,
+   "end": 131764,
+   "entry": 131740,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffeff28"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "compute": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131590,
+   "entry": 131576,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "get_counter": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131656,
+   "entry": 131644,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "loop_sum": {
+   "blocks": 2,
+   "degraded": false,
+   "edges": 1,
+   "end": 131706,
+   "entry": 131668,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:3"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mask_value": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131668,
+   "entry": 131656,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mix": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131854,
+   "entry": 131776,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x11"
+    },
+    {
+     "kind": "const",
+     "value": "0x15"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0x79b9"
+    },
+    {
+     "kind": "const",
+     "value": "0x7c15"
+    },
+    {
+     "kind": "const",
+     "value": "0x7f4a0000"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffff9e370000"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:2"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:7"
+    },
+    {
+     "kind": "ops",
+     "value": "move:4"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:3"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:1"
+    }
+   ],
+   "loops": 0
+  },
+  "recurse": {
+   "blocks": 4,
+   "degraded": false,
+   "edges": 5,
+   "end": 131992,
+   "entry": 131856,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:4"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:5"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:1"
+    },
+    {
+     "kind": "const",
+     "value": "0x0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
+    },
+    {
+     "kind": "const",
+     "value": "0x34"
+    },
+    {
+     "kind": "const",
+     "value": "0x4"
+    },
+    {
+     "kind": "const",
+     "value": "0x5c"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:3"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:3"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:4"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "vector:9"
+    }
+   ],
+   "loops": 1
+  },
+  "wide_banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131776,
+   "entry": 131764,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffefef0"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  }
+ },
+ "opt": "-Os",
+ "sections": [
+  {
+   "addr": 65780,
+   "bytes": "04010100010000000a01010001000000100101000100000018010100010000001c010100010000002001010001000000240101000100000028010100010000004601010001000000600101000100000070010100010000007401010001000000bc010100010000003c020100010000003602010001000000",
+   "executable": false,
+   "name": ".ARM.exidx"
+  },
+  {
+   "addr": 65900,
+   "bytes": "6b65726e656c2062616e6e6572206c69746572616c006469726563742062616e6e6572206c69746572616c0075692062616e6e6572206c69746572616c0077006900640065002000620061006e006e006500720020006c00690074006500720061006c00000000000b00000017000000250000002900000035000000430000004f00000053000000",
+   "executable": false,
+   "name": ".rodata"
+  },
+  {
+   "addr": 131576,
+   "bytes": "45f2786141f2342200fb0210704745f2796141f2342200fb0210704745f2df5141f2342200fb0210704700bf01487844006870477201010001487844704700bf4cfffeff01487844006870476201010001487844006870475a0101000128bcbf00207047811e421ea2fb011202f001025fea52024fea3101084400eb400003387047014610f10a0fb8bf4ff0ff3145f2786241f234230a28c8bf00fb03210846704700bf072884bf4ff0ff3070470249794451f82000704728fffeff01487844704700bff0fefeffb0b580ea425c580540ead22047f6154e41404fea5c40c7f64a7e47f6b91540eac130c9f63765424083ea5143a2fb0e0402fb054410eb0c0003fb0e4580eac2104feac31343ea526269415140b0bd00bf0228bcbf0120704717a1a4ee900b61f9cf2a811c023864efe248c0ef510021f00301c0ef7380a2ee900b002060eff061043064eff009814264efe848f6d104380da161f9cf4aa8ee900b68eff44164ffe22366fff20160efb10930ee900b10ee901b4843704700bf00000000fffffffffefffffffdffffff000000000100000002000000030000007047",
+   "executable": true,
+   "name": ".text"
+  },
+  {
+   "addr": 197532,
+   "bytes": "6c010100980101000700000000000080",
+   "executable": false,
+   "name": ".data"
+  }
+ ],
+ "spec_version": "1",
+ "target": "armv7-linux-gnueabihf"
+}

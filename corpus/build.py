@@ -33,9 +33,10 @@ NEGATIVE_SOURCES = sorted((ROOT / "corpus" / "negative").glob("*.c"))
 NEGATIVE_OPT = "-O2"
 
 TARGETS = {
-    "x64": "x86_64-linux-gnu",
-    "arm64": "aarch64-linux-gnu",
-    "arm32": "armv7-linux-gnueabihf",
+    "x64": ("x86_64-linux-gnu", ()),
+    "arm64": ("aarch64-linux-gnu", ()),
+    "arm32": ("armv7-linux-gnueabihf", ()),
+    "thumb": ("armv7-linux-gnueabihf", ("-mthumb",)),
 }
 OPT_LEVELS = ("-O0", "-O2", "-Os")
 
@@ -48,7 +49,14 @@ def find_clang() -> str:
 
 
 def build(
-    clang: str, arch: str, target: str, opt: str, source: Path, *, root: Path = BUILD
+    clang: str,
+    arch: str,
+    target: str,
+    opt: str,
+    source: Path,
+    *,
+    root: Path = BUILD,
+    extra: tuple[str, ...] = (),
 ) -> Path | None:
     outdir = root / arch / opt.strip("-")
     outdir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +74,7 @@ def build(
         "-fno-unwind-tables",
         "-fuse-ld=lld",
         "-Wl,-e,_start",
+        *extra,
         str(source),
         "-o",
         str(binary),
@@ -111,10 +120,10 @@ def main() -> int:
         raise SystemExit("no corpus sources under corpus/src")
     BUILD.mkdir(parents=True, exist_ok=True)
     binaries: list[dict[str, object]] = []
-    for arch, target in TARGETS.items():
+    for arch, (target, extra) in TARGETS.items():
         for opt in OPT_LEVELS:
             for source in SOURCES:
-                binary = build(clang, arch, target, opt, source)
+                binary = build(clang, arch, target, opt, source, extra=extra)
                 if binary is None:
                     continue
                 try:
@@ -125,9 +134,11 @@ def main() -> int:
         raise SystemExit("no corpus binaries were built")
 
     negative: list[dict[str, object]] = []
-    for arch, target in TARGETS.items():
+    for arch, (target, extra) in TARGETS.items():
         for source in NEGATIVE_SOURCES:
-            binary = build(clang, arch, target, NEGATIVE_OPT, source, root=BUILD / "negative")
+            binary = build(
+                clang, arch, target, NEGATIVE_OPT, source, root=BUILD / "negative", extra=extra
+            )
             if binary is None:
                 continue
             try:

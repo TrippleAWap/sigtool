@@ -43,6 +43,8 @@ class RecoveredFunction:
     arch: Arch
     blocks: tuple[Block, ...]
     degraded: bool = False
+    #: End of the function's inline literal pool (arm32); 0 elsewhere.
+    pool_end: int = 0
 
     @property
     def start(self) -> int:
@@ -50,7 +52,10 @@ class RecoveredFunction:
 
     @property
     def end(self) -> int:
-        return max((block.end for block in self.blocks), default=self.entry)
+        return max(
+            max((block.end for block in self.blocks), default=self.entry),
+            self.pool_end,
+        )
 
     @property
     def size(self) -> int:
@@ -195,4 +200,16 @@ def recover(
     ordered = tuple(blocks[start] for start in sorted(blocks))
     if sum(len(block.insns) for block in ordered) > bounds.max_instructions:
         degraded = True
-    return RecoveredFunction(entry=addr, arch=arch, blocks=ordered, degraded=degraded)
+    # arm32 pools sit inline after the last instruction and are part of the
+    # function: extend the bounds over every cell the body references so they
+    # stay comparable with symbol sizes. Other architectures never set
+    # ``pool_end`` and are unaffected.
+    pool_end = 0
+    if arch.is_arm:
+        for block in ordered:
+            for insn in block.insns:
+                if addr <= insn.pool_end <= function_end:
+                    pool_end = max(pool_end, insn.pool_end)
+    return RecoveredFunction(
+        entry=addr, arch=arch, blocks=ordered, degraded=degraded, pool_end=pool_end
+    )

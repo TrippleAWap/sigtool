@@ -40,7 +40,7 @@ def test_elf_machine_detection(machine: int, expected: Arch) -> None:
 
 @pytest.mark.parametrize(
     ("machine", "expected"),
-    [(0x8664, Arch.X64), (0xAA64, Arch.ARM64), (0x01C4, Arch.ARM32)],
+    [(0x8664, Arch.X64), (0xAA64, Arch.ARM64), (0x01C0, Arch.ARM32), (0x01C4, Arch.THUMB)],
 )
 def test_pe_machine_detection(machine: int, expected: Arch) -> None:
     assert detect_pe(pe_header(machine)) is expected
@@ -58,11 +58,9 @@ def test_unknown_format_is_a_source_error() -> None:
         detect(b"not an image at all")
 
 
-def test_arm32_detected_but_not_supported_until_m4() -> None:
-    arch = detect_elf(elf_header(0x28, 1))
-    assert arch is Arch.ARM32
-    with pytest.raises(UnsupportedArchError):
-        ensure_supported(arch)
+def test_arm32_and_thumb_are_supported_for_extraction() -> None:
+    assert ensure_supported(Arch.ARM32) is Arch.ARM32
+    assert ensure_supported(Arch.THUMB) is Arch.THUMB
 
 
 def test_arch_properties() -> None:

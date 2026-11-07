@@ -37,6 +37,7 @@ from typing import Final
 from core.errors import SigToolError
 from core.generate import generate
 from core.match import scan
+from core.merge import MergeSample, merge
 from core.sigfile import Signature
 from core.spec import SPEC_VERSION
 from sources.file import FileSource
@@ -46,7 +47,8 @@ DEFAULT_CORPUS = Path("corpus/build")
 # a little between compiler versions (clang 18 vs 22 differs by about 0.02 here).
 # Five points still catches a real regression without pinning a toolchain.
 DEFAULT_TOLERANCE = 0.05
-SUPPORTED_ARCHES = ("x64", "arm64")
+SUPPORTED_ARCHES = ("x64", "arm64", "arm32")
+MERGED_ARCH: Final[str] = "merged"
 
 # Discovery modes: "hinted" lets the matcher use the target's symbol table as
 # candidate starts (comparison quality); "hint-free" forbids them, so a match
@@ -142,7 +144,13 @@ def main(argv: list[str] | None = None) -> int:
     false_positives = _false_positives(samples, binaries, sources)
     negative_false_positives = _negative_false_positives(samples, negatives, sources)
 
-    _report(samples, refused, recall, false_positives, negative_false_positives)
+    merged, merged_refused = _build_merged_samples(binaries, sources)
+    recall += _merged_recall(merged, binaries, sources)
+    false_positives += _false_positives(merged, binaries, sources)
+    negative_false_positives += _negative_false_positives(merged, negatives, sources)
+    samples += merged
+
+    _report(samples, refused, merged_refused, recall, false_positives, negative_false_positives)
 
     if args.save_baseline is not None:
         _save_baseline(
@@ -152,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             recall,
             false_positives,
             negative_false_positives,
+            merged_refused=merged_refused,
         )
         print(f"\nwrote baseline {args.save_baseline}")
 
@@ -189,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
                         for sample in samples
                     ],
                     "refused": refused,
+                    "merged_refused": merged_refused,
                     "recall": _recall_document(recall),
                     "false_positives": _false_positive_document(false_positives),
                     "negative_false_positives": _false_positive_document(negative_false_positives),
@@ -319,8 +329,12 @@ def _false_positives(
         bucket[0] += 1
         hits = 0
         # The signature's own source file is a recall measurement, not an FP.
+        # A merged signature is cross-arch by construction, so every target
+        # architecture is in scope for it.
         for (arch, source_file), paths in others.items():
-            if arch != sample.arch or source_file == sample.source_file:
+            if source_file == sample.source_file:
+                continue
+            if sample.arch != MERGED_ARCH and arch != sample.arch:
                 continue
             for path in paths:
                 hits += len(_scan_addresses(sample.signature, sources[path]))
@@ -350,8 +364,12 @@ def _negative_false_positives(
         bucket = counts[sample.arch]
         bucket[0] += 1
         hits = 0
-        for path in by_arch.get(sample.arch, []):
-            hits += len(_scan_addresses(sample.signature, sources[path]))
+        # A merged signature is cross-arch by construction: every negative
+        # architecture is a valid target for it.
+        target_arches = list(by_arch) if sample.arch == MERGED_ARCH else [sample.arch]
+        for arch in sorted(target_arches):
+            for path in by_arch.get(arch, []):
+                hits += len(_scan_addresses(sample.signature, sources[path]))
         bucket[2] += hits
         if hits:
             bucket[1] += 1
@@ -359,6 +377,102 @@ def _negative_false_positives(
     return [
         FalsePositiveCell(arch, signatures, with_hits, hits)
         for arch, (signatures, with_hits, hits) in sorted(counts.items())
+    ]
+
+
+def _build_merged_samples(
+    binaries: list[dict[str, object]],
+    sources: dict[str, FileSource],
+) -> tuple[list[Sample], int]:
+    """Merge x64 and arm64 samples of each function into cross-arch signatures.
+
+    This is the M4 exit measurement: a signature merged from two architectures
+    must still match the same function in the third (arm32) and in builds at
+    other optimization levels.
+    """
+    starts: dict[str, dict[tuple[str, str], int]] = defaultdict(dict)
+    files: dict[str, str] = {}
+    sources_by_key: dict[tuple[str, str, str], FileSource] = {}
+    for entry in binaries:
+        arch, source_file, opt = _kind(str(entry["path"]))
+        path = str(entry["path"])
+        sources_by_key[(arch, source_file, opt)] = sources[path]
+        for function in entry["functions"]:  # type: ignore[union-attr]
+            name = str(function["name"])
+            starts[name][(arch, opt)] = int(function["start"])
+            files[name] = source_file
+
+    samples: list[Sample] = []
+    refused = 0
+    for name in sorted(starts):
+        opts = sorted({opt for arch, opt in starts[name] if arch in ("x64", "arm64")})
+        for opt in opts:
+            x64 = starts[name].get(("x64", opt))
+            arm64 = starts[name].get(("arm64", opt))
+            source_x64 = sources_by_key.get(("x64", files[name], opt))
+            source_arm64 = sources_by_key.get(("arm64", files[name], opt))
+            if None in (x64, arm64, source_x64, source_arm64):
+                continue
+            try:
+                result = merge(
+                    [
+                        MergeSample(source_x64, int(x64), opt=opt, tool="clang"),
+                        MergeSample(source_arm64, int(arm64), opt=opt, tool="clang"),
+                    ],
+                    name=name,
+                )
+            except SigToolError:
+                refused += 1
+                continue
+            samples.append(
+                Sample(
+                    arch=MERGED_ARCH,
+                    source_file=files[name],
+                    opt=opt,
+                    name=name,
+                    start=0,
+                    signature=result.signature,
+                    verdict=result.report.verdict,
+                )
+            )
+    return samples, refused
+
+
+def _merged_recall(
+    merged: list[Sample],
+    binaries: list[dict[str, object]],
+    sources: dict[str, FileSource],
+) -> list[RecallCell]:
+    """Merged-signature recall against every same-file target build."""
+    starts: dict[tuple[str, str, str], int] = {}
+    for entry in binaries:
+        arch, source_file, opt = _kind(str(entry["path"]))
+        for function in entry["functions"]:  # type: ignore[union-attr]
+            starts[(str(function["name"]), arch, opt)] = int(function["start"])
+
+    cells: dict[tuple[str, str, str], list[int]] = defaultdict(lambda: [0, 0])
+    cache: dict[tuple[int, str], tuple[int, ...]] = {}
+    for index, sample in enumerate(merged):
+        for entry in binaries:
+            arch, source_file, opt = _kind(str(entry["path"]))
+            if source_file != sample.source_file:
+                continue
+            expected = starts.get((sample.name, arch, opt))
+            if expected is None:
+                continue
+            path = str(entry["path"])
+            addresses = cache.get((index, path))
+            if addresses is None:
+                addresses = _scan_addresses(sample.signature, sources[path])
+                cache[(index, path)] = addresses
+            cell = cells[(f"{MERGED_ARCH}->{arch}", sample.opt, opt)]
+            cell[1] += 1
+            if expected in addresses:
+                cell[0] += 1
+
+    return [
+        RecallCell(arch, source_opt, target_opt, HINTED, hits, attempts)
+        for (arch, source_opt, target_opt), (hits, attempts) in sorted(cells.items())
     ]
 
 
@@ -400,16 +514,21 @@ def _save_baseline(
     recall: list[RecallCell],
     false_positives: list[FalsePositiveCell],
     negative_false_positives: list[FalsePositiveCell],
+    *,
+    merged_refused: int = 0,
 ) -> None:
     """Write the compact metrics that :func:`_compare` reads.
 
     Sample-level detail belongs in ``--json`` output; a baseline is a reviewable
     set of numbers, so signature ids and file paths stay out of it.
+    ``merged_refused`` is recorded for review but never gated: refusing a pair
+    that cannot be honestly merged is the design working, not a regression.
     """
     document = {
         "spec_version": SPEC_VERSION,
         "signatures": signatures,
         "refused": refused,
+        "merged_refused": merged_refused,
         "recall": _recall_document(recall),
         "false_positives": _false_positive_document(false_positives),
         "negative_false_positives": _false_positive_document(negative_false_positives),
@@ -429,7 +548,8 @@ def _compare(
     """Return the regressions that exceed ``tolerance``.
 
     Rates are compared rather than raw counts because rebuilding the corpus with
-    a different clang can legitimately change which functions exist.
+    a different clang can legitimately change which functions exist. Merged
+    refusals are informational only (see :func:`_save_baseline`).
     """
     if not path.exists():
         return [f"no baseline file at {path}"]
@@ -611,6 +731,7 @@ def _fp_rate(cells: list[FalsePositiveCell], arch: str) -> float | None:
 def _report(
     samples: list[Sample],
     refused: int,
+    merged_refused: int,
     recall: list[RecallCell],
     false_positives: list[FalsePositiveCell],
     negative_false_positives: list[FalsePositiveCell],
@@ -621,6 +742,8 @@ def _report(
         per_arch[sample.arch][sample.verdict] += 1
 
     print(f"signatures: {len(samples)}  refused by self-test: {refused}")
+    if merged_refused:
+        print(f"merged pairs refused honestly (cannot self-test on a sample): {merged_refused}")
     print(f"verdicts: {dict(sorted(verdicts.items()))}")
     for arch, counts in sorted(per_arch.items()):
         print(f"  {arch}: strong={counts['strong']} weak={counts['weak']} small={counts['small']}")

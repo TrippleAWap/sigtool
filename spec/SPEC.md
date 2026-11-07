@@ -44,8 +44,22 @@ These never contribute a feature, an op count, or function bounds:
   padding, `mov reg, reg` (hot-patch prologue), `fnop`.
 * **AArch64:** `nop`, `bti`, `hint`, `paciasp`/`autiasp`, `pacibsp`/`autibsp`,
   `paciaz`/`autiaz`, `pacibz`/`autibz`, `xpaclri`.
+* **ARM32/Thumb:** `nop`, `hint`, and every `it`/`itt`/`ite`... block header.
+  The block header carries predication only; the instructions inside it are
+  normalized by their base mnemonic.
 
 This is what makes CET and PAC builds match plain builds.
+
+### 1.3 ARM32 and Thumb mode
+
+An ELF `EM_ARM` image is one *arch* (`arm32`) whose functions may be ARM or
+Thumb. ELF symbol values carry the Thumb bit; sources canonicalize code
+addresses to the byte address (low bit cleared) and expose the mode per
+address (`ByteSource.is_thumb`). Condition codes are reported by Capstone and
+stripped from mnemonics for classification, so `add`/`addeq`/`addlo` are one
+class; a conditional return (`bxeq lr`, `popeq {..., pc}`) is a conditional
+exit with fall-through, never an unconditional terminator. PE images use the
+container mode (`0x01c0` ARM, `0x01c2`/`0x01c4` Thumb).
 
 ## 2. Address normalization
 
@@ -58,6 +72,15 @@ Rule 4 of AGENTS.md: **no absolute address may appear in a feature.**
   An unconsumed `adrp` page is discarded as an address.
 * AArch64 `ldr` from a literal pool resolves to the pool value: a pointer becomes
   a reference to the pool cell; a non-pointer value becomes a constant.
+* ARM32/Thumb `ldr rd, [pc, #imm]` resolves against the literal pool (Thumb PC
+  is `align(addr + 4, 4)`, ARM PC is `addr + 8`): a pool value inside the image
+  becomes a reference to its target, any other word becomes a 32-bit constant.
+  The referenced cell extends the function bounds, because arm32 pools sit
+  inline after the last instruction and symbol sizes count them.
+* ARM32/Thumb `add rd, pc, rm` (and the Thumb two-operand `add rd, pc`) resolves
+  against a previously pooled offset, like the AArch64 `adrp`+`add` pair.
+* ARM32 `movw`/`movt` pairs and `mvn rd, #imm` collapse into one constant each,
+  matching AArch64 `movz`/`movk` chains and `movn`.
 * Absolute x86 displacements and immediates are used only when they fall inside
   a mapped module, and then only as data references.
 * A constant whose value lies inside a mapped module is dropped entirely.
@@ -80,7 +103,9 @@ matter; this is a property of the object format, not of the extractor.
 * Only materialisation and comparison/mask instructions contribute constants:
   x86-64 `mov*`, `cmp`, `test`, `and`, `or`, `xor`, `imul`; AArch64
   `mov`/`movz`/`movk`/`movn` chains and immediate operands of `cmp`/`cmn`/
-  `tst`/`and`/`orr`/`eor`/`add`/`sub`.
+  `tst`/`and`/`orr`/`eor`/`add`/`sub`; ARM32 `movw`/`movt` pairs, `mvn rd, #imm`,
+  literal-pool words, and immediate operands of the same comparison and
+  arithmetic mnemonics (condition suffixes stripped).
 * Immediates that encode ABI or addressing are excluded: anything touching the
   stack or frame pointer, and shift amounts.
 
@@ -285,6 +310,27 @@ Small functions cannot anchor in Tier 0; their signatures add caller/callee
 names, neighbour position, and a tight op-class sequence, and match near an
 already-matched function. A standalone hit on a small signature is reported
 with `confidence: low`.
+
+### Merging samples (multi-arch signatures)
+
+`core/merge.py` combines two or more samples of one function — different
+optimization levels, different architectures — into one document:
+
+* A feature present in **every** sample keeps its weight and, for data kinds,
+  stays required.
+* A feature present in a **strict subset** of samples is demoted: optional,
+  half weight. Divergent bucket values therefore widen the match instead of
+  failing it — every observed value remains as optional evidence.
+* Anchors are chosen only among features every sample carries, so Tier 0
+  cannot trigger on bytes a sample does not contain.
+* `confidence` is `multi-arch` when the samples span more than one arch.
+* The merged document must self-test against **every** sample; a merge that
+  cannot re-find one of its own samples is refused (AGENTS.md rule 7).
+
+Merged signatures trade precision for recall: the required set is the
+intersection of the samples, which is weaker evidence than any single
+sample's full set. The harness measures both (per-arch and merged recall and
+false positives) so the trade stays visible.
 
 ## 9. Recovery contract
 

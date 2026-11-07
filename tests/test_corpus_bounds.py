@@ -39,12 +39,20 @@ def test_recovered_bounds_match_symbol_sizes() -> None:
     for entry in truth["binaries"]:  # type: ignore[index]
         path = CORPUS / str(entry["path"])
         arch = Arch(str(entry["arch"]))
-        if arch not in (Arch.X64, Arch.ARM64):
+        if arch not in (Arch.X64, Arch.ARM64, Arch.ARM32):
             continue
         image = FileSource.from_path(path)
         # No symbol-size hint: this measures recovery as a scanner would run it,
-        # rather than letting the ground truth bound the walk.
-        source = MemorySource(image.arch, image.regions(), image.modules())
+        # rather than letting the ground truth bound the walk. arm32/thumb mode
+        # still follows the image's symbols, as a scanner's mode table would.
+        thumb_ranges = tuple(
+            (int(function["start"]), int(function["start"]) + int(function["size"]))
+            for function in entry["functions"]  # type: ignore[union-attr]
+            if image.is_thumb(int(function["start"]))
+        )
+        source = MemorySource(
+            image.arch, image.regions(), image.modules(), thumb_ranges=thumb_ranges
+        )
         for function in entry["functions"]:
             start = int(function["start"])
             end = start + int(function["size"])
@@ -62,7 +70,7 @@ def test_recovered_bounds_match_symbol_sizes() -> None:
                     f"{path.name}:{function['name']} recovered 0x{recovered.end:x} "
                     f"expected 0x{end:x}"
                 )
-    assert checked, "ground truth contained no x64/arm64 functions"
+    assert checked, "ground truth contained no supported-arch functions"
     agreement = matched / checked
     assert agreement >= MIN_AGREEMENT, (
         f"bounds agreement {agreement:.3f} below {MIN_AGREEMENT:.2f}\n" + "\n".join(mismatches[:25])

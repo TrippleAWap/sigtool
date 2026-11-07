@@ -1,0 +1,649 @@
+{
+ "arch": "arm32",
+ "flags": [],
+ "functions": {
+  "banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131648,
+   "entry": 131632,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "w:nner literal"
+    }
+   ],
+   "loops": 0
+  },
+  "banner_direct": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131664,
+   "entry": 131648,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffeff36"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "branchy": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131784,
+   "entry": 131748,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "const",
+     "value": "0xa"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:5"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_one": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131616,
+   "entry": 131600,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5679"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_two": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131632,
+   "entry": 131616,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x55df"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "classify": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131816,
+   "entry": 131784,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffefef4"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "compute": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131600,
+   "entry": 131584,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "get_counter": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131680,
+   "entry": 131664,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "r literal"
+    }
+   ],
+   "loops": 0
+  },
+  "loop_sum": {
+   "blocks": 2,
+   "degraded": false,
+   "edges": 1,
+   "end": 131748,
+   "entry": 131696,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:3"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mask_value": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131696,
+   "entry": 131680,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mix": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131924,
+   "entry": 131832,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x79b9"
+    },
+    {
+     "kind": "const",
+     "value": "0x7c15"
+    },
+    {
+     "kind": "const",
+     "value": "0x7f4a0000"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffff9e370000"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:2"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:7"
+    },
+    {
+     "kind": "ops",
+     "value": "move:4"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:3"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:1"
+    }
+   ],
+   "loops": 0
+  },
+  "recurse": {
+   "blocks": 7,
+   "degraded": false,
+   "edges": 12,
+   "end": 132080,
+   "entry": 131936,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:6"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:7"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:2"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
+    },
+    {
+     "kind": "const",
+     "value": "0x4"
+    },
+    {
+     "kind": "const",
+     "value": "0x5"
+    },
+    {
+     "kind": "const",
+     "value": "0x64"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:4"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:5"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:4"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "vector:7"
+    }
+   ],
+   "loops": 2
+  },
+  "wide_banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131832,
+   "entry": 131816,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffefeb6"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  }
+ },
+ "opt": "-O2",
+ "sections": [
+  {
+   "addr": 65780,
+   "bytes": "0c0101000100000014010100010000001c0101000100000024010100010000002c0101000100000034010100010000003c01010001000000440101000100000070010100010000008c01010001000000a401010001000000ac010100010000000c0201000100000094020100010000009002010001000000",
+   "executable": false,
+   "name": ".ARM.exidx"
+  },
+  {
+   "addr": 65900,
+   "bytes": "6b65726e656c2062616e6e6572206c69746572616c006469726563742062616e6e6572206c69746572616c0075692062616e6e6572206c69746572616c0077006900640065002000620061006e006e006500720020006c00690074006500720061006c00000000000b00000017000000250000002900000035000000430000004f00000053000000",
+   "executable": false,
+   "name": ".rodata"
+  },
+  {
+   "addr": 131584,
+   "bytes": "781605e3342201e3901220e01eff2fe1791605e3342201e3901220e01eff2fe1df1505e3342201e3901220e01eff2fe104009fe500009fe71eff2fe1b801010004009fe500008fe01eff2fe136fffeff04009fe500009fe71eff2fe1a001010004009fe500009fe71eff2fe194010100010050e30000a0b31eff2fb1021040e2012040e2921182e0012002e2a220b0e16110a0e1010080e0800080e0030040e21eff2fe10a0070e30010a0e10010e0b3782605e3343201e30a0050e3902321c00100a0e11eff2fe10010a0e10000e0e3070051e308009f9500008f90010190971eff2fe1f4fefeff04009fe500008fe01eff2fe1b6fefeff30482de982ca20e0830aa0e1a20580e115ec07e3011020e0ac08a0e14aef47e3b95907e3810780e1375e49e3022020e0a13823e0920e84e0924524e00c0090e0934e25e0820320e08333a0e1a22c83e10110a5e0021021e03088bde800f020e300f020e300f020e30110a0e3020050e31a0000ba050050e31300003a64108fe2012040e2ef2a61f403c0c2e35100c0f2900ba4ee0c0040e0e22864f20c10a0e17340c0f2f00962f2041051e2e42862f2fbffff1ab10960f20c0052e1901b30ee903b10ee930101e00400000a900101e0012040e2020050e30200a0e1faffff8a0100a0e11eff2fe100000000fffffffffefffffffdffffff1eff2fe1",
+   "executable": true,
+   "name": ".text"
+  },
+  {
+   "addr": 197620,
+   "bytes": "6c010100980101000700000000000080",
+   "executable": false,
+   "name": ".data"
+  }
+ ],
+ "spec_version": "1",
+ "target": "armv7-linux-gnueabihf"
+}

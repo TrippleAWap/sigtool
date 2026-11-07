@@ -1,8 +1,9 @@
 """Architecture identifiers, Capstone setup, and container format detection.
 
-Only x86-64 and AArch64 are supported for feature extraction in M1. ARM32 and
-Thumb are detected (so the front-end can report a clean "not yet" error) but
-rejected by :func:`ensure_supported` until M4.
+x86-64 and AArch64 have full normalization. ARM32 images (ELF ``EM_ARM``) are
+extracted with per-address mode: ELF symbol values carry the Thumb bit, so a
+single image can mix ARM and Thumb functions. Container types that are Thumb
+everywhere (PE ``0x01c2``/``0x01c4``) map to ``Arch.THUMB``.
 """
 
 from __future__ import annotations
@@ -46,15 +47,13 @@ class Arch(str, Enum):
         return 4 if self in (Arch.ARM64, Arch.ARM32, Arch.THUMB) else 1
 
 
-FEATURE_ARCHS: Final[tuple[Arch, ...]] = (Arch.X64, Arch.ARM64)
+FEATURE_ARCHS: Final[tuple[Arch, ...]] = (Arch.X64, Arch.ARM64, Arch.ARM32, Arch.THUMB)
 
 
 def ensure_supported(arch: Arch) -> Arch:
-    """Raise unless ``arch`` has a normalization implementation (M1: x64, arm64)."""
+    """Raise unless ``arch`` has a normalization implementation."""
     if arch not in FEATURE_ARCHS:
-        raise UnsupportedArchError(
-            f"{arch.value} feature extraction is not implemented yet (PLAN.md M4)"
-        )
+        raise UnsupportedArchError(f"{arch.value} feature extraction is not implemented")
     return arch
 
 
@@ -131,8 +130,12 @@ def detect_pe(data: bytes) -> Arch:
         raise UnsupportedArchError(
             "32-bit x86 / WOW64 images are unsupported in v1 (do not decode as x64)"
         )
-    if machine in (PE_MACHINE_ARM, PE_MACHINE_THUMB, PE_MACHINE_ARMNT):
+    if machine == PE_MACHINE_ARM:
         return Arch.ARM32
+    if machine in (PE_MACHINE_THUMB, PE_MACHINE_ARMNT):
+        # Windows arm32 images are Thumb-2; the per-address mode override in a
+        # source can still mark individual ARM symbols.
+        return Arch.THUMB
     raise UnsupportedArchError(f"unsupported PE machine 0x{machine:04x}")
 
 

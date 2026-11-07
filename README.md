@@ -15,9 +15,10 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 | Milestone | State |
 |---|---|
 | M0 spec and corpus | corpus complete: spec v1 written, positive corpus with 1.000 symbol coverage, negative corpus built at `-O2` per arch; real-library samples deferred pending the licensing decision |
-| M1 extraction (x64, AArch64) | implemented and passing: bounds agreement 1.00 on x64, 0.94 on arm64 (criterion 0.90) |
+| M1 extraction (x64, AArch64, ARM32/Thumb) | implemented and passing: bounds agreement 1.00 on x64, 0.94 on arm64, 0.98 across arm32 and thumb (criterion 0.90) |
 | M2 generation | core, file CLI, and Windows PID mode implemented; Linux process source pending |
 | M3 validation harness | implemented: reference matcher with hint-free discovery, mandatory self-test, recall/FP harness in `bench.py` with a committed baseline and CI gate, negative-corpus FP scan at 0 hits |
+| M4 cross-arch | implemented: ARM32/Thumb extraction, multi-sample merging (`sigtool merge`), auto-locate (`sigtool locate`); merged cross-arch recall 0.707 same-opt / FP budget unmet — see PLAN §12 |
 
 ARM32/Thumb are detected and rejected with a clear error until M4.
 
@@ -48,12 +49,15 @@ python bench.py --baseline tests/baseline/bench.json  # fail on regression
 python bench.py --save-baseline tests/baseline/bench.json  # update, review diff
 ```
 
-Generate a signature from an image file or a live Windows process:
+Generate a signature from an image file or a live Windows process, merge
+samples of one function, and locate a signature in another binary:
 
 ```bash
 sigtool gen --file corpus/build/x64/O2/loops.elf --addr 0x201340
 sigtool gen --file image.so --module image.so --rva 0x1340 --output fn.yaml
 sigtool gen --pid 1234 --module kernel32.dll --rva 0x1000
+sigtool merge --sample x64.elf:0x1000 --sample arm64.so:0x1340 --name fn
+sigtool locate --signature fn.yaml --file other.so --json matches.json
 ```
 
 PID mode is read-only and Windows-only for now. 32-bit and WOW64 targets exit
@@ -61,19 +65,19 @@ with code `3` instead of being decoded as x64.
 
 The YAML signature goes to stdout (or `--output`); the quality report goes to
 stderr. `--json-report PATH` writes the report as JSON. Exit codes: `0` success,
-`2` usage/input error, `3` unsupported architecture, `4` self-test failure
-(no signature emitted).
+`1` locate found no match, `2` usage/input error, `3` unsupported architecture,
+`4` self-test failure (no signature emitted).
 
-Current harness numbers (x64 and arm64, two source files, clang 18): 102/102
-signatures pass self-test, and zero false positives for 40 strong signatures
-against both unrelated source files and the nine-binary negative corpus.
-Recall is reported per discovery mode: hinted (symbol-table candidates)
-same-build 1.000 / cross-opt 0.427; hint-free (anchor sweep only, as a scanner
-without symbols) same-build 0.088 / cross-opt 0.036. Hint-free is low because
-only about a fifth of signatures carry a searchable code anchor, and arm64
-splits constants across `movz`/`movk` so byte needles never hit there.
-Compiler version shifts hinted cross-build recall by about two points (clang
-22 gives 0.448).
+Current harness numbers (clang 18, three arches plus thumb builds, two source
+files): single-arch signatures pass self-test with zero false positives for all
+strong signatures on every arch. Recall is reported per discovery mode: hinted
+same-build 1.000, hinted cross-opt best on arm32 (0.583), hint-free near zero
+(0.098 same-build) because only about a fifth of signatures carry a searchable
+code anchor. Merged x64+arm64 signatures keep same-arch recall at 1.000 and
+reach 0.707 same-opt on arm32, but they hit unrelated binaries (4/15 strong
+cross-source) because the merged required set is the sample intersection.
+Compiler version moves hinted cross-opt rates by a couple of points. Both
+gaps are tracked in `tests/baseline/bench.json` and analysed in PLAN §12.
 
 CI (`.github/workflows/ci.yml`) runs format, lint, types, the spec-version check,
 the corpus build, pytest, and the baseline regression on Linux, plus the live
@@ -83,10 +87,10 @@ mode (hinted and hint-free).
 ## Layout
 
 ```
-core/       source, arch, normalize, recover, features, score, sigfile, validate, generate, match
+core/       source, arch, normalize, recover, features, score, sigfile, validate, generate, match, merge
 sources/    file (ELF, PE), proc_win (read-only live Windows process); IDA follows
 spec/       signature spec and changelog
 corpus/     build script, C samples, ground truth (binaries ignored)
 tests/      vectors/ (golden), unit, property, live/ (Windows process tests)
-cli.py      front-end: file images and Windows PID mode
+cli.py      front-end: gen, merge, and locate over files and Windows PID mode
 ```

@@ -32,6 +32,22 @@ stays `1`.
 * Confidence tags `single-arch`, `multi-arch`, `low`.
 * Quality report with `strong`, `weak`, and `small` verdicts.
 
+## v1 — M4 cross-arch
+
+* ARM32 and Thumb extraction: per-address mode from the ELF Thumb bit,
+  condition-suffix stripping, `it`-block normalization, `movw`/`movt` and
+  `mvn` materialization, literal-pool resolution with pool cells extending
+  function bounds (SPEC.md §1.3, §2, §3).
+* Multi-sample merging: intersect stable features, demote subset features to
+  optional half weight, stable anchors only, mandatory self-test on every
+  sample (SPEC.md §8).
+* `locate` command semantics: scan a second image or process with an existing
+  signature and report accepted matches, best first.
+
+Not yet specified: joining a 64-bit constant split across two arm32 registers
+(the halves stay separate features), and a data-reference index for string
+candidate discovery (M6).
+
 ## v1 — M3 reference matcher
 
 * Anchor needles per kind, with the searchable encodings and the constants that

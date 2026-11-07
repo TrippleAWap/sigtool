@@ -1,0 +1,759 @@
+{
+ "arch": "thumb",
+ "flags": [
+  "-mthumb"
+ ],
+ "functions": {
+  "banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131624,
+   "entry": 131608,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:1"
+    }
+   ],
+   "loops": 0
+  },
+  "banner_direct": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131640,
+   "entry": 131624,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffeff50"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:1"
+    }
+   ],
+   "loops": 0
+  },
+  "branchy": {
+   "blocks": 8,
+   "degraded": false,
+   "edges": 9,
+   "end": 131782,
+   "entry": 131726,
+   "features": [
+    {
+     "kind": "callee",
+     "value": "compute"
+    },
+    {
+     "kind": "callee",
+     "value": "fixture+0x101aa"
+    },
+    {
+     "kind": "callee",
+     "value": "fixture+0x101be"
+    },
+    {
+     "kind": "callee",
+     "value": "fixture+0x101cc"
+    },
+    {
+     "kind": "cfg",
+     "value": "blocks:6"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:6"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xb"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:2"
+    },
+    {
+     "kind": "ops",
+     "value": "branch:5"
+    },
+    {
+     "kind": "ops",
+     "value": "call:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:2"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:7"
+    }
+   ],
+   "loops": 0
+  },
+  "call_one": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131586,
+   "entry": 131566,
+   "features": [
+    {
+     "kind": "callee",
+     "value": "compute"
+    },
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:3"
+    },
+    {
+     "kind": "ops",
+     "value": "call:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:3"
+    }
+   ],
+   "loops": 0
+  },
+  "call_two": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131606,
+   "entry": 131586,
+   "features": [
+    {
+     "kind": "callee",
+     "value": "compute"
+    },
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x99"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:3"
+    },
+    {
+     "kind": "ops",
+     "value": "call:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:3"
+    }
+   ],
+   "loops": 0
+  },
+  "classify": {
+   "blocks": 4,
+   "degraded": false,
+   "edges": 3,
+   "end": 131876,
+   "entry": 131784,
+   "features": [
+    {
+     "kind": "callee",
+     "value": "fixture+0x1022a"
+    },
+    {
+     "kind": "cfg",
+     "value": "blocks:4"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:3"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:2"
+    },
+    {
+     "kind": "ops",
+     "value": "branch:2"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:6"
+    }
+   ],
+   "loops": 0
+  },
+  "compute": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131566,
+   "entry": 131540,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:3"
+    }
+   ],
+   "loops": 0
+  },
+  "get_counter": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131656,
+   "entry": 131640,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:1"
+    },
+    {
+     "kind": "str",
+     "value": "w: banner literal"
+    }
+   ],
+   "loops": 0
+  },
+  "loop_sum": {
+   "blocks": 6,
+   "degraded": false,
+   "edges": 6,
+   "end": 131726,
+   "entry": 131672,
+   "features": [
+    {
+     "kind": "callee",
+     "value": "fixture+0x10174"
+    },
+    {
+     "kind": "callee",
+     "value": "fixture+0x1017e"
+    },
+    {
+     "kind": "callee",
+     "value": "fixture+0x1018c"
+    },
+    {
+     "kind": "cfg",
+     "value": "blocks:5"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:5"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:1"
+    },
+    {
+     "kind": "const",
+     "value": "0x0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "branch:4"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:7"
+    }
+   ],
+   "loops": 1
+  },
+  "mask_value": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131672,
+   "entry": 131656,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mix": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 132022,
+   "entry": 131892,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x11"
+    },
+    {
+     "kind": "const",
+     "value": "0x15"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0x7f4a7c15"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffff9e3779b9"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:4"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:7"
+    },
+    {
+     "kind": "ops",
+     "value": "move:5"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:3"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:9"
+    }
+   ],
+   "loops": 0
+  },
+  "recurse": {
+   "blocks": 5,
+   "degraded": false,
+   "edges": 5,
+   "end": 132070,
+   "entry": 132022,
+   "features": [
+    {
+     "kind": "callee",
+     "value": "fixture+0x102d2"
+    },
+    {
+     "kind": "callee",
+     "value": "fixture+0x102ec"
+    },
+    {
+     "kind": "callee",
+     "value": "recurse"
+    },
+    {
+     "kind": "cfg",
+     "value": "blocks:5"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:5"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:3"
+    },
+    {
+     "kind": "ops",
+     "value": "branch:3"
+    },
+    {
+     "kind": "ops",
+     "value": "call:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:6"
+    }
+   ],
+   "loops": 0
+  },
+  "wide_banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 131892,
+   "entry": 131876,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffefe7c"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "stack:1"
+    }
+   ],
+   "loops": 0
+  }
+ },
+ "opt": "-O0",
+ "sections": [
+  {
+   "addr": 65780,
+   "bytes": "e000010001000000f200010001000000fe000100010000000c0101000100000014010100010000001c0101000100000024010100010000002c010100010000005a010100010000008c01010001000000e001010001000000e80101000100000062020100010000008a020100010000008802010001000000",
+   "executable": false,
+   "name": ".ARM.exidx"
+  },
+  {
+   "addr": 65900,
+   "bytes": "6b65726e656c2062616e6e6572206c69746572616c006469726563742062616e6e6572206c69746572616c0075692062616e6e6572206c69746572616c0077006900640065002000620061006e006e006500720020006c00690074006500720061006c000000",
+   "executable": false,
+   "name": ".rodata"
+  },
+  {
+   "addr": 131540,
+   "bytes": "80b56f4681b00090009845f2786241f2342100fb012001b080bd80b56f4682b001900198fff7ecff013002b080bd80b56f4682b001900198fff7e2ff993802b080bd00bf80b56f4601487844006880bdca01010080b56f460148784480bd00bf50fffeff80b56f4601487844006880bdb201010080b56f4601487844006880bda601010080b56f4683b00290002001900090ffe70098029988420bdaffe7009800eb4001019808440190ffe7009801300090efe7019803b080bd80b56f4682b0009000980b2805dbffe70098fff798ff01900be0009810f10b0f04dcffe74ff0ff30019002e000980190ffe7019802b080bd00bf80b56f4683b001900198009007281ed80099dfe801f004070a0d101316190b20029018e01720029015e02520029012e0292002900fe0352002900ce04320029009e04f20029006e05320029003e04ff0ff300290ffe7029803b080bd80b56f460148784480bd00bf7cfefeff80b56f4684b00391029001930092009a0198400540ead22302990398584081ea4251029103900298039a400c40eac23300980199584081ea524101910090009a019847f61541c7f64a71a2fb013e47f6b91cc9f6376c02fb0ce200fb012202990398c91850410291039002980399009b019ad20142ea536280eac310514004b080bd80b56f4684b003900398012803dcffe70120029009e0039801900138fff7f0ff0146019848430290ffe7029804b080bd80b56f4680bd",
+   "executable": true,
+   "name": ".text"
+  },
+  {
+   "addr": 197612,
+   "bytes": "6c010100980101000700000000000080",
+   "executable": false,
+   "name": ".data"
+  }
+ ],
+ "spec_version": "1",
+ "target": "armv7-linux-gnueabihf"
+}

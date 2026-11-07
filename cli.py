@@ -1,13 +1,16 @@
 """Command-line front-end for sigtool.
 
-The CLI is thin by contract (AGENTS.md rule 2): it resolves a ``ByteSource`` and
-an address, calls :func:`core.generate.generate`, and formats the result. No
+The CLI is thin by contract (AGENTS.md rule 2): it resolves ``ByteSource``
+objects and addresses, calls :func:`core.generate.generate`,
+:func:`core.merge.merge`, and :func:`core.match.scan`, and formats results. No
 feature, scoring, matching, or serialisation logic lives here.
 
     sigtool gen --file image.elf --addr 0x1000
     sigtool gen --file image.elf --module image.elf --rva 0x1000
     sigtool gen --pid 1234 --addr 0x7ff6_0000_1000
     sigtool gen --pid 1234 --module kernel32.dll --rva 0x1000 --output function.yaml
+    sigtool merge --sample x64.elf:0x1000 --sample arm64.so:0x1340 --name fn
+    sigtool locate --signature fn.yaml --file other.so --json matches.json
 
 The signature YAML goes to stdout (or ``--output``) so it can be piped; the
 quality report goes to stderr. ``--json-report`` also writes the report as JSON.
@@ -18,6 +21,7 @@ target exits with code ``3`` instead of decoding it as x64.
 Exit codes:
 
 * ``0`` success
+* ``1`` locate found no accepted match for the signature
 * ``2`` usage or input error (missing file, bad address, unmapped address, ...)
 * ``3`` unsupported target architecture or mode
 * ``4`` self-test failed, so no signature was emitted (AGENTS.md rule 7)
@@ -35,10 +39,14 @@ from typing import Final
 
 from core.errors import SelfTestError, SigToolError, UnsupportedArchError
 from core.generate import GenerationResult, generate
+from core.match import Match, scan
+from core.merge import MergeSample, merge
+from core.sigfile import Signature
 from core.source import ByteSource, Module
 from sources.file import FileSource
 
 EXIT_OK: Final[int] = 0
+EXIT_NOT_FOUND: Final[int] = 1
 EXIT_ERROR: Final[int] = 2
 EXIT_UNSUPPORTED: Final[int] = 3
 EXIT_SELF_TEST: Final[int] = 4
@@ -53,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "gen":
         return _generate(args)
+    if args.command == "merge":
+        return _merge(args)
+    if args.command == "locate":
+        return _locate(args)
     parser.error(f"unknown command {args.command!r}")
     return EXIT_ERROR
 
@@ -85,6 +97,48 @@ def _parser() -> argparse.ArgumentParser:
     gen.add_argument("--tool", help="provenance only: compiler or tool name")
     gen.add_argument("--output", type=Path, help="write signature YAML here instead of stdout")
     gen.add_argument("--json-report", type=Path, help="write the quality report as JSON")
+
+    combine = commands.add_parser(
+        "merge",
+        help="merge several samples of one function into one signature",
+        description=(
+            "Merge samples of the same function from different builds or "
+            "architectures: stable features stay required, divergent ones are "
+            "demoted to optional. The merged signature must self-test on every "
+            "sample."
+        ),
+    )
+    combine.add_argument(
+        "--sample",
+        action="append",
+        required=True,
+        metavar="FILE:ADDR",
+        help="one sample: image path and function address (repeatable)",
+    )
+    combine.add_argument("--name", help="signature name (default: first sample's symbol)")
+    combine.add_argument("--output", type=Path, help="write signature YAML here instead of stdout")
+    combine.add_argument("--json-report", type=Path, help="write the quality report as JSON")
+
+    find = commands.add_parser(
+        "locate",
+        help="find a signature's function in a second binary or process",
+        description=(
+            "Scan a target with an existing signature (Tier 0 anchors plus "
+            "candidates) and report every accepted match, best first."
+        ),
+    )
+    find.add_argument("--signature", type=Path, required=True, help="signature YAML file")
+    find_target = find.add_mutually_exclusive_group(required=True)
+    find_target.add_argument("--file", type=Path, help="ELF or PE image to scan")
+    find_target.add_argument(
+        "--pid", type=int, metavar="PID", help="live process id to scan (Windows)"
+    )
+    find.add_argument("--json", type=Path, help="write the match list as JSON")
+    find.add_argument(
+        "--yes",
+        action="store_true",
+        help="do not prompt for confirmation of the best match",
+    )
     return parser
 
 
@@ -104,6 +158,103 @@ def _generate(args: argparse.Namespace) -> int:
         _error(str(error))
         return EXIT_ERROR
     return EXIT_OK
+
+
+def _merge(args: argparse.Namespace) -> int:
+    try:
+        samples = [_parse_sample(text) for text in args.sample]
+        result = merge(samples, name=args.name)
+        _write_outputs(samples[0].source, result, args)
+    except UnsupportedArchError as error:
+        _error(f"unsupported target: {error}")
+        return EXIT_UNSUPPORTED
+    except SelfTestError as error:
+        _error(f"self-test failed, refusing to emit a signature: {error}")
+        return EXIT_SELF_TEST
+    except (SigToolError, OSError) as error:
+        _error(str(error))
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+def _locate(args: argparse.Namespace) -> int:
+    try:
+        signature = _load_signature(args.signature)
+        with _open_source(args) as source:
+            matches = scan(source, signature)
+            _print_matches(source, signature, matches, args)
+    except UnsupportedArchError as error:
+        _error(f"unsupported target: {error}")
+        return EXIT_UNSUPPORTED
+    except (SigToolError, OSError) as error:
+        _error(str(error))
+        return EXIT_ERROR
+    return EXIT_OK if matches else EXIT_NOT_FOUND
+
+
+def _parse_sample(text: str) -> MergeSample:
+    """Parse ``FILE:ADDR``; the path may itself contain colons (Windows)."""
+    path_text, separator, addr_text = text.rpartition(":")
+    if not separator or not path_text or not addr_text:
+        raise CliError(f"--sample expects FILE:ADDR, got {text!r}")
+    source = _load_file(Path(path_text))
+    addr = _parse_address(addr_text, "--sample")
+    if not source.is_mapped(addr):
+        raise CliError(f"address 0x{addr:x} is not mapped in {path_text}")
+    return MergeSample(source, addr)
+
+
+def _load_signature(path: Path) -> Signature:
+    if not path.is_file():
+        raise CliError(f"no such signature file: {path}")
+    return Signature.from_yaml(path.read_text(encoding="utf-8"))
+
+
+def _print_matches(
+    source: ByteSource,
+    signature: Signature,
+    matches: tuple[Match, ...],
+    args: argparse.Namespace,
+) -> None:
+    label = source.label_for_address(matches[0].address) if matches else None
+    if args.json is not None:
+        args.json.write_text(
+            json.dumps(
+                {
+                    "signature": signature.name,
+                    "matches": [
+                        {
+                            "address": f"0x{match.address:x}",
+                            "end": f"0x{match.end:x}",
+                            "score": match.score,
+                            "label": source.label_for_address(match.address),
+                            "matched": list(match.matched),
+                        }
+                        for match in matches
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    if not matches:
+        _error(f"no match for signature {signature.name!r} in the target")
+        return
+    print(
+        f"signature {signature.name}  ({signature.signature_id})  "
+        f"threshold {signature.match_threshold}"
+    )
+    for index, match in enumerate(matches, start=1):
+        where = source.label_for_address(match.address) or "unlabelled"
+        print(f"  {index}. 0x{match.address:x} score {match.score:.3f} {where}")
+    if args.yes or not sys.stdin.isatty():
+        return
+    answer = input(f"accept match at 0x{matches[0].address:x} ({label})? [y/N] ")
+    if answer.strip().lower() in ("y", "yes"):
+        print(f"confirmed 0x{matches[0].address:x}")
 
 
 @contextmanager

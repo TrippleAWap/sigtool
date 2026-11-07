@@ -32,7 +32,7 @@ ELF_ET_REL: Final[int] = 1
 
 PE_SECTION_HEADER_SIZE: Final[int] = 40
 
-Bounds = list[tuple[int, int]]
+Bounds = tuple[tuple[int, int], ...]
 SymbolTable = tuple[bytes, bytes]  # (raw symbol entries, string table)
 
 
@@ -45,12 +45,14 @@ class FileSource(ByteSource):
         regions: tuple[Region, ...],
         module: Module,
         function_bounds: tuple[tuple[int, int], ...] = (),
+        thumb_starts: frozenset[int] = frozenset(),
     ) -> None:
         self._arch = arch
         self._regions = tuple(sorted(regions, key=lambda region: region.start))
         self._module = module
         self._bounds = tuple(sorted(function_bounds))
         self._bounds_starts = [start for start, _ in self._bounds]
+        self._thumb_starts = thumb_starts
 
     @classmethod
     def from_path(cls, path: str | Path) -> FileSource:
@@ -61,12 +63,12 @@ class FileSource(ByteSource):
     def from_bytes(cls, data: bytes, name: str = "image") -> FileSource:
         arch = detect(data)
         if data.startswith(b"\x7fELF"):
-            regions, module, bounds = _parse_elf(data, name)
+            regions, module, bounds, thumb_starts = _parse_elf(data, name, arch)
         elif data.startswith(b"MZ"):
-            regions, module, bounds = _parse_pe(data, name)
+            regions, module, bounds, thumb_starts = _parse_pe(data, name, arch)
         else:
             raise SourceFormatError("FileSource supports ELF and PE images only")
-        return cls(arch, regions, module, bounds)
+        return cls(arch, regions, module, bounds, thumb_starts)
 
     @property
     def arch(self) -> Arch:
@@ -113,13 +115,24 @@ class FileSource(ByteSource):
         start, end = self._bounds[index]
         return (start, end) if start <= addr < end else None
 
+    def is_thumb(self, addr: int) -> bool:
+        """Thumb-ness of the enclosing symbol (ARM32 ELF symbols carry the bit)."""
+        if self._arch is Arch.THUMB:
+            return True
+        if not self._thumb_starts:
+            return False
+        index = bisect_right(self._bounds_starts, addr) - 1
+        if index < 0:
+            return False
+        return self._bounds[index][0] in self._thumb_starts
+
 
 # -- ELF ---------------------------------------------------------------------
 
 
 def _parse_elf(
-    data: bytes, name: str
-) -> tuple[tuple[Region, ...], Module, tuple[tuple[int, int], ...]]:
+    data: bytes, name: str, arch: Arch
+) -> tuple[tuple[Region, ...], Module, Bounds, frozenset[int]]:
     if len(data) < 0x34:
         raise SourceFormatError("truncated ELF header")
     elf_class = data[4]
@@ -261,15 +274,25 @@ def _parse_elf(
     functions: dict[int, str] = {}
     exports: dict[str, int] = {}
     bounds: list[tuple[int, int]] = []
+    thumb_starts: set[int] = set()
     for symbol_name, value, info, shndx, size in symbols:
         base = places.get(shndx)
         if base is None:
             continue
         address = base + value if e_type == ELF_ET_REL else value
+        if arch is Arch.ARM32 and address & 1:
+            # ELF ARM symbol values carry the Thumb bit; canonical code
+            # addresses are the byte address, with the mode kept separately.
+            address &= ~1
+            thumb = True
+        else:
+            thumb = False
         if info & 0xF == ELF_STT_FUNC:
             functions.setdefault(address, symbol_name)
             if size > 0:
                 bounds.append((address, address + size))
+                if thumb:
+                    thumb_starts.add(address)
         if info >> 4 in (1, 2):
             exports.setdefault(symbol_name, address)
 
@@ -285,7 +308,7 @@ def _parse_elf(
         functions=functions,
         imports=imports,
     )
-    return tuple(regions), module, tuple(sorted(bounds))
+    return tuple(regions), module, tuple(sorted(bounds)), frozenset(thumb_starts)
 
 
 def _section_bytes(data: bytes, section: dict[str, int]) -> bytes:
@@ -330,8 +353,8 @@ def _cstr(blob: bytes, offset: int) -> str:
 
 
 def _parse_pe(
-    data: bytes, name: str
-) -> tuple[tuple[Region, ...], Module, tuple[tuple[int, int], ...]]:
+    data: bytes, name: str, arch: Arch
+) -> tuple[tuple[Region, ...], Module, Bounds, frozenset[int]]:
     if len(data) < 0x40:
         raise SourceFormatError("truncated DOS header")
     lfanew = struct.unpack_from("<I", data, 0x3C)[0]
@@ -422,7 +445,7 @@ def _parse_pe(
         imports=imports,
     )
     # PE exports carry no size, so there are no symbol bounds to hint recovery.
-    return tuple(regions), module, ()
+    return tuple(regions), module, (), frozenset()
 
 
 def _parse_pe_exports(
