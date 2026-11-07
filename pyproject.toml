@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigtool"
+version = "0.1.0"
+description = "Architecture-independent function signatures for runtime matching"
+requires-python = ">=3.10"
+dependencies = ["capstone>=5.0,<6", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.setuptools]
+packages = ["core", "sources"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+files = ["core", "sources"]
+python_version = "3.10"
+
+[[tool.mypy.overrides]]
+# Capstone ships no py.typed marker; its objects are treated as Any at the boundary.
+module = ["capstone", "capstone.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

@@ -1,0 +1,615 @@
+{
+ "arch": "arm64",
+ "flags": [],
+ "functions": {
+  "banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163252,
+   "entry": 2163240,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "banner_direct": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163264,
+   "entry": 2163252,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "direct banner literal"
+    }
+   ],
+   "loops": 0
+  },
+  "branchy": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163360,
+   "entry": 2163328,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "const",
+     "value": "0xa"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:4"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_one": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163224,
+   "entry": 2163208,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5679"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_two": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163240,
+   "entry": 2163224,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x55df"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "classify": {
+   "blocks": 3,
+   "degraded": false,
+   "edges": 2,
+   "end": 2163392,
+   "entry": 2163360,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:3"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    }
+   ],
+   "loops": 0
+  },
+  "compute": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163208,
+   "entry": 2163192,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "ops",
+     "value": "move:2"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "get_counter": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163276,
+   "entry": 2163264,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "loop_sum": {
+   "blocks": 3,
+   "degraded": false,
+   "edges": 2,
+   "end": 2163328,
+   "entry": 2163288,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:3"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    }
+   ],
+   "loops": 0
+  },
+  "mask_value": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163288,
+   "entry": 2163276,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mix": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163440,
+   "entry": 2163404,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x7f4a7c15"
+    },
+    {
+     "kind": "const",
+     "value": "0x9e3779b900000000"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:3"
+    },
+    {
+     "kind": "ops",
+     "value": "move:4"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "recurse": {
+   "blocks": 9,
+   "degraded": false,
+   "edges": 13,
+   "end": 2163600,
+   "entry": 2163440,
+   "features": [
+    {
+     "kind": "callee",
+     "value": "fixture+0x1021c"
+    },
+    {
+     "kind": "cfg",
+     "value": "blocks:6"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:7"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:2"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0x8"
+    },
+    {
+     "kind": "const",
+     "value": "0x9"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffff8"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "branch:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:4"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:5"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:4"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    },
+    {
+     "kind": "ops",
+     "value": "vector:9"
+    }
+   ],
+   "loops": 2
+  },
+  "wide_banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2163404,
+   "entry": 2163392,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "w:wide banner literal"
+    }
+   ],
+   "loops": 0
+  }
+ },
+ "opt": "-O2",
+ "sections": [
+  {
+   "addr": 2097504,
+   "bytes": "00000000fffffffffefffffffdffffff6b65726e656c2062616e6e6572206c69746572616c006469726563742062616e6e6572206c69746572616c0075692062616e6e6572206c69746572616c0077006900640065002000620061006e006e006500720020006c00690074006500720061006c00000000000b00000017000000250000002900000035000000430000004f00000053000000",
+   "executable": false,
+   "name": ".rodata"
+  },
+  {
+   "addr": 2163192,
+   "bytes": "8846825209cf8a520024081bc0035fd68846825229cf8a520024081bc0035fd688468252e9bb8a520024081bc0035fd68800009000cd41f9c0035fd680ffff9000180691c0035fd68800009000a943b9c0035fd68800009000ad43b9c0035fd608040071eb00005409080051087da99b0804488b0805080b000d0051c0035fd6e0031f2ac0035fd68846825209cf8a521f2800310824081b09a09f5a1f28007100c1891ac0035fd61f1c0071a80000541f2003d568f9f710005960b8c0035fd600008012c0035fd61f2003d540f7f750c0035fd6085401caaa828fd24ae9aff2294448ca2a37cff2eac6f3f228210a9b001d09cac0035fd61f0800716a00005420008052c0035fd61f24007182000054e803002a200080521b000014020c044e88ffff902004004f0359c03d2104004f09040051e404006f2a711d122b711d124284a34e6304006f08000a4b4584a34e409ca04e6b2100714284a44ea19ca14e61ffff54209ca04e3f010a6b0140006e009ca10e0b3c0c0e0c00261e807d0b1ba0000054007d001b1f09007108050051a8ffff54c0035fd6c0035fd6",
+   "executable": true,
+   "name": ".text"
+  },
+  {
+   "addr": 2229144,
+   "bytes": "70012000000000009c012000000000000700000000000080",
+   "executable": false,
+   "name": ".data"
+  }
+ ],
+ "spec_version": "1",
+ "target": "aarch64-linux-gnu"
+}

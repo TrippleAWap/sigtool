@@ -1,0 +1,595 @@
+{
+ "arch": "x64",
+ "flags": [],
+ "functions": {
+  "banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101864,
+   "entry": 2101856,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "banner_direct": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101880,
+   "entry": 2101872,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "direct banner literal"
+    }
+   ],
+   "loops": 0
+  },
+  "branchy": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101982,
+   "entry": 2101952,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "const",
+     "value": "0xb"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffffff6"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_one": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101836,
+   "entry": 2101824,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5679"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_two": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101852,
+   "entry": 2101840,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x55df"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "classify": {
+   "blocks": 3,
+   "degraded": false,
+   "edges": 2,
+   "end": 2102007,
+   "entry": 2101984,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:3"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    }
+   ],
+   "loops": 0
+  },
+  "compute": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101820,
+   "entry": 2101808,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "get_counter": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101895,
+   "entry": 2101888,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "loop_sum": {
+   "blocks": 3,
+   "degraded": false,
+   "edges": 2,
+   "end": 2101949,
+   "entry": 2101920,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:3"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffffffd"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:2"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    }
+   ],
+   "loops": 0
+  },
+  "mask_value": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101911,
+   "entry": 2101904,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mix": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102077,
+   "entry": 2102032,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x9e3779b97f4a7c15"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:5"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "recurse": {
+   "blocks": 8,
+   "degraded": false,
+   "edges": 14,
+   "end": 2102318,
+   "entry": 2102080,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:6"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:8"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:2"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x9"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffffff8"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:3"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:5"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:6"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:6"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:2"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "ops",
+     "value": "vector:11"
+    }
+   ],
+   "loops": 2
+  },
+  "wide_banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102024,
+   "entry": 2102016,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "w:wide banner literal"
+    }
+   ],
+   "loops": 0
+  }
+ },
+ "opt": "-O2",
+ "sections": [
+  {
+   "addr": 2097504,
+   "bytes": "00000000fffffffffefffffffdffffff01000000010000000100000001000000f8fffffff8fffffff8fffffff8fffffffcfffffffcfffffffcfffffffcffffff6b65726e656c2062616e6e6572206c69746572616c006469726563742062616e6e6572206c69746572616c0075692062616e6e6572206c69746572616c0077006900640065002000620061006e006e006500720020006c00690074006500720061006c00000000000b00000017000000250000002900000035000000430000004f00000053000000",
+   "executable": false,
+   "name": ".rodata"
+  },
+  {
+   "addr": 2101808,
+   "bytes": "69c7341200000578560000c30f1f400069c7341200000579560000c30f1f400069c73412000005df550000c30f1f4000488b05d1110000c30f1f840000000000488d053fefffffc30f1f8400000000008b05c2110000c3660f1f8400000000008b05b6110000c3660f1f84000000000085ff7e168d47ff8d4ffe480fafc848d1e901f98d044983c0fdc331c0c30f1f0069cf3412000081c17856000083fff6b8ffffffff0f4dc783ff0b0f4dc1c36690b8ffffffff83ff07770c89f8488d0d15efffff8b0481c3660f1f840000000000488d05d7eeffffc30f1f8400000000004889f148c1e1154831f94889c848c1e8114831f048ba157c4a7fb979379e480fafd04801ca48c1e0074831d0c30f1f00b80100000083ff020f8cdf00000083ff090f82c90000008d4fff89ca83e2f8660f6ec729d7660f70c000660ffe05eeedffff660f6f0df6edffff660f6f150eeeffff660f6f25f6edffff89d0660f6fd9660f6fe8660ffeea660f6ff0660ff4f1660f70c9f5660f70f6e8660f70f8f5660ff4f9660f70ffe8660f6fce660f62cf660f70f5f5660ff4eb660f70dbf5660f70ede8660ff4de660f70f3e8660f6fdd660f62de660ffec483c0f875a3660f70c1f5660f70d3f5660ff4d0660ff4d9660f70c3ee660ff4c3660f70caaa660ff4ca660ff4c8660f7ec839d174100f1f000fafc783ff028d4fff89cf77f3c36690c3",
+   "executable": true,
+   "name": ".text"
+  },
+  {
+   "addr": 2106424,
+   "bytes": "a001200000000000cc012000000000000700000000000080",
+   "executable": false,
+   "name": ".data"
+  }
+ ],
+ "spec_version": "1",
+ "target": "x86_64-linux-gnu"
+}

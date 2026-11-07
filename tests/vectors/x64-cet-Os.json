@@ -1,0 +1,599 @@
+{
+ "arch": "x64-cet",
+ "flags": [
+  "-fcf-protection=full"
+ ],
+ "functions": {
+  "banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102020,
+   "entry": 2102008,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "banner_direct": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102032,
+   "entry": 2102020,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "direct banner literal"
+    }
+   ],
+   "loops": 0
+  },
+  "branchy": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102121,
+   "entry": 2102087,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "const",
+     "value": "0xb"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffffff6"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_one": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101992,
+   "entry": 2101976,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5679"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "call_two": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102008,
+   "entry": 2101992,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x55df"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "classify": {
+   "blocks": 3,
+   "degraded": false,
+   "edges": 2,
+   "end": 2102148,
+   "entry": 2102121,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:3"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x7"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffffffffffff"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    }
+   ],
+   "loops": 0
+  },
+  "compute": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2101976,
+   "entry": 2101960,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "get_counter": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102043,
+   "entry": 2102032,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "loop_sum": {
+   "blocks": 3,
+   "degraded": false,
+   "edges": 2,
+   "end": 2102087,
+   "entry": 2102054,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:3"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:2"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffffffd"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:2"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:1"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:1"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    }
+   ],
+   "loops": 0
+  },
+  "mask_value": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102054,
+   "entry": 2102043,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "load:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "mix": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102209,
+   "entry": 2102160,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x9e3779b97f4a7c15"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:1"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:5"
+    },
+    {
+     "kind": "ops",
+     "value": "move:3"
+    },
+    {
+     "kind": "ops",
+     "value": "mul:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    }
+   ],
+   "loops": 0
+  },
+  "recurse": {
+   "blocks": 5,
+   "degraded": false,
+   "edges": 6,
+   "end": 2102425,
+   "entry": 2102209,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:5"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:5"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:1"
+    },
+    {
+     "kind": "const",
+     "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x2"
+    },
+    {
+     "kind": "const",
+     "value": "0x4"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffffffffffffc"
+    },
+    {
+     "kind": "ops",
+     "value": "arith:5"
+    },
+    {
+     "kind": "ops",
+     "value": "cmp:3"
+    },
+    {
+     "kind": "ops",
+     "value": "cond:3"
+    },
+    {
+     "kind": "ops",
+     "value": "logic:2"
+    },
+    {
+     "kind": "ops",
+     "value": "move:5"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:2"
+    },
+    {
+     "kind": "ops",
+     "value": "vector:11"
+    }
+   ],
+   "loops": 1
+  },
+  "wide_banner": {
+   "blocks": 1,
+   "degraded": false,
+   "edges": 0,
+   "end": 2102160,
+   "entry": 2102148,
+   "features": [
+    {
+     "kind": "cfg",
+     "value": "blocks:1"
+    },
+    {
+     "kind": "cfg",
+     "value": "edges:0"
+    },
+    {
+     "kind": "cfg",
+     "value": "loops:0"
+    },
+    {
+     "kind": "ops",
+     "value": "move:1"
+    },
+    {
+     "kind": "ops",
+     "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "w:wide banner literal"
+    }
+   ],
+   "loops": 0
+  }
+ },
+ "opt": "-Os",
+ "sections": [
+  {
+   "addr": 2097608,
+   "bytes": "040000001000000005000000474e5500020000c0040000000300000000000000",
+   "executable": false,
+   "name": ".note.gnu.property"
+  },
+  {
+   "addr": 2097648,
+   "bytes": "00000000fffffffffefffffffdffffff0000000001000000020000000300000001000000010000000100000001000000fcfffffffcfffffffcfffffffcffffff000000800000008000000080000000806b65726e656c2062616e6e6572206c69746572616c006469726563742062616e6e6572206c69746572616c0075692062616e6e6572206c69746572616c0077006900640065002000620061006e006e006500720020006c00690074006500720061006c00000000000b00000017000000250000002900000035000000430000004f00000053000000",
+   "executable": false,
+   "name": ".rodata"
+  },
+  {
+   "addr": 2101960,
+   "bytes": "f30f1efa69c7341200000578560000c3f30f1efa69c7341200000579560000c3f30f1efa69c73412000005df550000c3f30f1efa488b059d110000c3f30f1efa488d0547efffffc3f30f1efa8b0596110000c3f30f1efa8b058f110000c3f30f1efa85ff7e168d47ff8d4ffe480fafc848d1e901f98d044983c0fdc331c0c3f30f1efa69cf3412000081c17856000083fff6b8ffffffff0f4dc783ff0b0f4dc1c3f30f1efab8ffffffff83ff07770c89f8488d0d28efffff8b0481c3f30f1efa488d05efeeffffc3f30f1efa4889f148c1e1154831f94889c848c1e8114831f048ba157c4a7fb979379e480fafd04801ca48c1e0074831d0c3f30f1efab80100000083ff020f8cc50000008d470283e0fc8d4ffe660f6ec1660f6ecf660f70d900660ffe1dffedffff660f70c000660f6f0d12eeffffb904000000660f6f2515eeffff660f6fd1660f6fcb660ff4ca660f70c9e8660f70eaf5660f70f3f5660ff4f5660f70eee8660f62cd660ffedc89ca83c1fc01c283c2fc83fa0475c5f7d9660f6ed9660f70db00660feb1da7edffff660f6f25cfedffff660fefc4660fefdc660f66d8660fdbd3660fdfd9660febda660f70c3ee660f70cbff660f70d3f5660ff4d1660ff4c3660ff4c2660f7ec0c3f30f1efac3",
+   "executable": true,
+   "name": ".text"
+  },
+  {
+   "addr": 2106528,
+   "bytes": "40022000000000006c022000000000000700000000000080",
+   "executable": false,
+   "name": ".data"
+  }
+ ],
+ "spec_version": "1",
+ "target": "x86_64-linux-gnu"
+}

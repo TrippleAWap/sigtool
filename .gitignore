@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# corpus binaries and ground truth are rebuilt locally, never committed
+corpus/build/
+corpus/*.json
