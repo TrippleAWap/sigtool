@@ -67,3 +67,9 @@ def test_recovered_bounds_match_symbol_sizes() -> None:
     assert agreement >= MIN_AGREEMENT, (
         f"bounds agreement {agreement:.3f} below {MIN_AGREEMENT:.2f}\n" + "\n".join(mismatches[:25])
     )
+
+
+def test_ground_truth_coverage_meets_the_m0_criterion() -> None:
+    truth = load_ground_truth()
+    coverage = float(truth["coverage"])  # type: ignore[index]
+    assert coverage >= 0.95, f"ground-truth coverage {coverage:.3f} below 0.95"

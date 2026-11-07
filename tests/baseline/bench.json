@@ -1,0 +1,147 @@
+{
+  "false_positives": [
+    {
+      "arch": "arm64",
+      "hits": 0,
+      "signatures": 23,
+      "signatures_with_hits": 0
+    },
+    {
+      "arch": "x64",
+      "hits": 0,
+      "signatures": 17,
+      "signatures_with_hits": 0
+    }
+  ],
+  "recall": [
+    {
+      "arch": "arm64",
+      "attempts": 19,
+      "hits": 19,
+      "source_opt": "O0",
+      "target_opt": "O0"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 2,
+      "source_opt": "O0",
+      "target_opt": "O2"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 2,
+      "source_opt": "O0",
+      "target_opt": "Os"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 7,
+      "source_opt": "O2",
+      "target_opt": "O0"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 16,
+      "source_opt": "O2",
+      "target_opt": "O2"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 11,
+      "source_opt": "O2",
+      "target_opt": "Os"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 9,
+      "source_opt": "Os",
+      "target_opt": "O0"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 14,
+      "source_opt": "Os",
+      "target_opt": "O2"
+    },
+    {
+      "arch": "arm64",
+      "attempts": 16,
+      "hits": 16,
+      "source_opt": "Os",
+      "target_opt": "Os"
+    },
+    {
+      "arch": "x64",
+      "attempts": 19,
+      "hits": 19,
+      "source_opt": "O0",
+      "target_opt": "O0"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 2,
+      "source_opt": "O0",
+      "target_opt": "O2"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 2,
+      "source_opt": "O0",
+      "target_opt": "Os"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 4,
+      "source_opt": "O2",
+      "target_opt": "O0"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 16,
+      "source_opt": "O2",
+      "target_opt": "O2"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 10,
+      "source_opt": "O2",
+      "target_opt": "Os"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 5,
+      "source_opt": "Os",
+      "target_opt": "O0"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 14,
+      "source_opt": "Os",
+      "target_opt": "O2"
+    },
+    {
+      "arch": "x64",
+      "attempts": 16,
+      "hits": 16,
+      "source_opt": "Os",
+      "target_opt": "Os"
+    }
+  ],
+  "refused": 0,
+  "signatures": 102,
+  "spec_version": "1"
+}

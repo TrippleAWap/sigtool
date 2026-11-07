@@ -216,7 +216,8 @@ sigtool/
   PLAN.md
 ```
 
-CI: lint, unit and golden tests, corpus regression job (cached binaries), spec-version check.
+CI: lint, unit and golden tests, spec-version check, and a corpus regression job
+that rebuilds the corpus and compares against the committed baseline.
 
 ## 10. Open questions to resolve before M2
 
@@ -309,14 +310,25 @@ Updated during M2.
   that cannot enumerate function starts also cannot self-test a string-only
   signature, and generation refuses rather than guessing.
 - `bench.py` measures recall per arch and optimization level plus false
-  positives. Current run (x64 and arm64, `loops.elf` and `parser.elf`):
+  positives. Current run (x64 and arm64, `loops.elf` and `parser.elf`, clang 18):
   102/102 signatures pass self-test, same-build recall 1.000, cross-build
-  recall 0.448 (86/192), and 0 of 40 strong signatures hit an unrelated
-  binary. The 70 percent cross-opt target in section 6 is **not met**;
-  multi-sample merging in M4 is the planned fix, and thresholds were not
-  loosened to move the number.
-- Remaining M3 work: the negative corpus (still M0), CI wiring, and a
-  hint-free discovery mode (the harness currently uses ELF symbols as
-  candidates, so it measures comparison quality rather than discovery).
+  recall 0.427 (82/192), and 0 of 40 strong signatures hit an unrelated
+  binary. Clang 22 gives 0.448 cross-build, so compiler version moves the
+  number by about two points. The 70 percent cross-opt target in section 6 is
+  **not met**; multi-sample merging in M4 is the planned fix, and thresholds
+  were not loosened to move the number.
+- `bench.py --baseline tests/baseline/bench.json` compares per-arch same-build
+  recall, cross-build recall, false-positive rate, and refusal count against a
+  committed baseline, failing on a drop or FP increase beyond 0.05
+  (`--save-baseline` updates it intentionally). The tolerance covers
+  compiler-version variation; rates are compared instead of raw counts because
+  a different clang changes which functions exist.
+- `.github/workflows/ci.yml` runs format, lint, types, the corpus build, tests,
+  and the baseline regression on Linux, and the live process tests on Windows.
+  `tests/test_spec.py` checks that `SPEC_VERSION`, the hash person string, and
+  the written spec and changelog agree.
+- Remaining M3 work: the negative corpus (still M0) and a hint-free discovery
+  mode (the harness currently uses ELF symbols as candidates, so it measures
+  comparison quality rather than discovery).
 
 **Not started:** M4 onward.

@@ -63,6 +63,8 @@ python -m mypy core sources         # type check
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld)
 python corpus/build.py              # rebuild corpus + ground truth (clang + ld.lld)
 python bench.py                     # corpus recall/FP report (M3)
+python bench.py --baseline tests/baseline/bench.json  # fail on regression
+python bench.py --save-baseline tests/baseline/bench.json  # update baseline, review diff
 sigtool gen --file IMAGE --addr A   # generate a signature from an ELF/PE image
 sigtool gen --file IMAGE --module M --rva R  # module+rva addressing
 sigtool gen --pid P --addr A        # generate a signature from a live Windows process (read-only)
@@ -77,7 +79,8 @@ commit the vectors, never the corpus binaries.
 
 - **Golden vectors** (`tests/vectors/`): bytes in, feature records out, per architecture. Never hand-edit; regenerate with `python tests/vectors/generate.py` and review the diff. A vector change must be justified in the PR description. Vectors are generated from real clang + lld output (x64 and arm64 at -O0/-O2/-Os, plus CET and PAC variants), not hand-written snippets.
 - **Property tests:** normalization is idempotent; the same code at two ASLR bases yields identical features; random bytes never crash recovery.
-- **Corpus regression:** recall and false-positive numbers are compared against the committed baseline. A drop beyond tolerance fails CI. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint, and requires at least 0.90 agreement (M1 exit criterion).
+- **Corpus regression:** recall and false-positive numbers are compared against `tests/baseline/bench.json` with a 0.05 tolerance (compiler versions move cross-build rates by about 0.02); a drop or an FP increase fails `bench.py --baseline` and CI. Update the baseline only for an intentional improvement, with `--save-baseline`, and review the diff. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint, and requires at least 0.90 agreement (M1 exit criterion); it also checks ground-truth coverage against the M0 0.95 criterion.
+- **Spec version check:** `tests/test_spec.py` asserts that `SPEC_VERSION`, `HASH_PERSON`, `spec/SPEC.md`, and `spec/CHANGELOG.md` agree.
 - **Live tests:** scripted target processes with known functions, including a hooked function and an injected region. These need a real or QEMU user-mode host for each architecture.
 - New normalization rules need a vector from at least one real compiler output, not just a hand-written snippet.
 
@@ -111,11 +114,15 @@ point; front-ends must not recombine scoring and serialisation themselves.
 M3 core is implemented: `core/match.py` is the reference matcher (anchor
 needles, candidate starts, weighted comparison) and `generate` now self-tests
 every signature before returning it, raising `SelfTestError` instead of
-emitting one it cannot re-find. `bench.py` reports recall and false positives.
-`cli.py` is the front-end (`gen --file ...` or `gen --pid ...` with `--addr` or
-`--module ... --rva`); it emits YAML on stdout plus a quality report on stderr.
-`sources/proc_win.py` is the read-only Windows process source; Linux PID mode
-and the corpus/negative-corpus CI job are still pending.
+emitting one it cannot re-find. `bench.py` reports recall and false positives
+and compares against `tests/baseline/bench.json` (`--baseline`, 0.02 tolerance;
+`--save-baseline` to update intentionally). `.github/workflows/ci.yml` runs
+lint, types, the spec-version check, the corpus build and regression on Linux,
+plus the live PID-mode tests on Windows. `cli.py` is the front-end
+(`gen --file ...` or `gen --pid ...` with `--addr` or `--module ... --rva`);
+it emits YAML on stdout plus a quality report on stderr. `sources/proc_win.py`
+is the read-only Windows process source; Linux PID mode, the negative corpus,
+and hint-free discovery are still pending.
 See `PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)

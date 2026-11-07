@@ -8,6 +8,13 @@ Run after ``python corpus/build.py``:
 
     python bench.py
     python bench.py --json corpus/report.json
+    python bench.py --baseline tests/baseline/bench.json
+    python bench.py --save-baseline tests/baseline/bench.json
+
+The baseline is the compact metrics document written by ``--save-baseline``;
+``--baseline`` fails when per-arch recall drops or false positives rise beyond
+``--tolerance``. Rates are compared rather than counts because a different clang
+rebuild changes which functions exist.
 
 The negative corpus planned in M0 does not exist yet, so false positives are
 measured against corpus binaries built from other source files. Reported
@@ -27,9 +34,14 @@ from core.errors import SigToolError
 from core.generate import generate
 from core.match import scan
 from core.sigfile import Signature
+from core.spec import SPEC_VERSION
 from sources.file import FileSource
 
 DEFAULT_CORPUS = Path("corpus/build")
+# The corpus is rebuilt by whichever clang CI provides, so cross-build rates move
+# a little between compiler versions (clang 18 vs 22 differs by about 0.02 here).
+# Five points still catches a real regression without pinning a toolchain.
+DEFAULT_TOLERANCE = 0.05
 SUPPORTED_ARCHES = ("x64", "arm64")
 
 
@@ -78,6 +90,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--arch", action="append", choices=SUPPORTED_ARCHES, help="limit to one arch"
     )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help="compare recall and false positives against a saved baseline",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        type=Path,
+        default=None,
+        help="write a compact baseline for later --baseline comparisons",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=DEFAULT_TOLERANCE,
+        help=f"allowed recall drop / false-positive increase (default {DEFAULT_TOLERANCE})",
+    )
     args = parser.parse_args(argv)
 
     binaries = _load_ground_truth(args.corpus)
@@ -97,6 +127,21 @@ def main(argv: list[str] | None = None) -> int:
 
     _report(samples, refused, recall, false_positives)
 
+    if args.save_baseline is not None:
+        _save_baseline(args.save_baseline, len(samples), refused, recall, false_positives)
+        print(f"\nwrote baseline {args.save_baseline}")
+
+    failures: list[str] = []
+    if args.baseline is not None:
+        failures = _compare(args.baseline, refused, recall, false_positives, args.tolerance)
+        print()
+        if failures:
+            print(f"baseline comparison: FAILED ({args.baseline})")
+            for failure in failures:
+                print(f"  {failure}")
+        else:
+            print(f"baseline comparison: OK within {args.tolerance:.2f} ({args.baseline})")
+
     if args.json is not None:
         args.json.write_text(
             json.dumps(
@@ -113,25 +158,8 @@ def main(argv: list[str] | None = None) -> int:
                         for sample in samples
                     ],
                     "refused": refused,
-                    "recall": [
-                        {
-                            "arch": cell.arch,
-                            "source_opt": cell.source_opt,
-                            "target_opt": cell.target_opt,
-                            "hits": cell.hits,
-                            "attempts": cell.attempts,
-                        }
-                        for cell in recall
-                    ],
-                    "false_positives": [
-                        {
-                            "arch": cell.arch,
-                            "signatures": cell.signatures,
-                            "signatures_with_hits": cell.signatures_with_hits,
-                            "hits": cell.hits,
-                        }
-                        for cell in false_positives
-                    ],
+                    "recall": _recall_document(recall),
+                    "false_positives": _false_positive_document(false_positives),
                 },
                 indent=2,
                 sort_keys=True,
@@ -140,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
 
-    return 1 if refused else 0
+    return 1 if refused or failures else 0
 
 
 # -- corpus loading ----------------------------------------------------------
@@ -284,6 +312,184 @@ def _kind(path: str) -> tuple[str, str, str]:
 
 def _scan_addresses(signature: Signature, source: FileSource) -> tuple[int, ...]:
     return tuple(match.address for match in scan(source, signature))
+
+
+# -- baselines ---------------------------------------------------------------
+
+
+def _save_baseline(
+    path: Path,
+    signatures: int,
+    refused: int,
+    recall: list[RecallCell],
+    false_positives: list[FalsePositiveCell],
+) -> None:
+    """Write the compact metrics that :func:`_compare` reads.
+
+    Sample-level detail belongs in ``--json`` output; a baseline is a reviewable
+    set of numbers, so signature ids and file paths stay out of it.
+    """
+    document = {
+        "spec_version": SPEC_VERSION,
+        "signatures": signatures,
+        "refused": refused,
+        "recall": _recall_document(recall),
+        "false_positives": _false_positive_document(false_positives),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _compare(
+    path: Path,
+    refused: int,
+    recall: list[RecallCell],
+    false_positives: list[FalsePositiveCell],
+    tolerance: float,
+) -> list[str]:
+    """Return the regressions that exceed ``tolerance``.
+
+    Rates are compared rather than raw counts because rebuilding the corpus with
+    a different clang can legitimately change which functions exist.
+    """
+    if not path.exists():
+        return [f"no baseline file at {path}"]
+    try:
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return [f"could not read baseline {path}: {error}"]
+    if not isinstance(baseline, dict):
+        return [f"baseline {path} is not a JSON object"]
+
+    version = str(baseline.get("spec_version", ""))
+    if version != SPEC_VERSION:
+        return [f"baseline spec version {version!r} is not {SPEC_VERSION!r}"]
+
+    baseline_recall = _read_recall(baseline.get("recall"))
+    baseline_fp = _read_false_positives(baseline.get("false_positives"))
+    if baseline_recall is None or baseline_fp is None:
+        return [f"baseline {path} has no recall or false_positives list"]
+
+    failures: list[str] = []
+    base_refused = _as_int(baseline.get("refused"))
+    if refused > base_refused:
+        failures.append(f"self-test refusals {refused} > baseline {base_refused}")
+
+    baseline_arches = {cell.arch for cell in baseline_recall}
+    current_arches = {cell.arch for cell in recall}
+    for arch in sorted(baseline_arches - current_arches):
+        failures.append(f"{arch}: missing from the current run")
+    for arch in sorted(baseline_arches & current_arches):
+        for label, same_build in (("same-build", True), ("cross-build", False)):
+            base = _recall_rate(baseline_recall, arch, same_build)
+            current = _recall_rate(recall, arch, same_build)
+            if base is None:
+                continue
+            if current is None:
+                failures.append(f"{arch} {label} recall: no attempts in the current run")
+            elif current + tolerance < base:
+                failures.append(
+                    f"{arch} {label} recall {current:.3f} < baseline {base:.3f} - {tolerance:.2f}"
+                )
+        base_fp_rate = _fp_rate(baseline_fp, arch)
+        current_fp_rate = _fp_rate(false_positives, arch)
+        if base_fp_rate is None:
+            continue
+        if current_fp_rate is None:
+            failures.append(f"{arch} false positives: no strong signatures in the current run")
+        elif current_fp_rate > base_fp_rate + tolerance:
+            failures.append(
+                f"{arch} false-positive rate {current_fp_rate:.3f} > "
+                f"baseline {base_fp_rate:.3f} + {tolerance:.2f}"
+            )
+    return failures
+
+
+def _recall_document(cells: list[RecallCell]) -> list[dict[str, object]]:
+    return [
+        {
+            "arch": cell.arch,
+            "source_opt": cell.source_opt,
+            "target_opt": cell.target_opt,
+            "hits": cell.hits,
+            "attempts": cell.attempts,
+        }
+        for cell in cells
+    ]
+
+
+def _false_positive_document(cells: list[FalsePositiveCell]) -> list[dict[str, object]]:
+    return [
+        {
+            "arch": cell.arch,
+            "signatures": cell.signatures,
+            "signatures_with_hits": cell.signatures_with_hits,
+            "hits": cell.hits,
+        }
+        for cell in cells
+    ]
+
+
+def _read_recall(value: object) -> list[RecallCell] | None:
+    if not isinstance(value, list):
+        return None
+    cells: list[RecallCell] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        cells.append(
+            RecallCell(
+                str(item.get("arch", "")),
+                str(item.get("source_opt", "")),
+                str(item.get("target_opt", "")),
+                _as_int(item.get("hits")),
+                _as_int(item.get("attempts")),
+            )
+        )
+    return cells
+
+
+def _read_false_positives(value: object) -> list[FalsePositiveCell] | None:
+    if not isinstance(value, list):
+        return None
+    cells: list[FalsePositiveCell] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        cells.append(
+            FalsePositiveCell(
+                str(item.get("arch", "")),
+                _as_int(item.get("signatures")),
+                _as_int(item.get("signatures_with_hits")),
+                _as_int(item.get("hits")),
+            )
+        )
+    return cells
+
+
+def _as_int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _recall_rate(cells: list[RecallCell], arch: str, same_build: bool) -> float | None:
+    selected = [
+        cell
+        for cell in cells
+        if cell.arch == arch and (cell.source_opt == cell.target_opt) == same_build
+    ]
+    attempts = sum(cell.attempts for cell in selected)
+    return sum(cell.hits for cell in selected) / attempts if attempts else None
+
+
+def _fp_rate(cells: list[FalsePositiveCell], arch: str) -> float | None:
+    selected = [cell for cell in cells if cell.arch == arch]
+    signatures = sum(cell.signatures for cell in selected)
+    if not signatures:
+        return None
+    return sum(cell.signatures_with_hits for cell in selected) / signatures
 
 
 # -- reporting ---------------------------------------------------------------
