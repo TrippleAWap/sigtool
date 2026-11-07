@@ -122,27 +122,114 @@ levels, and architectures.
 * Python's `hash()` is never used for persisted data.
 * The hash is used for over-long string values and, from M2, for signature ids.
 
-## 7. Signature document (M2)
+## 7. Signature document
+
+Generation produces one YAML document per function (`core/sigfile.py`). The
+canonical YAML text is the signature's identity: its BLAKE2b-16 digest is the
+`signature_id`, so the byte form must stay stable.
 
 ```yaml
-spec_version: 1
+spec_version: '1'
 name: parse_record
-arch: [x64, arm64]
-confidence: multi-arch
-anchors: [str:record magic mismatch, const:0x52454344]
+confidence: single-arch
+anchors:
+- str:record magic mismatch
+- const:0x52454344
+thresholds:
+  match: 0.75
+  min_distinct: 2
 features:
-  - {kind: str, value: "record magic mismatch", required: true, weight: 0.9}
-  - {kind: callee, value: zlib!crc32, required: true, weight: 0.7}
-threshold: 0.75
-min_distinct: 4
+- kind: const
+  value: '0x52454344'
+  weight: 0.7
+  required: true
+- kind: str
+  value: record magic mismatch
+  weight: 1.263
+  required: true
 provenance:
-  samples:
-    - {arch: x64, module: fixture.exe, rva: 0x1200, opt: O2}
+- arch: x64
+  module: fixture
+  rva: '0x1200'
+  opt: O2
+  tool: clang 22.1.5
 ```
 
+Rules:
+
+* Field order is fixed as above; `features` are sorted by `(kind, value)` and
+  anchors by descending weight, then `(kind, value)`.
+* `spec_version` is a string and must equal `core.spec.SPEC_VERSION`; a reader
+  rejects any other value rather than guessing.
+* `arch` is not a top-level list. One document describes one sample; multiple
+  architectures are combined by merging provenance and promoting `confidence`
+  to `multi-arch` (M3).
+* `module` is a file name, never a path, and `rva` is relative to that module.
+  No absolute address from the target process may appear anywhere in the YAML.
+* `opt` and `tool` are provenance only. They never influence features, weights,
+  thresholds, or identity.
+* Weights are rounded to three decimals and never reach zero (floor `0.001`).
+
+### Weights
+
+`weight = base(kind) * rarity(value) * idf(key)`, where `idf` defaults to 1.0
+unless a reference corpus is supplied (`core.score.build_idf`).
+
+| kind | base | anchors | required |
+| --- | --- | --- | --- |
+| `str` | 1.0 | yes | yes |
+| `callee` | 0.9 | yes | yes |
+| `const` | 0.7 | yes | yes |
+| `cfg` | 0.25 | no | no |
+| `ops` | 0.15 | no | no |
+
+Rarity multipliers: strings get `1 + min(0.5, len/80)` because longer literals
+are rarer and survive edits; constants below `0x100` get `0.6` because small
+immediates are ubiquitous; everything else gets `1.0`. IDF is
+`ln((N+1)/(df+1)) + 1` over a reference corpus, so common features stay near 1.0
+and rare ones are boosted.
+
+Shape features (`cfg`, `ops`) are always optional. A bucket match is common and
+must never carry a signature on its own.
+
+### Anchors and thresholds
+
+Anchors are the heaviest data features (`str`, `const`, `callee`), at most four.
+They are the Tier 0 prefilter, so the required weight and the threshold both
+depend on how many exist:
+
+| anchors | `thresholds.match` |
+| --- | --- |
+| 2 or more | 0.75 |
+| 1 | 0.85 |
+| 0 | 0.95 |
+
+`min_distinct = clamp(required_count, 1, 3)`: a match must satisfy that many
+distinct required features. Capping at three preserves recall on edited code.
+
+### Confidence
+
+`confidence` is `low` when the function is small (at most 12 instructions) or
+has no anchors; otherwise it is `single-arch` until M3 merges a second
+architecture, then `multi-arch`. Low-confidence signatures are still emitted
+and rely on neighbour context (§8).
+
+### Quality report
+
+`core/validate.py` reports what is measurable without a matcher:
+
+* `strong` — at least 2 anchors, 2 data features, 2 different data kinds, and
+  complete recovery.
+* `small` — at most 12 instructions; match with neighbour context.
+* `weak` — everything else. Notes name the specific deficit (no anchors, one
+  anchor, single feature kind, partial recovery, low confidence).
+
+The report is advisory generation-time information; it is not stored in the
+signature and cannot change it. Self-test against the matcher arrives with M3.
+
 Every document carries `spec_version`. Changing feature semantics,
-canonicalization, buckets, or hashing requires a version bump and a changelog
-entry.
+canonicalization, buckets, hashing, weights, or thresholds requires a version
+bump and a changelog entry.
 
 ## 8. Matching tiers (M3/M6)
 

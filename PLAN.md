@@ -233,7 +233,7 @@ About 12-14 weeks to a working generator, IDA plugin, and reference scanner for 
 
 ## 12. Implementation status
 
-Updated at the start of M2.
+Updated during M2.
 
 **M0 — started.**
 
@@ -263,4 +263,22 @@ Updated at the start of M2.
 - Property tests cover ASLR invariance, normalization idempotence/determinism,
   and hostile-byte recovery.
 
-**Not started:** M2 (score, sigfile, CLI, process sources), M3 onward.
+**M2 — implemented for the core (no front-end yet).**
+
+- `core/score.py` assigns base weights per kind, string and constant rarity
+  multipliers, and optional IDF from a reference corpus; it selects up to four
+  data anchors and derives match thresholds and `min_distinct`.
+- `core/sigfile.py` holds the validated document, canonical YAML, and a
+  BLAKE2b identity over that text. `core/validate.py` produces the quality
+  report (`strong` / `weak` / `small`).
+- `core/generate.py` is the single entry point: source plus address in,
+  signature and report out. Front-ends must call it rather than recombine the
+  pieces.
+- Sample output for `collatz_length` (x64, `-O2`) is `weak`: it has only two
+  constants and no strings or callees. That is the honest verdict, not a bug —
+  shape features are optional and cannot anchor.
+- Not done in M2: process sources (the first-OS decision in section 10 is still
+  open), the CLI, and self-test. Self-test needs the M3 matcher, so a generated
+  signature is currently checked structurally and by round-trip only.
+
+**Not started:** M3 onward.

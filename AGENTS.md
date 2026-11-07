@@ -63,7 +63,8 @@ python -m mypy core sources         # type check
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld)
 python corpus/build.py              # rebuild corpus + ground truth (clang + ld.lld)
 python -m sigtool.bench             # corpus recall/FP report (M3)
-sigtool gen --pid P --addr A        # generate a signature from a live process (M2)
+sigtool gen --pid P --addr A        # generate a signature from a live process (M2, CLI pending)
+python -c "from core.generate import generate"  # library use; front-ends call this
 ```
 
 `tests/vectors/*.json` and `corpus/build/` are generated, not hand-written.
@@ -99,8 +100,13 @@ commit the vectors, never the corpus binaries.
 M1 is implemented for x64 and AArch64: `core/source.py`, `core/arch.py`,
 `core/normalize.py`, `core/recover.py`, `core/features.py`, and
 `sources/file.py` (ELF and PE). ARM32/Thumb are detected but rejected with
-`UnsupportedArchError` until M4. Score, sigfile, validate, match, the CLI, and
-process sources are M2/M3 work and do not exist yet. See `PLAN.md` section 12.
+`UnsupportedArchError` until M4.
+
+M2 core is implemented: `core/score.py`, `core/sigfile.py`, `core/validate.py`,
+and `core/generate.py`. `generate(source, addr)` is the single generation entry
+point; front-ends must not recombine scoring and serialisation themselves.
+`core/match.py`, the CLI, and process sources are still M2/M3 work and do not
+exist yet. See `PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)
 

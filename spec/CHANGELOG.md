@@ -14,5 +14,22 @@ Initial spec, implementing PLAN.md section 4 for x86-64 and AArch64.
 * BLAKE2b-16 with `person="sigtool.v1"` for hashed values.
 * Bounded recovery budgets and the tail-call rule.
 
-Not yet specified: signature YAML fields beyond the outline in SPEC.md §7,
-weights and thresholds (M2), and match thresholds per tier (M3).
+## v1 — M2 scoring and signature document
+
+Adds the generation-time half of the format. Extraction is unchanged, so
+feature records, golden vectors, and bounds are unaffected and `SPEC_VERSION`
+stays `1`.
+
+* Fixed field order for the signature document (SPEC.md §7), canonical YAML as
+  the identity, and a strict reader that rejects a foreign `spec_version`,
+  unknown kinds, duplicate features, unknown anchors, and path-like module
+  names.
+* Base weights per kind, string and constant rarity multipliers, and optional
+  corpus IDF; shape features are optional and never anchors.
+* Anchor selection (up to four data features), tier-dependent match thresholds
+  (0.75 with two or more anchors, 0.85 with one, 0.95 with none), and
+  `min_distinct` clamped to 1–3.
+* Confidence tags `single-arch`, `multi-arch`, `low`.
+* Quality report with `strong`, `weak`, and `small` verdicts.
+
+Not yet specified: `multi-arch` merging and per-tier match thresholds (M3).

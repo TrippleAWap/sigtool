@@ -16,7 +16,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 |---|---|
 | M0 spec and corpus | started: spec v1 written, corpus build script and samples present |
 | M1 extraction (x64, AArch64) | implemented and passing: bounds agreement 1.00 on x64, 0.94 on arm64 (criterion 0.90) |
-| M2 generation and CLI | not started |
+| M2 generation | core implemented: weighted deterministic YAML plus quality report; CLI and process sources pending |
 | M3 validation harness | not started |
 
 ARM32/Thumb are detected and rejected with a clear error until M4.
@@ -47,7 +47,8 @@ pytest tests/test_corpus_bounds.py
 ## Layout
 
 ```
-core/       source, arch, normalize, recover, features (score/sigfile/match land in M2/M3)
+core/       source, arch, normalize, recover, features, score, sigfile, validate, generate
+            (match lands in M3)
 sources/    file (ELF, PE); live-process and IDA sources follow
 spec/       signature spec and changelog
 corpus/     build script, C samples, ground truth (binaries ignored)
