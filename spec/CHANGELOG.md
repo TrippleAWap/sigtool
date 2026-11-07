@@ -44,9 +44,33 @@ stays `1`.
 * `locate` command semantics: scan a second image or process with an existing
   signature and report accepted matches, best first.
 
-Not yet specified: joining a 64-bit constant split across two arm32 registers
-(the halves stay separate features), and a data-reference index for string
-candidate discovery (M6).
+## v1 — M6 reference scanner
+
+* Tier 1 rate-limiting: `RecoveryBudget(remaining=N)` shared across all signatures
+  in one scan pass; Tier 0 is un-budgeted.
+* `ReferenceIndex`: per-region executable sweep (bounded at 200 K instructions
+  and 4096 resyncs per index lifetime, global budget) recording data-address to
+  referencing-instruction map so string anchors become candidates through the
+  code that uses them. Changed regions re-index subtract their old count before
+  adding the new one.
+* Page hashing (CRC-32 over 4 KiB pages): unchanged regions skip Tier 0 and
+  Tier 1 entirely on later passes. Private-memory regions are scanned first,
+  then changed image regions, then untouched ones.
+* Signature identities (`signature_id`) are pre-computed once at construction
+  rather than serialized per lookup; a skipped incremental pass costs fractions
+  of a millisecond instead of tens of milliseconds.
+* `_candidate_starts` now ranks exact hint starts first and swept starts
+  ascending-by-address (prologue-first), reducing wasted recoveries on
+  mid-function candidates.
+* Self-test falls back to index-based discovery for string-only signatures when
+  neither anchors nor known function starts can reach the target.
+
+Measured (Python reference, Windows x64 interpreter, 44 MiB address space, 138
+regions, 16 signatures): full pass 98 s CPU / 0.83 s wall, 200 K indexed
+instructions (truncated); second pass 16 ms wall with page hashing alone. The
+corpus profile shows the dominant hot spot is Capstone decode inside
+`ReferenceIndex.index_region`, not candidate recovery. The native port (M7) is
+the planned follow-on.
 
 ## v1 — M3 reference matcher
 

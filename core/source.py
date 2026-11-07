@@ -175,7 +175,25 @@ class ByteSource(abc.ABC):
         return bool(region and region.executable)
 
     def name_for_address(self, addr: int) -> str | None:
-        """Resolve a symbol defined at ``addr`` across all modules."""
+        """Resolve a symbol defined at ``addr`` across all modules.
+
+        The result is memoized per source: sources are static views of one
+        snapshot, and recovery resolves names for every candidate (the M6
+        per-module export cache), so the repeated module walk would dominate
+        scan time.
+        """
+        cache = getattr(self, "_name_cache", None)
+        if cache is None:
+            cache = {}
+            self._name_cache = cache
+        if addr in cache:
+            cached = cache[addr]
+            return cached if cached is None or isinstance(cached, str) else None
+        name = self._name_for_address(addr)
+        cache[addr] = name
+        return name
+
+    def _name_for_address(self, addr: int) -> str | None:
         for module in self.modules():
             if module.contains(addr):
                 name = module.name_at(addr)

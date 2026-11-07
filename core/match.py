@@ -22,7 +22,7 @@ used as candidates when the source can enumerate them.
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -38,6 +38,16 @@ MAX_CANDIDATE_STARTS: Final[int] = 256
 MAX_MATCHES: Final[int] = 32
 BACKWARD_SWEEP_BYTES: Final[int] = 512
 SCORE_DECIMALS: Final[int] = 6
+
+# Tier 1 rate limit for the runtime scanner (M6): candidate recoveries allowed
+# per pass. Tier 0 needle search is never budgeted.
+DEFAULT_MAX_RECOVERIES: Final[int] = 4_096
+
+# Reference-index budgets: a linear sweep indexes whole regions at once, so the
+# instruction count must be bounded (AGENTS.md rule 8), and a run of
+# undecodable bytes must not cost one resync per byte.
+MAX_INDEX_INSTRUCTIONS: Final[int] = 200_000
+MAX_INDEX_RESYNCS: Final[int] = 4_096
 
 # One- and two-byte immediates occur everywhere; searching for them produces
 # noise without narrowing anything, so they are not used as needles.
@@ -140,6 +150,7 @@ def scan(
     limits: RecoveryLimits | None = None,
     max_candidates: int = MAX_CANDIDATE_STARTS,
     hints: bool = True,
+    index: ReferenceIndex | None = None,
 ) -> tuple[Match, ...]:
     """Find accepted matches for ``signature`` in ``source``, best first.
 
@@ -147,11 +158,58 @@ def scan(
     front-end bounds are ignored, so candidates come only from anchor hits and
     the bounded backward sweep. That is how a scanner sees memory without
     symbols (M6), and the harness measures recall both ways so comparison
-    quality and discovery stay separate numbers.
+    quality and discovery stay separate numbers. ``index`` adds the
+    data-reference index, which turns string-anchor hits into candidates.
     """
     hits = _anchor_hits(source, signature)
+    return scan_candidates(
+        source,
+        signature,
+        hits,
+        limits=limits,
+        max_candidates=max_candidates,
+        hints=hints,
+        index=index,
+    )
+
+
+@dataclass(slots=True)
+class RecoveryBudget:
+    """Tier 1 rate limit: candidate recoveries still allowed (M6 budgeting).
+
+    Tier 0 anchor search always runs; only the expensive recover-and-compare
+    step consumes the budget, so a scan degrades to fewer candidates instead of
+    overrunning its cost envelope.
+    """
+
+    remaining: int = DEFAULT_MAX_RECOVERIES
+
+
+def scan_candidates(
+    source: ByteSource,
+    signature: Signature,
+    hits: Sequence[tuple[int, str]],
+    *,
+    limits: RecoveryLimits | None = None,
+    max_candidates: int = MAX_CANDIDATE_STARTS,
+    hints: bool = True,
+    index: ReferenceIndex | None = None,
+    budget: RecoveryBudget | None = None,
+) -> tuple[Match, ...]:
+    """Match one signature from precomputed Tier 0 anchor hits.
+
+    The scanner calls this with page-incremental hits so unchanged pages are
+    never searched twice; :func:`scan` is the region-granular special case.
+    ``budget`` rate-limits the recover-and-compare step across signatures.
+    """
     matches: list[Match] = []
-    for start in _candidate_starts(source, hits, max_candidates=max_candidates, use_hints=hints):
+    for start in _candidate_starts(
+        source, hits, max_candidates=max_candidates, use_hints=hints, index=index
+    ):
+        if budget is not None:
+            if budget.remaining <= 0:
+                break
+            budget.remaining -= 1
         try:
             recovered = recover(source, start, limits=limits, hints=hints)
         except DecodeError:
@@ -168,6 +226,87 @@ def scan(
             )
     matches.sort(key=lambda match: (-match.score, match.address))
     return _dedupe(matches)[:MAX_MATCHES]
+
+
+class ReferenceIndex:
+    """Data-address to referencing-instruction map over executable regions.
+
+    String anchors can only rank candidates: their bytes live in data pages, so
+    nothing in Tier 0 points at the code that uses them. The index closes that
+    gap by sweeping each executable region once (bounded, with resync) and
+    recording which instructions reference which data addresses. A string hit
+    then becomes a candidate through the instructions that reference it.
+
+    The instruction budget is **global for the index's lifetime**, not per
+    region: a large address space is indexed incrementally across passes, and
+    ``truncated`` reports when the budget ran out. The map is per-region so a
+    runtime scanner re-indexes only regions that changed.
+    """
+
+    def __init__(self, *, max_instructions: int = MAX_INDEX_INSTRUCTIONS) -> None:
+        self._max_instructions = max_instructions
+        self._by_region: dict[int, dict[int, tuple[int, ...]]] = {}
+        self._region_counts: dict[int, int] = {}
+        self._merged: dict[int, tuple[int, ...]] = {}
+        self.instructions = 0
+        self.truncated = False
+
+    def referencers(self, addr: int) -> tuple[int, ...]:
+        """Instruction addresses that reference ``addr``, sorted."""
+        return self._merged.get(addr, ())
+
+    def index_region(self, source: ByteSource, region: Region) -> int:
+        """(Re)index one executable region; returns the instructions indexed."""
+        self._by_region.pop(region.start, None)
+        self.instructions -= self._region_counts.pop(region.start, 0)
+        if not region.executable:
+            self._rebuild_merged()
+            return 0
+        budget = self._max_instructions - self.instructions
+        if budget <= 0:
+            self.truncated = True
+            self._rebuild_merged()
+            return 0
+
+        normalizer = Normalizer(source)
+        refs: dict[int, list[int]] = {}
+        count = 0
+        resyncs = 0
+        cursor = region.start
+        while cursor < region.end:
+            if count >= budget or resyncs >= MAX_INDEX_RESYNCS:
+                self.truncated = True
+                break
+            insns = normalizer.decode_block(cursor, min(0x1000, region.end - cursor))
+            if not insns:
+                cursor += 1
+                resyncs += 1
+                continue
+            for insn in insns:
+                count += 1
+                for ref in insn.refs:
+                    refs.setdefault(ref.addr, []).append(insn.addr)
+            cursor = insns[-1].addr + insns[-1].size
+        self.instructions += count
+        self._region_counts[region.start] = count
+        self._by_region[region.start] = {
+            addr: tuple(sorted(set(addrs))) for addr, addrs in refs.items()
+        }
+        self._rebuild_merged()
+        return count
+
+    def drop_region(self, region_start: int) -> None:
+        """Forget one region (the scanner calls this when it is freed)."""
+        if self._by_region.pop(region_start, None) is not None:
+            self.instructions -= self._region_counts.pop(region_start, 0)
+            self._rebuild_merged()
+
+    def _rebuild_merged(self) -> None:
+        merged: dict[int, list[int]] = {}
+        for region_refs in self._by_region.values():
+            for addr, addrs in region_refs.items():
+                merged.setdefault(addr, []).extend(addrs)
+        self._merged = {addr: tuple(sorted(set(addrs))) for addr, addrs in sorted(merged.items())}
 
 
 def _dedupe(matches: Sequence[Match]) -> tuple[Match, ...]:
@@ -197,23 +336,59 @@ def self_test(
     """Require ``signature`` to match the function at ``start``.
 
     Raises :class:`SelfTestError` when the matcher had a way to reach ``start``
-    but did not accept a match there. When no anchor or known function start
-    can reach it, the matcher cannot rediscover the function at all, so only
-    the weaker structural check (does the signature still describe these bytes
-    exactly?) is applied; that is a matcher limitation, not a signature defect,
-    and M6's reference scanner removes it.
+    but did not accept a match there. When neither anchors, known function
+    starts, nor (for string anchors) the data-reference index can reach it, the
+    matcher cannot rediscover the function at all, so only the weaker
+    structural check (does the signature still describe these bytes exactly?)
+    is applied; that is a matcher limitation, not a signature defect.
     """
     matches = scan(source, signature, limits=limits, max_candidates=max_candidates)
     for match in matches:
         if match.address == start:
             return match
 
+    hits = _anchor_hits(source, signature)
     candidates = _candidate_starts(
         source,
-        _anchor_hits(source, signature),
+        hits,
         max_candidates=max_candidates,
         use_hints=True,
     )
+    if start not in candidates and any(key.startswith("str:") for _, key in hits):
+        # String anchors only rank through the reference index; build it once
+        # before declaring the function unreachable.
+        index = ReferenceIndex()
+        for region in source.regions():
+            if region.executable:
+                index.index_region(source, region)
+        candidates = _candidate_starts(
+            source,
+            hits,
+            max_candidates=max_candidates,
+            use_hints=True,
+            index=index,
+        )
+        if start in candidates:
+            matches = scan_candidates(
+                source,
+                signature,
+                hits,
+                limits=limits,
+                max_candidates=max_candidates,
+                index=index,
+            )
+            for match in matches:
+                if match.address == start:
+                    return match
+            detail = (
+                "no candidate matched anywhere in the image"
+                if not matches
+                else f"best accepted match was at another function (score {matches[0].score:.3f})"
+            )
+            raise SelfTestError(
+                f"signature {signature.name!r} failed self-test at 0x{start:x}: {detail}"
+            )
+
     if start in candidates:
         if not matches:
             detail = "no candidate matched anywhere in the image"
@@ -241,16 +416,28 @@ def self_test(
 # -- Tier 0 ------------------------------------------------------------------
 
 
-def _anchor_hits(source: ByteSource, signature: Signature) -> tuple[tuple[int, str], ...]:
+def region_anchor_hits(region: Region, signature: Signature) -> list[tuple[int, str]]:
+    """Tier 0 for one region: anchor needle occurrences, capped per needle.
+
+    The runtime scanner calls this per region so unchanged pages of other
+    regions are never searched; :func:`_anchor_hits` is the whole-source
+    special case.
+    """
     hits: list[tuple[int, str]] = []
     for needle in anchor_needles(signature):
-        for region in source.regions():
-            if region.executable != needle.executable or len(region.data) < len(needle.data):
-                continue
-            hits.extend(
-                (address, needle.key)
-                for address in _find_all(region, needle.data, MAX_HITS_PER_ANCHOR)
-            )
+        if region.executable != needle.executable or len(region.data) < len(needle.data):
+            continue
+        hits.extend(
+            (address, needle.key) for address in _find_all(region, needle.data, MAX_HITS_PER_ANCHOR)
+        )
+    hits.sort()
+    return hits
+
+
+def _anchor_hits(source: ByteSource, signature: Signature) -> tuple[tuple[int, str], ...]:
+    hits: list[tuple[int, str]] = []
+    for region in source.regions():
+        hits.extend(region_anchor_hits(region, signature))
     hits.sort()
     return tuple(hits)
 
@@ -322,30 +509,52 @@ def _unescape(value: str) -> str | None:
 
 
 def _candidate_starts(
-    source: ByteSource, hits: Sequence[tuple[int, str]], *, max_candidates: int, use_hints: bool
+    source: ByteSource,
+    hits: Sequence[tuple[int, str]],
+    *,
+    max_candidates: int,
+    use_hints: bool,
+    index: ReferenceIndex | None = None,
 ) -> tuple[int, ...]:
-    """Candidate function starts, ranked by closeness to a code-side anchor hit.
+    """Candidate function starts, ranked for the fewest wasted recoveries.
 
     With ``use_hints`` (the default), sources that can enumerate symbols give
-    exact starts. Hint-free mode sweeps backwards from each code hit over real
-    instruction boundaries instead, so a function whose constant was found
-    mid-body can still be recovered from its prologue.
+    exact starts; those are tried first. Otherwise — and additionally — the
+    matcher sweeps backwards from each anchor landmark over real instruction
+    boundaries; among swept starts the **earliest** ranks first, because the
+    prologue precedes the anchor while a mid-body start is a false prologue.
+    When an ``index`` is supplied, string-anchor hits become landmarks through
+    the instructions that reference them (the M6 data-reference index).
     """
     code_hits = sorted({address for address, _ in hits if source.is_executable(address)})
-    starts: set[int] = set()
+    data_hits = sorted({address for address, _ in hits if not source.is_executable(address)})
+    landmarks = list(code_hits)
+    if index is not None:
+        for data_addr in data_hits:
+            landmarks.extend(index.referencers(data_addr))
+    landmarks.sort()
+
+    hint_starts: set[int] = set()
+    swept_starts: set[int] = set()
     if use_hints:
-        starts.update(start for start in source.function_starts() if source.is_executable(start))
+        hint_starts.update(
+            start for start in source.function_starts() if source.is_executable(start)
+        )
     # Known starts are only a shortcut when they cover the hit; otherwise the
     # matcher still has to find the enclosing function from the bytes.
     for address in code_hits:
         hint = source.hint_function(address) if use_hints else None
         if hint is not None:
-            starts.add(hint[0])
+            hint_starts.add(hint[0])
         else:
-            starts.update(_swept_starts(source, address))
-    if not starts:
+            swept_starts.update(_swept_starts(source, address))
+    if index is not None:
+        for data_addr in data_hits:
+            for ref_addr in index.referencers(data_addr):
+                swept_starts.update(_swept_starts(source, ref_addr))
+    if not hint_starts and not swept_starts:
         return ()
-    return _rank(starts, code_hits)[:max_candidates]
+    return _rank(hint_starts, swept_starts, landmarks)[:max_candidates]
 
 
 def _swept_starts(source: ByteSource, address: int) -> tuple[int, ...]:
@@ -365,20 +574,36 @@ def _swept_starts(source: ByteSource, address: int) -> tuple[int, ...]:
     return tuple(starts)
 
 
-def _rank(starts: Iterable[int], code_hits: Sequence[int]) -> tuple[int, ...]:
-    """Order starts by proximity to a code anchor, then by address."""
-    ranked: list[tuple[int, int, int]] = []
-    for start in sorted(set(starts)):
-        index = bisect_left(code_hits, start)
-        best = min(
-            (
-                abs(code_hits[probe] - start)
-                for probe in (index - 1, index)
-                if 0 <= probe < len(code_hits)
-            ),
-            default=None,
-        )
-        near = best is not None and best <= 0x1_0000
-        ranked.append((0 if near else 1, best if near and best is not None else 0, start))
+def _rank(
+    hint_starts: set[int], swept_starts: set[int], landmarks: Sequence[int]
+) -> tuple[int, ...]:
+    """Order candidate starts for the fewest wasted recoveries.
+
+    Exact (hint) starts come first, closest to a landmark; swept starts follow,
+    earliest address first, since the prologue precedes the anchor that found
+    them. Distant candidates of both kinds rank last, by address.
+    """
+    ranked: list[tuple[int, int, int, int]] = []
+    for start in hint_starts:
+        distance = _distance_to_landmark(start, landmarks)
+        near = distance is not None and distance <= 0x1_0000
+        ranked.append((0 if near else 1, 0, distance or 0, start))
+    for start in swept_starts:
+        distance = _distance_to_landmark(start, landmarks)
+        near = distance is not None and distance <= 0x1_0000
+        # Ascending address: the earliest boundary is the best prologue guess.
+        ranked.append((0 if near else 1, 1, start, start))
     ranked.sort()
-    return tuple(start for _, _, start in ranked)
+    return tuple(start for _, _, _, start in ranked)
+
+
+def _distance_to_landmark(start: int, landmarks: Sequence[int]) -> int | None:
+    index = bisect_left(landmarks, start)
+    return min(
+        (
+            abs(landmarks[probe] - start)
+            for probe in (index - 1, index)
+            if 0 <= probe < len(landmarks)
+        ),
+        default=None,
+    )

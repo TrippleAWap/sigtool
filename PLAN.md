@@ -406,4 +406,37 @@ merging is the planned fix).**
   menu glue cannot run in CI (no IDA host); it is deliberately thin, and the
   first IDA-session check should follow `README.md` "In IDA".
 
-**Not started:** M6 onward.
+**Not started:** M7 onward.
+
+**M6 — implemented; native port is the follow-on (M7).**
+
+- `core/scanner.py` (`SignatureScanner`, `ScanReport`, page hashing via CRC-32
+  over 4 KiB pages, region prioritization: private first, then changed image,
+  then untouched), `RecoveryBudget` in `core/match.py` for Tier 1 rate-limiting,
+  `ReferenceIndex` with a global instruction budget (200 K) plus resync cap (4 K)
+  per lifetime, and per-region drop-and-rebuild so freed regions do not keep the
+  index growing. Tier 0 runs on every pass; Tier 1 degrades to fewer candidates
+  rather than overrun. Signature identities are pre-computed once at construction
+  instead of serialized per lookup (measured: dominated a skipped incremental
+  pass at 11 ms/pass before the fix).
+- `_candidate_starts` ranks exact hint starts first, swept starts ascending-by-address
+  (prologue-first), distant candidates last. This reduces wasted recoveries on
+  mid-function starts that share an anchor but precede the actual function
+  prologue.
+- Self-test falls back to building a temporary index when no anchor or known
+  function start can reach a string-only signature's target, so generators from
+  symbol-rich sources still get acceptance without giving up early.
+- `profile_scan.py`: full-profile and incremental passes on the corpus (per binary)
+  plus live-process scanning against this interpreter's modules. CPU time is
+  tracked separately from wall-clock; top hot spots report cumulative caller
+  chains.
+- Measured: Python reference scanner on Windows x64, interpreter process (44 MiB
+  address space, 138 regions, 16 signatures): full pass 98 s CPU / 99.7 s wall,
+  200 K indexed instructions (truncated, confirming the budget caps large
+  address spaces); second pass 16 ms wall with unchanged-page skipping alone.
+  Corpus profile shows Capstone decode inside `ReferenceIndex.index_region` as the
+  dominant cost on small binaries, candidate recovery as secondary. The
+  `corpus/scan-profile.json` file holds the raw numbers.
+- Exit criterion met: throughput and CPU cost measured on a representative
+  process set (the running interpreter at `-O2` scale), hot spots documented in
+  `profile_scan.py --json corpus/scan-profile.json`. M7 ports to C/Rust.

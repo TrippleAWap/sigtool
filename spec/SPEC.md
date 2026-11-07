@@ -281,6 +281,20 @@ generation and never decodes with its own tables.
   sweep, and recovery runs without symbol bounds. This is the mode a scanner
   without symbols runs in; the harness reports recall for both modes so
   comparison quality (hinted) and discovery (hint-free) are separate numbers.
+* **Tier 0 budgeting.** Tier 0 always runs; Tier 1 is rate-limited by
+   `RecoveryBudget(remaining=N)`, shared across all signatures in one scan
+   pass. A signature whose candidates exhaust the budget before its first match
+   is recorded as found-by-recovery-count, not missed. Tier 0 never runs out.
+* **Data-reference index.** String anchors live in data pages, so they cannot
+   seed candidate starts directly: nothing in Tier 0 points at the code that
+   uses them. `ReferenceIndex` closes that gap by sweeping each executable
+   region once (bounded at 200 K instructions and 4096 resyncs per index
+   lifetime) and recording which instructions reference which data addresses.
+   A string hit becomes a candidate through the referencing instruction, ranked
+   the same way as any code anchor. The index is global-budgeted, not per-region,
+   so re-indexing a changed region subtracts its old count before adding the
+   new one. Each region is tracked separately so a runtime scanner can drop a
+   freed region and rebuild the merged map incrementally.
 * **Tier 2 — comparison.** Accepted only when both gates pass:
   `score >= thresholds.match` and `matched_required >= min_distinct`.
 
@@ -301,10 +315,10 @@ from an interior address.
 accepted match at the recovered function start; a signature that cannot be
 re-found is never emitted (AGENTS.md rule 7).
 
-**Known limitation.** String anchors currently only rank candidates. Locating
-code that references a string needs a data-reference index, which arrives with
-the M6 scanner; until then a signature whose only anchors are strings needs a
-source that can enumerate function starts.
+**Known limitation.** String anchors became discoverable with the M6 data-reference
+index (`ReferenceIndex`); they still rank through the index rather than seeding
+candidates directly, so scanning a source without an index finds the function but
+does not know which candidate to recover first.
 
 Small functions cannot anchor in Tier 0; their signatures add caller/callee
 names, neighbour position, and a tight op-class sequence, and match near an
