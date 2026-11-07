@@ -28,7 +28,7 @@ def _false_positive(arch: str = "x64", *, signatures_with_hits: int = 0) -> Fals
 
 def _saved(tmp_path: Path) -> Path:
     path = tmp_path / "baseline.json"
-    _save_baseline(path, 10, 0, [_recall()], [_false_positive()])
+    _save_baseline(path, 10, 0, [_recall()], [_false_positive()], [_false_positive()])
     return path
 
 
@@ -47,7 +47,13 @@ def test_baseline_round_trip_without_changes(tmp_path: Path) -> None:
 
     assert document["spec_version"] == SPEC_VERSION
     assert "samples" not in document
-    assert _compare(baseline, 0, [_recall()], [_false_positive()], DEFAULT_TOLERANCE) == []
+    assert "negative_false_positives" in document
+    assert (
+        _compare(
+            baseline, 0, [_recall()], [_false_positive()], [_false_positive()], DEFAULT_TOLERANCE
+        )
+        == []
+    )
 
 
 def test_baseline_rejects_a_recall_drop(tmp_path: Path) -> None:
@@ -58,10 +64,11 @@ def test_baseline_rejects_a_recall_drop(tmp_path: Path) -> None:
         0,
         [RecallCell("x64", "O2", "O2", 10, 10), RecallCell("x64", "O2", "Os", 10, 10)],
         [_false_positive()],
+        [_false_positive()],
     )
     dropped = [RecallCell("x64", "O2", "O2", 5, 10), RecallCell("x64", "O2", "Os", 5, 10)]
 
-    failures = _compare(path, 0, dropped, [_false_positive()], DEFAULT_TOLERANCE)
+    failures = _compare(path, 0, dropped, [_false_positive()], [_false_positive()], 0.02)
 
     assert any("same-build recall" in failure for failure in failures)
     assert any("cross-build recall" in failure for failure in failures)
@@ -71,23 +78,36 @@ def test_baseline_tolerance_absorbs_a_small_recall_drop(tmp_path: Path) -> None:
     baseline = _saved(tmp_path)
     slightly_worse = [RecallCell("x64", "O2", "O2", 99, 100)]
 
-    assert _compare(baseline, 0, slightly_worse, [_false_positive()], 0.02) == []
-    assert _compare(baseline, 0, slightly_worse, [_false_positive()], 0.005)
+    assert (
+        _compare(baseline, 0, slightly_worse, [_false_positive()], [_false_positive()], 0.02) == []
+    )
+    assert _compare(baseline, 0, slightly_worse, [_false_positive()], [_false_positive()], 0.005)
 
 
-def test_baseline_rejects_a_false_positive_increase(tmp_path: Path) -> None:
+def test_baseline_rejects_a_cross_source_false_positive_increase(tmp_path: Path) -> None:
     baseline = _saved(tmp_path)
     noisy = [_false_positive(signatures_with_hits=10)]
 
-    failures = _compare(baseline, 0, [_recall()], noisy, DEFAULT_TOLERANCE)
+    failures = _compare(baseline, 0, [_recall()], noisy, [_false_positive()], DEFAULT_TOLERANCE)
 
-    assert any("false-positive rate" in failure for failure in failures)
+    assert any("cross-source false positives" in failure for failure in failures)
+
+
+def test_baseline_rejects_a_negative_false_positive_increase(tmp_path: Path) -> None:
+    baseline = _saved(tmp_path)
+    noisy = [_false_positive(signatures_with_hits=10)]
+
+    failures = _compare(baseline, 0, [_recall()], [_false_positive()], noisy, DEFAULT_TOLERANCE)
+
+    assert any("negative false positives" in failure for failure in failures)
 
 
 def test_baseline_rejects_extra_refusals(tmp_path: Path) -> None:
     baseline = _saved(tmp_path)
 
-    failures = _compare(baseline, 1, [_recall()], [_false_positive()], DEFAULT_TOLERANCE)
+    failures = _compare(
+        baseline, 1, [_recall()], [_false_positive()], [_false_positive()], DEFAULT_TOLERANCE
+    )
 
     assert any("refusals" in failure for failure in failures)
 
@@ -98,7 +118,9 @@ def test_baseline_requires_the_current_spec_version(tmp_path: Path) -> None:
     document["spec_version"] = "0"
     baseline.write_text(json.dumps(document), encoding="utf-8")
 
-    failures = _compare(baseline, 0, [_recall()], [_false_positive()], DEFAULT_TOLERANCE)
+    failures = _compare(
+        baseline, 0, [_recall()], [_false_positive()], [_false_positive()], DEFAULT_TOLERANCE
+    )
 
     assert any("spec version" in failure for failure in failures)
 
@@ -111,8 +133,16 @@ def test_baseline_reports_a_missing_arch(tmp_path: Path) -> None:
         0,
         [_recall("x64"), _recall("arm64")],
         [_false_positive("x64"), _false_positive("arm64")],
+        [_false_positive("x64"), _false_positive("arm64")],
     )
 
-    failures = _compare(path, 0, [_recall("x64")], [_false_positive("x64")], DEFAULT_TOLERANCE)
+    failures = _compare(
+        path,
+        0,
+        [_recall("x64")],
+        [_false_positive("x64")],
+        [_false_positive("x64")],
+        DEFAULT_TOLERANCE,
+    )
 
     assert any("arm64" in failure and "missing" in failure for failure in failures)

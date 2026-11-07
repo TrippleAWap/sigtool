@@ -238,16 +238,21 @@ About 12-14 weeks to a working generator, IDA plugin, and reference scanner for 
 
 Updated during M2.
 
-**M0 — started.**
+**M0 — complete except real-library samples (licensing is an open decision).**
 
 - `spec/SPEC.md` and `spec/CHANGELOG.md` define feature kinds, canonical forms,
   ignored instructions, buckets, hashing, and the recovery contract.
 - `corpus/build.py` cross-compiles `corpus/src/*.c` for x64, arm64, and arm32 at
   `-O0`, `-O2`, `-Os` and writes symbol-table ground truth. Current run: 18
   binaries, 153/153 functions sized, coverage 1.000.
+- The negative corpus exists: `corpus/negative/*.c` (codec, slot store, integer
+  math) builds at `-O2` for all three targets into `build/negative/`, listed
+  under the `negative` key of `ground_truth.json`. The samples are purpose-written
+  and unrelated to `corpus/src`; real-library negatives (zlib and friends) are
+  deferred until the licensing question in section 10 is decided.
 - Deviation: the samples are purpose-written freestanding C, not yet the planned
-  zlib/libpng/sqlite/mbedTLS set, and the negative corpus does not exist. Both
-  remain M0 work. Ground truth comes from ELF symbol sizes rather than DWARF;
+  zlib/libpng/sqlite/mbedTLS set. Both corpora stay purpose-written until that
+  decision. Ground truth comes from ELF symbol sizes rather than DWARF;
   symbol sizes are exact for non-inlined symbols and need no DWARF reader.
 
 **M1 — implemented for x64 and AArch64.**
@@ -323,12 +328,15 @@ Updated during M2.
   (`--save-baseline` updates it intentionally). The tolerance covers
   compiler-version variation; rates are compared instead of raw counts because
   a different clang changes which functions exist.
+- The M0 negative corpus (`corpus/negative/*.c`, nine binaries across x64, arm64,
+  and arm32) is built by `corpus/build.py`, and `bench.py` scans every strong
+  signature against it. Current result: 0 hits for all 40 strong signatures.
+  Both FP measurements are compared against the baseline in CI.
 - `.github/workflows/ci.yml` runs format, lint, types, the corpus build, tests,
   and the baseline regression on Linux, and the live process tests on Windows.
   `tests/test_spec.py` checks that `SPEC_VERSION`, the hash person string, and
   the written spec and changelog agree.
-- Remaining M3 work: the negative corpus (still M0) and a hint-free discovery
-  mode (the harness currently uses ELF symbols as candidates, so it measures
-  comparison quality rather than discovery).
+- Remaining M3 work: hint-free discovery (the harness currently uses ELF symbols
+  as candidates, so it measures comparison quality rather than discovery).
 
 **Not started:** M4 onward.

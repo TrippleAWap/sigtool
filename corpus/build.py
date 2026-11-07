@@ -29,6 +29,8 @@ from sources.file import FileSource  # noqa: E402
 
 BUILD = ROOT / "corpus" / "build"
 SOURCES = sorted((ROOT / "corpus" / "src").glob("*.c"))
+NEGATIVE_SOURCES = sorted((ROOT / "corpus" / "negative").glob("*.c"))
+NEGATIVE_OPT = "-O2"
 
 TARGETS = {
     "x64": "x86_64-linux-gnu",
@@ -45,8 +47,10 @@ def find_clang() -> str:
     return clang
 
 
-def build(clang: str, arch: str, target: str, opt: str, source: Path) -> Path | None:
-    outdir = BUILD / arch / opt.strip("-")
+def build(
+    clang: str, arch: str, target: str, opt: str, source: Path, *, root: Path = BUILD
+) -> Path | None:
+    outdir = root / arch / opt.strip("-")
     outdir.mkdir(parents=True, exist_ok=True)
     binary = outdir / f"{source.stem}.elf"
     command = [
@@ -93,6 +97,14 @@ def describe(binary: Path) -> dict[str, object]:
 CORPUS = ROOT / "corpus"
 
 
+def describe_negative(binary: Path) -> dict[str, object]:
+    """A negative sample needs only its location and architecture."""
+    return {
+        "path": binary.relative_to(BUILD).as_posix(),
+        "arch": FileSource.from_path(binary).arch.value,
+    }
+
+
 def main() -> int:
     clang = find_clang()
     if not SOURCES:
@@ -112,17 +124,30 @@ def main() -> int:
     if not binaries:
         raise SystemExit("no corpus binaries were built")
 
+    negative: list[dict[str, object]] = []
+    for arch, target in TARGETS.items():
+        for source in NEGATIVE_SOURCES:
+            binary = build(clang, arch, target, NEGATIVE_OPT, source, root=BUILD / "negative")
+            if binary is None:
+                continue
+            try:
+                negative.append(describe_negative(binary))
+            except UnsupportedArchError as error:
+                print(f"  skip {binary.name}: {error}")
+
     covered = sum(len(entry["functions"]) for entry in binaries)
     total = sum(int(entry["total_symbols"]) for entry in binaries)
     ground_truth = {
         "binaries": binaries,
         "coverage": (covered / total) if total else 0.0,
+        "negative": negative,
     }
     (BUILD / "ground_truth.json").write_text(
         json.dumps(ground_truth, indent=1, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(f"built {len(binaries)} binaries, {covered}/{total} functions with sizes")
     print(f"coverage {ground_truth['coverage']:.3f}")
+    print(f"negative corpus: {len(negative)} binaries")
     return 0
 
 

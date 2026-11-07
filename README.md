@@ -14,10 +14,10 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 
 | Milestone | State |
 |---|---|
-| M0 spec and corpus | started: spec v1 written, corpus build script and samples present |
+| M0 spec and corpus | corpus complete: spec v1 written, positive corpus with 1.000 symbol coverage, negative corpus built at `-O2` per arch; real-library samples deferred pending the licensing decision |
 | M1 extraction (x64, AArch64) | implemented and passing: bounds agreement 1.00 on x64, 0.94 on arm64 (criterion 0.90) |
 | M2 generation | core, file CLI, and Windows PID mode implemented; Linux process source pending |
-| M3 validation harness | reference matcher and mandatory self-test implemented; corpus recall/FP harness in `bench.py` with a committed baseline and CI gate; negative corpus still M0 work |
+| M3 validation harness | implemented: reference matcher, mandatory self-test, recall/FP harness in `bench.py` with a committed baseline and CI gate, negative-corpus FP scan at 0 hits |
 
 ARM32/Thumb are detected and rejected with a clear error until M4.
 
@@ -66,10 +66,9 @@ stderr. `--json-report PATH` writes the report as JSON. Exit codes: `0` success,
 
 Current harness numbers (x64 and arm64, two source files, clang 18): 102/102
 signatures pass self-test, same-build recall 1.000, cross-optimization recall
-0.427, and zero false positives for 40 strong signatures against unrelated
-binaries. Compiler version shifts cross-build recall by about two points (clang
-22 gives 0.448). The negative corpus is still M0 work, so the FP number is a
-floor.
+0.427, and zero false positives for 40 strong signatures against both unrelated
+source files and the nine-binary negative corpus. Compiler version shifts
+cross-build recall by about two points (clang 22 gives 0.448).
 
 CI (`.github/workflows/ci.yml`) runs format, lint, types, the spec-version check,
 the corpus build, pytest, and the baseline regression on Linux, plus the live

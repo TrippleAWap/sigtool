@@ -13,6 +13,20 @@
       "signatures_with_hits": 0
     }
   ],
+  "negative_false_positives": [
+    {
+      "arch": "arm64",
+      "hits": 0,
+      "signatures": 23,
+      "signatures_with_hits": 0
+    },
+    {
+      "arch": "x64",
+      "hits": 0,
+      "signatures": 17,
+      "signatures_with_hits": 0
+    }
+  ],
   "recall": [
     {
       "arch": "arm64",

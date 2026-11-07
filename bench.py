@@ -119,21 +119,39 @@ def main(argv: list[str] | None = None) -> int:
 
     arches = tuple(args.arch) if args.arch else SUPPORTED_ARCHES
     binaries = [entry for entry in binaries if entry["arch"] in arches]
+    negatives = [entry for entry in _load_negative(args.corpus) if entry["arch"] in arches]
     sources = {path: FileSource.from_path(args.corpus / path) for path in _paths(binaries)}
+    for path in _paths(negatives):
+        sources.setdefault(path, FileSource.from_path(args.corpus / path))
 
     samples, refused = _build_samples(binaries, sources)
     recall = _recall(samples, binaries, sources)
     false_positives = _false_positives(samples, binaries, sources)
+    negative_false_positives = _negative_false_positives(samples, negatives, sources)
 
-    _report(samples, refused, recall, false_positives)
+    _report(samples, refused, recall, false_positives, negative_false_positives)
 
     if args.save_baseline is not None:
-        _save_baseline(args.save_baseline, len(samples), refused, recall, false_positives)
+        _save_baseline(
+            args.save_baseline,
+            len(samples),
+            refused,
+            recall,
+            false_positives,
+            negative_false_positives,
+        )
         print(f"\nwrote baseline {args.save_baseline}")
 
     failures: list[str] = []
     if args.baseline is not None:
-        failures = _compare(args.baseline, refused, recall, false_positives, args.tolerance)
+        failures = _compare(
+            args.baseline,
+            refused,
+            recall,
+            false_positives,
+            negative_false_positives,
+            args.tolerance,
+        )
         print()
         if failures:
             print(f"baseline comparison: FAILED ({args.baseline})")
@@ -160,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                     "refused": refused,
                     "recall": _recall_document(recall),
                     "false_positives": _false_positive_document(false_positives),
+                    "negative_false_positives": _false_positive_document(negative_false_positives),
                 },
                 indent=2,
                 sort_keys=True,
@@ -180,6 +199,17 @@ def _load_ground_truth(root: Path) -> list[dict[str, object]]:
         return []
     document = json.loads(path.read_text(encoding="utf-8"))
     return [entry for entry in document["binaries"] if isinstance(entry, dict)]
+
+
+def _load_negative(root: Path) -> list[dict[str, object]]:
+    path = root / "ground_truth.json"
+    if not path.exists():
+        return []
+    document = json.loads(path.read_text(encoding="utf-8"))
+    entries = document.get("negative", [])
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
 
 
 def _paths(binaries: list[dict[str, object]]) -> list[str]:
@@ -288,6 +318,34 @@ def _false_positives(
     ]
 
 
+def _negative_false_positives(
+    samples: list[Sample],
+    negatives: list[dict[str, object]],
+    sources: dict[str, FileSource],
+) -> list[FalsePositiveCell]:
+    """Scan strong signatures against the M0 negative corpus binaries."""
+    strong = [sample for sample in samples if sample.verdict == "strong"]
+    by_arch: dict[str, list[str]] = defaultdict(list)
+    for entry in negatives:
+        by_arch[str(entry["arch"])].append(str(entry["path"]))
+
+    counts: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
+    for sample in strong:
+        bucket = counts[sample.arch]
+        bucket[0] += 1
+        hits = 0
+        for path in by_arch.get(sample.arch, []):
+            hits += len(_scan_addresses(sample.signature, sources[path]))
+        bucket[2] += hits
+        if hits:
+            bucket[1] += 1
+
+    return [
+        FalsePositiveCell(arch, signatures, with_hits, hits)
+        for arch, (signatures, with_hits, hits) in sorted(counts.items())
+    ]
+
+
 def _function_table(
     binaries: list[dict[str, object]],
 ) -> dict[str, dict[str, int]]:
@@ -323,6 +381,7 @@ def _save_baseline(
     refused: int,
     recall: list[RecallCell],
     false_positives: list[FalsePositiveCell],
+    negative_false_positives: list[FalsePositiveCell],
 ) -> None:
     """Write the compact metrics that :func:`_compare` reads.
 
@@ -335,6 +394,7 @@ def _save_baseline(
         "refused": refused,
         "recall": _recall_document(recall),
         "false_positives": _false_positive_document(false_positives),
+        "negative_false_positives": _false_positive_document(negative_false_positives),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -345,6 +405,7 @@ def _compare(
     refused: int,
     recall: list[RecallCell],
     false_positives: list[FalsePositiveCell],
+    negative_false_positives: list[FalsePositiveCell],
     tolerance: float,
 ) -> list[str]:
     """Return the regressions that exceed ``tolerance``.
@@ -367,7 +428,8 @@ def _compare(
 
     baseline_recall = _read_recall(baseline.get("recall"))
     baseline_fp = _read_false_positives(baseline.get("false_positives"))
-    if baseline_recall is None or baseline_fp is None:
+    baseline_negative = _read_false_positives(baseline.get("negative_false_positives"))
+    if baseline_recall is None or baseline_fp is None or baseline_negative is None:
         return [f"baseline {path} has no recall or false_positives list"]
 
     failures: list[str] = []
@@ -391,18 +453,38 @@ def _compare(
                 failures.append(
                     f"{arch} {label} recall {current:.3f} < baseline {base:.3f} - {tolerance:.2f}"
                 )
-        base_fp_rate = _fp_rate(baseline_fp, arch)
-        current_fp_rate = _fp_rate(false_positives, arch)
-        if base_fp_rate is None:
-            continue
-        if current_fp_rate is None:
-            failures.append(f"{arch} false positives: no strong signatures in the current run")
-        elif current_fp_rate > base_fp_rate + tolerance:
-            failures.append(
-                f"{arch} false-positive rate {current_fp_rate:.3f} > "
-                f"baseline {base_fp_rate:.3f} + {tolerance:.2f}"
-            )
+
+    _compare_false_positives(
+        "cross-source false positives", baseline_fp, false_positives, tolerance, failures
+    )
+    _compare_false_positives(
+        "negative false positives", baseline_negative, negative_false_positives, tolerance, failures
+    )
     return failures
+
+
+def _compare_false_positives(
+    label: str,
+    baseline: list[FalsePositiveCell],
+    current: list[FalsePositiveCell],
+    tolerance: float,
+    failures: list[str],
+) -> None:
+    baseline_arches = {cell.arch for cell in baseline}
+    current_arches = {cell.arch for cell in current}
+    for arch in sorted(baseline_arches - current_arches):
+        failures.append(f"{label} {arch}: missing from the current run")
+    for arch in sorted(baseline_arches & current_arches):
+        base = _fp_rate(baseline, arch)
+        now = _fp_rate(current, arch)
+        if base is None:
+            continue
+        if now is None:
+            failures.append(f"{label} {arch}: no strong signatures in the current run")
+        elif now > base + tolerance:
+            failures.append(
+                f"{label} {arch} rate {now:.3f} > baseline {base:.3f} + {tolerance:.2f}"
+            )
 
 
 def _recall_document(cells: list[RecallCell]) -> list[dict[str, object]]:
@@ -500,6 +582,7 @@ def _report(
     refused: int,
     recall: list[RecallCell],
     false_positives: list[FalsePositiveCell],
+    negative_false_positives: list[FalsePositiveCell],
 ) -> None:
     verdicts = Counter(sample.verdict for sample in samples)
     per_arch: dict[str, Counter[str]] = defaultdict(Counter)
@@ -527,6 +610,15 @@ def _report(
     if not false_positives:
         print("  no strong signatures to test")
     for cell in false_positives:
+        print(
+            f"  {cell.arch}: {cell.signatures_with_hits}/{cell.signatures} signatures "
+            f"with hits = {cell.rate:.3f}, total hits {cell.hits}"
+        )
+
+    print("\nnegative corpus (strong signatures vs unrelated clean binaries)")
+    if not negative_false_positives:
+        print("  no strong signatures to test")
+    for cell in negative_false_positives:
         print(
             f"  {cell.arch}: {cell.signatures_with_hits}/{cell.signatures} signatures "
             f"with hits = {cell.rate:.3f}, total hits {cell.hits}"

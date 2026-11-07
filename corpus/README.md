@@ -5,6 +5,7 @@ Ground truth for bounds recovery and, from M3, recall and false-positive rates.
 ```bash
 python corpus/build.py      # cross-compile everything, write build/ground_truth.json
 pytest tests/test_corpus_bounds.py
+python bench.py --baseline tests/baseline/bench.json
 ```
 
 * Sources live in `corpus/src/`. They are freestanding (no libc) so they link
@@ -13,5 +14,11 @@ pytest tests/test_corpus_bounds.py
 * `build/ground_truth.json` maps each binary to `(name, start, size)` from the
   ELF symbol table. Symbol sizes are exact for non-inlined, non-aliased
   functions, which is what the M1 exit criterion measures.
-* Binaries are ignored by git. A negative corpus of unrelated clean binaries
-  (M3) belongs here too, described by a manifest so it stays reproducible.
+* The negative corpus lives in `corpus/negative/`: purpose-written code that is
+  unrelated to `corpus/src/`. It is built at `-O2` for all three targets into
+  `build/negative/` and listed under the `negative` key of
+  `ground_truth.json`; `bench.py` scans strong signatures against it and gates
+  the false-positive rate in CI. No function ground truth is needed for it.
+  Real-library negatives (zlib and friends) are deferred until the corpus
+  licensing question in `PLAN.md` section 10 is decided.
+* Binaries are ignored by git.
