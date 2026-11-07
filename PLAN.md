@@ -220,7 +220,9 @@ CI: lint, unit and golden tests, corpus regression job (cached binaries), spec-v
 
 ## 10. Open questions to resolve before M2
 
-1. **OS for PID mode first:** Windows, Linux, or both?
+1. **OS for PID mode first:** **resolved** — Windows x64 first (M2, implemented in
+   `sources/proc_win.py`), Linux after. This unblocked local live tests; the
+   ARM64 Linux/Android host order in section 4 is unchanged.
 2. **Architecture pair first:** x64 plus ARM64 (proposed), with ARM32/Thumb after?
 3. **Targets:** known library code, malware families, or both? This changes anchor strategy and negative corpus content.
 4. **Scanner host architectures:** which platforms must the eventual scanner run on?
@@ -263,7 +265,7 @@ Updated during M2.
 - Property tests cover ASLR invariance, normalization idempotence/determinism,
   and hostile-byte recovery.
 
-**M2 — implemented for the core and the file CLI.**
+**M2 — implemented for the core, the CLI, and Windows PID mode.**
 
 - `core/score.py` assigns base weights per kind, string and constant rarity
   multipliers, and optional IDF from a reference corpus; it selects up to four
@@ -275,16 +277,21 @@ Updated during M2.
   signature and report out. Front-ends must call it rather than recombine the
   pieces.
 - `cli.py` is the thin front-end: `gen --file IMAGE --addr A` or
-  `gen --file IMAGE --module M --rva R`. YAML goes to stdout (or `--output`),
-  the quality report to stderr (`--json-report` for JSON), and exit codes are
-  `0` success, `2` usage/input error, `3` unsupported arch, `4` self-test
-  failure.
+  `gen --pid P --addr A`, both accepting `--module M --rva R` instead of
+  `--addr`. YAML goes to stdout (or `--output`), the quality report to stderr
+  (`--json-report` for JSON), and exit codes are `0` success, `2` usage/input
+  error, `3` unsupported arch, `4` self-test failure.
+- `sources/proc_win.py` opens Windows targets read-only, rejects 32-bit/WOW64
+  processes, and parses module export/import maps from the mapped image. Anchor
+  regions are readable module pages only, capped at 32 MiB per region and
+  128 MiB total; everything committed remains readable through `read`.
+- Live tests spawn a child process with an injected executable page and check
+  reads, module metadata, deterministic generation, and `--pid` end to end.
 - Sample output for `collatz_length` (x64, `-O2`) is `weak`: it has only two
   constants and no strings or callees. That is the honest verdict, not a bug —
   shape features are optional and cannot anchor.
-- Not done in M2: process sources (the first-OS decision in section 10 is still
-  open), so PID mode is unavailable. Self-test and the quality verdicts are
-  wired through the CLI.
+- Not done in M2: the Linux process source, on-disk fallback for pages the
+  target will not share, and the IDA plugin.
 
 **M3 — implemented; recall target not yet met.**
 

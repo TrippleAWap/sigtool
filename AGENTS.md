@@ -65,7 +65,7 @@ python corpus/build.py              # rebuild corpus + ground truth (clang + ld.
 python bench.py                     # corpus recall/FP report (M3)
 sigtool gen --file IMAGE --addr A   # generate a signature from an ELF/PE image
 sigtool gen --file IMAGE --module M --rva R  # module+rva addressing
-sigtool gen --pid P --addr A        # generate a signature from a live process (pending first-OS decision)
+sigtool gen --pid P --addr A        # generate a signature from a live Windows process (read-only)
 python -c "from core.generate import generate"  # library use; front-ends call this
 ```
 
@@ -112,11 +112,12 @@ M3 core is implemented: `core/match.py` is the reference matcher (anchor
 needles, candidate starts, weighted comparison) and `generate` now self-tests
 every signature before returning it, raising `SelfTestError` instead of
 emitting one it cannot re-find. `bench.py` reports recall and false positives.
-`cli.py` is the file-based front-end (`gen --file ... --addr` or
+`cli.py` is the front-end (`gen --file ...` or `gen --pid ...` with `--addr` or
 `--module ... --rva`); it emits YAML on stdout plus a quality report on stderr.
-PID mode and the corpus/negative-corpus CI job are still pending.
+`sources/proc_win.py` is the read-only Windows process source; Linux PID mode
+and the corpus/negative-corpus CI job are still pending.
 See `PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)
 
-These are unresolved in `PLAN.md` section 10: which OS to support first for PID mode, whether the first arch pair is x64 plus ARM64, target type (library code vs malware families), eventual scanner host architectures, supported IDA versions, and licensing of signatures and the corpus.
+These are unresolved in `PLAN.md` section 10: whether the first arch pair is x64 plus ARM64, target type (library code vs malware families), eventual scanner host architectures, supported IDA versions, and licensing of signatures and the corpus. The PID-mode OS question is resolved: Windows x64 first (M2), Linux after.

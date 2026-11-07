@@ -6,10 +6,14 @@ feature, scoring, matching, or serialisation logic lives here.
 
     sigtool gen --file image.elf --addr 0x1000
     sigtool gen --file image.elf --module image.elf --rva 0x1000
-    sigtool gen --file image.elf --rva 0x1000 --output function.yaml
+    sigtool gen --pid 1234 --addr 0x7ff6_0000_1000
+    sigtool gen --pid 1234 --module kernel32.dll --rva 0x1000 --output function.yaml
 
 The signature YAML goes to stdout (or ``--output``) so it can be piped; the
 quality report goes to stderr. ``--json-report`` also writes the report as JSON.
+
+PID mode is read-only and currently Windows-only; opening a 32-bit or WOW64
+target exits with code ``3`` instead of decoding it as x64.
 
 Exit codes:
 
@@ -24,6 +28,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Final
 
@@ -63,7 +69,9 @@ def _parser() -> argparse.ArgumentParser:
         help="generate a signature for one function",
         description="Generate a signature for the function containing an address.",
     )
-    gen.add_argument("--file", type=Path, required=True, help="ELF or PE image")
+    source = gen.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", type=Path, help="ELF or PE image")
+    source.add_argument("--pid", type=int, metavar="PID", help="live process id (Windows)")
     target = gen.add_mutually_exclusive_group(required=True)
     target.add_argument("--addr", metavar="ADDR", help="absolute address, e.g. 0x1000")
     target.add_argument("--rva", metavar="RVA", help="module-relative address")
@@ -82,10 +90,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def _generate(args: argparse.Namespace) -> int:
     try:
-        source = _load_file(args.file)
-        addr = _resolve_address(source, args)
-        result = generate(source, addr, name=args.name, opt=args.opt, tool=args.tool)
-        _write_outputs(source, result, args)
+        with _open_source(args) as source:
+            addr = _resolve_address(source, args)
+            result = generate(source, addr, name=args.name, opt=args.opt, tool=args.tool)
+            _write_outputs(source, result, args)
     except UnsupportedArchError as error:
         _error(f"unsupported target: {error}")
         return EXIT_UNSUPPORTED
@@ -96,6 +104,19 @@ def _generate(args: argparse.Namespace) -> int:
         _error(str(error))
         return EXIT_ERROR
     return EXIT_OK
+
+
+@contextmanager
+def _open_source(args: argparse.Namespace) -> Iterator[ByteSource]:
+    if args.pid is not None:
+        from sources.proc_win import WindowsProcessSource
+
+        with WindowsProcessSource.open(args.pid) as source:
+            yield source
+        return
+    if args.file is None:
+        raise CliError("one of --file or --pid is required")
+    yield _load_file(args.file)
 
 
 def _load_file(path: Path) -> FileSource:
@@ -178,7 +199,7 @@ def _write_outputs(source: ByteSource, result: GenerationResult, args: argparse.
 def _report(source: ByteSource, result: GenerationResult, destination: str) -> str:
     signature = result.signature
     report = result.report
-    label = source.label_for_address(result.match.address) or "unmapped"
+    label = source.label_for_address(result.match.address) or f"0x{result.match.address:x}"
     lines = [
         f"signature {signature.name}  ({signature.signature_id})",
         (f"arch {source.arch.value}  verdict {report.verdict}  confidence {signature.confidence}"),
@@ -211,7 +232,7 @@ def _report_document(source: ByteSource, result: GenerationResult) -> dict[str, 
         "anchors": report.anchor_count,
         "evidence": round(report.evidence, 6),
         "self_test": {
-            "at": source.label_for_address(result.match.address) or "unmapped",
+            "at": source.label_for_address(result.match.address) or f"0x{result.match.address:x}",
             "score": result.match.score,
             "matched": len(result.match.matched),
         },

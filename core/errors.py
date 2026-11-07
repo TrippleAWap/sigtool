@@ -22,6 +22,10 @@ class ReadError(SigToolError):
     """A read of target memory failed: unmapped, truncated, or oversized."""
 
 
+class ProcessError(SigToolError):
+    """A live process could not be opened, inspected, or read from."""
+
+
 class DecodeError(SigToolError):
     """Instruction decoding failed in a way recovery cannot work around."""
 

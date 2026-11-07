@@ -16,7 +16,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 |---|---|
 | M0 spec and corpus | started: spec v1 written, corpus build script and samples present |
 | M1 extraction (x64, AArch64) | implemented and passing: bounds agreement 1.00 on x64, 0.94 on arm64 (criterion 0.90) |
-| M2 generation | core and file CLI implemented: weighted deterministic YAML plus quality report; process sources and PID mode pending |
+| M2 generation | core, file CLI, and Windows PID mode implemented; Linux process source pending |
 | M3 validation harness | reference matcher and mandatory self-test implemented; corpus recall/FP harness in `bench.py`, negative corpus still M0 work |
 
 ARM32/Thumb are detected and rejected with a clear error until M4.
@@ -46,12 +46,16 @@ python bench.py                      # recall per arch/opt level, false positive
 python bench.py --json corpus/report.json
 ```
 
-Generate a signature from an image file:
+Generate a signature from an image file or a live Windows process:
 
 ```bash
 sigtool gen --file corpus/build/x64/O2/loops.elf --addr 0x201340
 sigtool gen --file image.so --module image.so --rva 0x1340 --output fn.yaml
+sigtool gen --pid 1234 --module kernel32.dll --rva 0x1000
 ```
+
+PID mode is read-only and Windows-only for now. 32-bit and WOW64 targets exit
+with code `3` instead of being decoded as x64.
 
 The YAML signature goes to stdout (or `--output`); the quality report goes to
 stderr. `--json-report PATH` writes the report as JSON. Exit codes: `0` success,
@@ -67,9 +71,9 @@ negative corpus is still M0 work, so the FP number is a floor.
 
 ```
 core/       source, arch, normalize, recover, features, score, sigfile, validate, generate, match
-sources/    file (ELF, PE); live-process and IDA sources follow
+sources/    file (ELF, PE), proc_win (read-only live Windows process); IDA follows
 spec/       signature spec and changelog
 corpus/     build script, C samples, ground truth (binaries ignored)
-tests/      vectors/ (golden), unit, property, live/ later
-cli.py      file-based front-end (gen); PID mode follows the first-OS decision
+tests/      vectors/ (golden), unit, property, live/ (Windows process tests)
+cli.py      front-end: file images and Windows PID mode
 ```
