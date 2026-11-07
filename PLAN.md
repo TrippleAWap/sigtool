@@ -263,7 +263,7 @@ Updated during M2.
 - Property tests cover ASLR invariance, normalization idempotence/determinism,
   and hostile-byte recovery.
 
-**M2 — implemented for the core (no front-end yet).**
+**M2 — implemented for the core and the file CLI.**
 
 - `core/score.py` assigns base weights per kind, string and constant rarity
   multipliers, and optional IDF from a reference corpus; it selects up to four
@@ -274,12 +274,17 @@ Updated during M2.
 - `core/generate.py` is the single entry point: source plus address in,
   signature and report out. Front-ends must call it rather than recombine the
   pieces.
+- `cli.py` is the thin front-end: `gen --file IMAGE --addr A` or
+  `gen --file IMAGE --module M --rva R`. YAML goes to stdout (or `--output`),
+  the quality report to stderr (`--json-report` for JSON), and exit codes are
+  `0` success, `2` usage/input error, `3` unsupported arch, `4` self-test
+  failure.
 - Sample output for `collatz_length` (x64, `-O2`) is `weak`: it has only two
   constants and no strings or callees. That is the honest verdict, not a bug —
   shape features are optional and cannot anchor.
 - Not done in M2: process sources (the first-OS decision in section 10 is still
-  open), the CLI, and self-test. Self-test needs the M3 matcher, so a generated
-  signature is currently checked structurally and by round-trip only.
+  open), so PID mode is unavailable. Self-test and the quality verdicts are
+  wired through the CLI.
 
 **M3 — implemented; recall target not yet met.**
 
@@ -303,7 +308,7 @@ Updated during M2.
   binary. The 70 percent cross-opt target in section 6 is **not met**;
   multi-sample merging in M4 is the planned fix, and thresholds were not
   loosened to move the number.
-- Remaining M3 work: the negative corpus (still M0), CI wiring, the CLI, and a
+- Remaining M3 work: the negative corpus (still M0), CI wiring, and a
   hint-free discovery mode (the harness currently uses ELF symbols as
   candidates, so it measures comparison quality rather than discovery).
 

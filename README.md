@@ -16,7 +16,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 |---|---|
 | M0 spec and corpus | started: spec v1 written, corpus build script and samples present |
 | M1 extraction (x64, AArch64) | implemented and passing: bounds agreement 1.00 on x64, 0.94 on arm64 (criterion 0.90) |
-| M2 generation | core implemented: weighted deterministic YAML plus quality report; CLI and process sources pending |
+| M2 generation | core and file CLI implemented: weighted deterministic YAML plus quality report; process sources and PID mode pending |
 | M3 validation harness | reference matcher and mandatory self-test implemented; corpus recall/FP harness in `bench.py`, negative corpus still M0 work |
 
 ARM32/Thumb are detected and rejected with a clear error until M4.
@@ -46,6 +46,18 @@ python bench.py                      # recall per arch/opt level, false positive
 python bench.py --json corpus/report.json
 ```
 
+Generate a signature from an image file:
+
+```bash
+sigtool gen --file corpus/build/x64/O2/loops.elf --addr 0x201340
+sigtool gen --file image.so --module image.so --rva 0x1340 --output fn.yaml
+```
+
+The YAML signature goes to stdout (or `--output`); the quality report goes to
+stderr. `--json-report PATH` writes the report as JSON. Exit codes: `0` success,
+`2` usage/input error, `3` unsupported architecture, `4` self-test failure
+(no signature emitted).
+
 Current harness numbers (x64 and arm64, two source files): 102/102 signatures pass
 self-test, same-build recall 1.000, cross-optimization recall 0.448, and zero
 false positives for 40 strong signatures against unrelated binaries. The
@@ -54,10 +66,10 @@ negative corpus is still M0 work, so the FP number is a floor.
 ## Layout
 
 ```
-core/       source, arch, normalize, recover, features, score, sigfile, validate, generate
-            (match lands in M3)
+core/       source, arch, normalize, recover, features, score, sigfile, validate, generate, match
 sources/    file (ELF, PE); live-process and IDA sources follow
 spec/       signature spec and changelog
 corpus/     build script, C samples, ground truth (binaries ignored)
 tests/      vectors/ (golden), unit, property, live/ later
+cli.py      file-based front-end (gen); PID mode follows the first-OS decision
 ```

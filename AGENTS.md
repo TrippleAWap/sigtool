@@ -63,7 +63,9 @@ python -m mypy core sources         # type check
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld)
 python corpus/build.py              # rebuild corpus + ground truth (clang + ld.lld)
 python bench.py                     # corpus recall/FP report (M3)
-sigtool gen --pid P --addr A        # generate a signature from a live process (M2, CLI pending)
+sigtool gen --file IMAGE --addr A   # generate a signature from an ELF/PE image
+sigtool gen --file IMAGE --module M --rva R  # module+rva addressing
+sigtool gen --pid P --addr A        # generate a signature from a live process (pending first-OS decision)
 python -c "from core.generate import generate"  # library use; front-ends call this
 ```
 
@@ -109,7 +111,10 @@ point; front-ends must not recombine scoring and serialisation themselves.
 M3 core is implemented: `core/match.py` is the reference matcher (anchor
 needles, candidate starts, weighted comparison) and `generate` now self-tests
 every signature before returning it, raising `SelfTestError` instead of
-emitting one it cannot re-find. The corpus harness and CLI are still pending.
+emitting one it cannot re-find. `bench.py` reports recall and false positives.
+`cli.py` is the file-based front-end (`gen --file ... --addr` or
+`--module ... --rva`); it emits YAML on stdout plus a quality report on stderr.
+PID mode and the corpus/negative-corpus CI job are still pending.
 See `PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)
