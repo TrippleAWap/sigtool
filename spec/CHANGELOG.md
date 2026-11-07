@@ -41,6 +41,10 @@ stays `1`.
 * Weighted comparison where optional features can only add evidence, gated by
   `thresholds.match` and `min_distinct`; overlapping spans collapse to one
   match.
+* Self-test rule: generation runs the matcher and refuses to emit a signature
+  that is not accepted at the sampled function start. When no anchor or known
+  function start can reach the function, the weaker structural check applies
+  instead (the signature must still describe those bytes exactly).
 
 Not yet specified: `multi-arch` merging, a data-reference index for string
 candidate discovery, and reference-scanner budgets (M4–M6).

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from core.features import Feature, extract
+from core.match import Match, self_test
 from core.recover import RecoveryLimits, recover
 from core.score import (
     ScoredFeature,
@@ -32,6 +33,8 @@ DEFAULT_NAME_PREFIX: Final[str] = "sub_"
 class GenerationResult:
     signature: Signature
     report: QualityReport
+    #: The self-test match that allowed this signature to be emitted.
+    match: Match
 
     def to_yaml(self) -> str:
         return self.signature.to_yaml()
@@ -97,7 +100,11 @@ def generate(
         instruction_count=recovered.instruction_count,
         degraded=recovered.degraded,
     )
-    return GenerationResult(signature=signature, report=report)
+    # Rule 7: never emit a signature the reference matcher cannot re-find
+    # (or, when the matcher cannot reach the function, one that does not
+    # describe its bytes exactly).
+    match = self_test(signature, source, recovered.start, limits=limits)
+    return GenerationResult(signature=signature, report=report, match=match)
 
 
 def _default_name(source: ByteSource, addr: int, *, module_name: str, rva: int) -> str:

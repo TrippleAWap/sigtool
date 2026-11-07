@@ -15,7 +15,7 @@ from core.match import (
     self_test,
 )
 from core.sigfile import SampleProvenance, Signature, SignatureFeature
-from tests.support import strong_source, tiny_source
+from tests.support import HELPER, strong_source, tiny_source
 
 
 def signature_for(*, name: str = "fixture_fn", **overrides: object) -> Signature:
@@ -173,4 +173,4 @@ def test_self_test_rejects_a_signature_that_cannot_be_refound() -> None:
 def test_self_test_reports_a_wrong_start() -> None:
     signature = generate(strong_source(), 0x1000).signature
     with pytest.raises(SelfTestError):
-        self_test(signature, strong_source(), 0x1030)
+        self_test(signature, strong_source(), HELPER)

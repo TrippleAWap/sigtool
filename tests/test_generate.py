@@ -6,7 +6,7 @@ from core.generate import generate
 from core.score import ScoredFeature
 from core.sigfile import Signature
 from core.validate import quality_report
-from tests.support import strong_source, tiny_source
+from tests.support import HELPER, strong_source, tiny_source
 
 
 def test_generate_produces_a_strong_signature() -> None:
@@ -22,13 +22,20 @@ def test_generate_produces_a_strong_signature() -> None:
     assert result.report.data_features >= 3
 
 
+def test_generate_reports_the_self_test_match() -> None:
+    result = generate(strong_source(), 0x1000)
+    assert result.match.address == 0x1000
+    assert result.match.score == 1.0
+    assert "str:generate banner literal" in result.match.matched
+
+
 def test_generate_names_unnamed_functions_by_module_rva() -> None:
     signature = generate(strong_source(), 0x1000).signature
     assert signature.name == "sub_gen+0x0"
 
 
 def test_generate_uses_symbol_names_when_available() -> None:
-    signature = generate(strong_source(), 0x1030).signature
+    signature = generate(strong_source(), HELPER).signature
     assert signature.name == "helper"
 
 
@@ -47,7 +54,7 @@ def test_generation_is_deterministic() -> None:
 def test_yaml_contains_no_absolute_addresses_or_paths() -> None:
     text = generate(strong_source(), 0x1000).signature.to_yaml()
     assert "0x1000" not in text
-    assert "0x1030" not in text
+    assert "0x1060" not in text
     assert "0x2000" not in text
     assert "\\" not in text
 

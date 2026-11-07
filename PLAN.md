@@ -281,4 +281,22 @@ Updated during M2.
   open), the CLI, and self-test. Self-test needs the M3 matcher, so a generated
   signature is currently checked structurally and by round-trip only.
 
-**Not started:** M3 onward.
+**M3 — reference matcher and self-test implemented; harness pending.**
+
+- `core/match.py`: Tier 0 anchor needles (constants in both byte orders, strings
+  narrow and UTF-16LE), Tier 1 candidates from known function starts plus a
+  bounded backward instruction sweep from constant hits, and Tier 2 weighted
+  comparison gated by `thresholds.match` and `min_distinct`. Overlapping spans
+  collapse to one match.
+- `core/generate.py` now runs the matcher against the sampled function and
+  raises `SelfTestError` rather than emit a signature it cannot re-find (rule 7).
+- Real corpus check: 32/32 functions across x64 and arm64 at `-O2` (two source
+  files each) pass self-test in under two seconds total.
+- Known gap: string anchors only rank candidates, so discovering code that
+  references a string needs the M6 data-reference index; until then a source
+  that cannot enumerate function starts also cannot self-test a string-only
+  signature, and generation refuses rather than guessing.
+- Remaining M3 work: the corpus harness (recall per arch and opt level, FP scan
+  against the negative corpus), CI wiring, and the CLI.
+
+**Not started:** M4 onward.

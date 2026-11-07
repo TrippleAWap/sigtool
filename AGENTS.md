@@ -105,8 +105,12 @@ M1 is implemented for x64 and AArch64: `core/source.py`, `core/arch.py`,
 M2 core is implemented: `core/score.py`, `core/sigfile.py`, `core/validate.py`,
 and `core/generate.py`. `generate(source, addr)` is the single generation entry
 point; front-ends must not recombine scoring and serialisation themselves.
-`core/match.py`, the CLI, and process sources are still M2/M3 work and do not
-exist yet. See `PLAN.md` section 12.
+
+M3 core is implemented: `core/match.py` is the reference matcher (anchor
+needles, candidate starts, weighted comparison) and `generate` now self-tests
+every signature before returning it, raising `SelfTestError` instead of
+emitting one it cannot re-find. The corpus harness and CLI are still pending.
+See `PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)
 

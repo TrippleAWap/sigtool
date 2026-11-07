@@ -5,6 +5,8 @@ from __future__ import annotations
 from core.arch import Arch
 from core.source import MemorySource, Module, Region
 
+HELPER = 0x1060
+
 
 def strong_source(*, with_hints: bool = False) -> MemorySource:
     """A 15-instruction function with a string, many constants, and a callee."""
@@ -28,10 +30,11 @@ def strong_source(*, with_hints: bool = False) -> MemorySource:
     ):
         code += opcode + immediate.to_bytes(4, "little")
     call_address = 0x1000 + len(code)
-    code += b"\xe8" + (0x1030 - (call_address + 5)).to_bytes(4, "little", signed=True)
+    code += b"\xe8" + (HELPER - (call_address + 5)).to_bytes(4, "little", signed=True)
+    code += b"\xc3"  # function ends here; the callee follows the padding
+    code += b"\x00" * (HELPER - len(code) - 0x1000)
     code += b"\xc3"
-
-    text = bytes(code) + b"\x00" * (0x1030 - (0x1000 + len(code))) + b"\xc3"
+    text = bytes(code)
     rodata = b"generate banner literal\x00"
     regions = [
         Region("text", 0x1000, len(text), text, executable=True),
@@ -42,10 +45,10 @@ def strong_source(*, with_hints: bool = False) -> MemorySource:
         base=0x1000,
         size=0x2000 + len(rodata) - 0x1000,
         regions=tuple(regions),
-        exports={"helper": 0x1030},
-        functions={0x1030: "helper"},
+        exports={"helper": HELPER},
+        functions={HELPER: "helper"},
     )
-    hints = ((0x1000, 0x1030), (0x1030, 0x1031)) if with_hints else ()
+    hints = ((0x1000, HELPER), (HELPER, HELPER + 1)) if with_hints else ()
     return MemorySource(Arch.X64, regions, [module], hints=hints)
 
 
