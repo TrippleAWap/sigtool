@@ -20,8 +20,8 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 | M3 validation harness | implemented: reference matcher with hint-free discovery, mandatory self-test, recall/FP harness in `bench.py` with a committed baseline and CI gate, negative-corpus FP scan at 0 hits |
 | M4 cross-arch | implemented: ARM32/Thumb extraction, multi-sample merging (`sigtool merge`), auto-locate (`sigtool locate`); merged cross-arch recall 0.707 same-opt / FP budget unmet — see PLAN §12 |
 | M5 IDA plugin | implemented: `IdaSource` over an injectable IDA facade with bounds hints and disagreement notes; generate/merge/locate actions; output test-verified identical to the CLI (UI glue untested in CI — no IDA host) |
-
-ARM32/Thumb are detected and rejected with a clear error until M4.
+| M6 reference scanner | implemented: page-hashed incremental scanner, private/changed/untouched priority, shared recovery budget, per-region data-reference index for string anchors; profile recorded in PLAN §12 |
+| M7 native port | implemented for x64 in Rust under `native/`: extractor, matcher, scanner, signature document, CLI, and mmap-friendly binary DB; parity-tested against the Python golden vectors and x64 corpus; ARM/PID/merge/IDA ports are follow-ups |
 
 ## Install and check
 
@@ -82,8 +82,32 @@ gaps are tracked in `tests/baseline/bench.json` and analysed in PLAN §12.
 
 CI (`.github/workflows/ci.yml`) runs format, lint, types, the spec-version check,
 the corpus build, pytest, and the baseline regression on Linux, plus the live
-Windows PID-mode tests on a Windows runner. Recall is tracked per discovery
-mode (hinted and hint-free).
+Windows PID-mode tests on a Windows runner, plus the native Rust format, clippy,
+and parity tests (golden vectors, scanner behaviour, and the x64 corpus slice)
+on Linux. Recall is tracked per discovery mode (hinted and hint-free).
+
+### Native port
+
+`native/` is a Rust implementation of the spec for x64. It mirrors the Python
+reference (decoder, normalization, recovery, features, scoring, signature
+document, matcher, scanner) and adds a binary signature DB:
+
+```bash
+cd native
+cargo test
+cargo fmt --all -- --check
+cargo clippy --all-targets
+cargo run --release -- gen --file ../corpus/build/x64/O2/loops.elf --addr 0x201250
+cargo run --release -- locate --signature fn.yaml --file other.so
+cargo run --release -- scan --file image.so --signature fn.yaml
+cargo run --release -- scan --file image.so --db signatures.db
+cargo run --release -- db build --signature fn.yaml --output signatures.db
+```
+
+The native CLI uses the same exit codes as `sigtool` and refuses non-x64 images
+with code `3` rather than decoding them with the wrong tables. `db build`
+writes the mmap-friendly format described in SPEC §10; the header carries the
+spec version, so a DB from another feature spec is refused.
 
 ### In IDA
 

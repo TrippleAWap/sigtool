@@ -83,3 +83,43 @@ jobs:
 
       - name: Tests (includes live PID mode)
         run: python -m pytest
+
+  native:
+    name: native (rust, x64 parity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Install clang and lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang lld
+
+      - name: Build corpus
+        run: python corpus/build.py
+
+      - name: Format
+        working-directory: native
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        working-directory: native
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: native
+        run: cargo test

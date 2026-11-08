@@ -11,3 +11,6 @@ dist/
 # corpus binaries and ground truth are rebuilt locally, never committed
 corpus/build/
 corpus/*.json
+
+# Rust build output
+native/target/

@@ -91,3 +91,24 @@ the planned follow-on.
 
 Not yet specified: `multi-arch` merging, a data-reference index for string
 candidate discovery, and reference-scanner budgets (M4–M6).
+
+## v1 — M7 native scanner port
+
+Adds a Rust implementation under `native/` that implements the same spec for
+x64. Feature semantics, canonicalization, hashing, weights, and thresholds are
+unchanged, so `SPEC_VERSION` stays `1` and the golden vectors are unaffected.
+
+* Native extractor, matcher, scanner, and signature document mirror the Python
+  reference and are parity-tested against the x64 golden vectors,
+  `tests/test_scanner.py`, and the x64 corpus slice of
+  `tests/baseline/bench.json`. All 51 x64 corpus signature ids are identical
+  to Python.
+* `iced-x86` replaces Capstone as the decoder; per-arch normalization rules are
+  the same tables. ARM64/ARM32/Thumb decoding is not ported yet and the CLI
+  refuses non-x64 images instead of decoding them with the wrong tables.
+* Binary signature database (SPEC.md §10): a deterministic, mmap-friendly file
+  with a 64-byte header, a 40-byte-record table sorted by `signature_id`, and a
+  padded payload blob. The header carries `SPEC_VERSION`, and table/payload
+  CRC-32 checks detect corruption.
+* CLI (`sigtool-native`): `gen`, `locate`, `scan` (YAML or `--db`), and
+  `db build`, with the same exit-code contract as the Python front-end.

@@ -354,3 +354,56 @@ budget limit and marks the function `degraded`; it never guesses. A direct jump
 onto a known other symbol, or outside the symbol's range, is treated as a tail
 call and not followed. Trailing alignment padding is trimmed so recovered bounds
 are comparable to symbol sizes.
+
+## 10. Binary signature database
+
+The native scanner stores many signature documents in one immutable file so it
+can map them read-only instead of parsing YAML per scan
+(`native/src/db.rs`). The format is a container only: the canonical YAML
+payload remains the identity, and `signature_id` is recomputed from the payload
+when a record is read. All integers are little-endian.
+
+```text
+header (64 bytes)
+spec version string (padded to 8)
+record table (record_count * 40 bytes)
+blob: id, name, canonical YAML payload per record, each padded to 8
+```
+
+Header fields:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 8 | magic `SIGTDB\0\1` |
+| 8 | 2 | format version (`1`) |
+| 10 | 2 | header size (`64`) |
+| 12 | 4 | flags (`0`) |
+| 16 | 2 | spec version length |
+| 18 | 2 | record size (`40`) |
+| 20 | 4 | record count |
+| 24 | 8 | spec version offset |
+| 32 | 8 | record table offset |
+| 40 | 8 | blob offset |
+| 48 | 8 | blob length |
+| 56 | 4 | record-table CRC-32 |
+| 60 | 4 | reserved (`0`) |
+
+Each 40-byte record points into the blob with absolute file offsets:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 8 | signature id offset |
+| 8 | 4 | signature id length |
+| 12 | 4 | name length |
+| 16 | 8 | name offset |
+| 24 | 8 | payload offset |
+| 32 | 4 | payload length |
+| 36 | 4 | payload CRC-32 |
+
+Records are sorted by `signature_id`, so a mapped DB can be binary-searched
+without allocating. The reader validates the header, bounds, sort order, and
+table CRC when it opens the file; payload CRCs and the id-versus-payload check
+run when a record is read. A DB whose header spec version differs from
+`SPEC_VERSION` is refused rather than interpreted with different semantics.
+Encoding is deterministic: identical signature sets produce identical bytes
+regardless of insertion order.

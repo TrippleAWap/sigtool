@@ -15,6 +15,7 @@ core/       ByteSource, arch, normalize, recover, features, score, sigfile, vali
 sources/    proc_win, proc_linux, file, ida
 cli.py      CLI front-end
 ida_plugin.py  IDA front-end (UI glue only)
+native/     Rust port of the spec (library + `sigtool-native` CLI)
 spec/       written signature spec and changelog
 corpus/     build scripts and ground-truth maps (binaries are not committed)
 tests/      vectors/ (golden), property/, live/
@@ -23,11 +24,11 @@ tests/      vectors/ (golden), property/, live/
 ## Hard rules (do not break these)
 
 1. **`core/` never imports IDA or OS-specific APIs.** All memory and module access goes through the `ByteSource` interface. IDA and process code live in `sources/` and the front-ends.
-2. **One extractor.** Generation and scanning must call the same feature code. Never fork or reimplement feature extraction for a front-end.
+2. **One extractor per implementation.** Generation and scanning must call the same feature code. The Rust port under `native/` is a parity-tested port of the reference extractor (golden vectors and corpus results), not a fork that may drift; a change to feature semantics lands in both, or the spec version changes. Never reimplement feature extraction in a front-end.
 3. **Determinism.** Same input must produce byte-identical signatures: fixed hash seeds, sorted features, no dict or set ordering leaks, no timestamps or absolute paths in output. Run twice and diff when touching output code.
 4. **No absolute addresses in features.** Drop any immediate or displacement that falls inside a mapped module range. Store `module+rva` in provenance only.
 5. **Every signature file carries the spec version.** Changing feature semantics, canonicalization, or hashing means bumping the spec version and updating `spec/` and the changelog.
-6. **No IR lifting, symbolic execution, or learned models in the scan path.** Capstone plus per-arch normalization tables only.
+6. **No IR lifting, symbolic execution, or learned models in the scan path.** Capstone in Python and `iced-x86` in the native port, plus per-arch normalization tables only.
 7. **Never emit a signature that fails self-test.** Small functions are allowed but get a `confidence: low` tag and rely on neighbor context; they are not refused.
 8. **Treat target process memory as untrusted input.** Decoders and recovery must never crash, hang, or read unbounded data on random or truncated bytes. Bound all descent, loops, and reads.
 9. **Read-only access to target processes.** The tool never writes to, suspends, or injects into a target.
@@ -45,8 +46,8 @@ x86-64 passes golden vectors first and is the reference the other architectures 
 
 ## Conventions
 
-- **Language:** Python 3.10+ for v1, with type hints on all public functions. Dependencies: `capstone`, `pyyaml`, plus the standard library. Keep dependencies minimal; `core/` must be installable into IDA's bundled Python with `pip`.
-- **Style:** format with `ruff format`, lint with `ruff check`, type-check with `mypy` (strict on `core/`).
+- **Language:** Python 3.10+ for the reference implementation, with type hints on all public functions. Dependencies: `capstone`, `pyyaml`, plus the standard library. Keep dependencies minimal; `core/` must be installable into IDA's bundled Python with `pip`. The native port is Rust (`iced-x86`, `blake2b_simd`, `serde`, `memmap2`, `crc32fast`, `clap`).
+- **Style:** Python: format with `ruff format`, lint with `ruff check`, type-check with `mypy` (strict on `core/`). Rust: `cargo fmt --all`, `cargo clippy --all-targets`.
 - **Naming:** feature kinds are `str`, `const`, `callee`, `cfg`, `ops`. Arch identifiers: `x64`, `arm64`, `arm32`, `thumb`.
 - **Errors:** raise specific exceptions from `core`; front-ends translate them to exit codes and UI messages. The CLI exits non-zero on failed self-test or unsupported target.
 - **Hashing:** use the hash function and seeds fixed in `spec/`. Never use Python's built-in `hash()` for anything persisted.
@@ -71,6 +72,15 @@ sigtool gen --pid P --addr A        # generate a signature from a live Windows p
 sigtool merge --sample F1:A1 --sample F2:A2 --name N  # merge samples of one function
 sigtool locate --signature S.yaml --file IMAGE  # find a signature in a second image
 python -c "from core.generate import generate"  # library use; front-ends call this
+
+cd native
+cargo test                          # native parity: golden, scanner, x64 corpus
+cargo fmt --all && cargo clippy --all-targets
+cargo run --release -- gen --file IMAGE --addr A
+cargo run --release -- locate --signature S.yaml --file IMAGE
+cargo run --release -- scan --file IMAGE --signature S.yaml
+cargo run --release -- scan --file IMAGE --db signatures.db
+cargo run --release -- db build --signature S.yaml --output signatures.db
 ```
 
 `tests/vectors/*.json` and `corpus/build/` are generated, not hand-written.
@@ -82,6 +92,7 @@ commit the vectors, never the corpus binaries.
 - **Golden vectors** (`tests/vectors/`): bytes in, feature records out, per architecture (x64, arm64 with PAC, x64 with CET, arm32, thumb). Never hand-edit; regenerate with `python tests/vectors/generate.py` and review the diff. A vector change must be justified in the PR description. Vectors are generated from real clang + lld output, not hand-written snippets.
 - **Property tests:** normalization is idempotent; the same code at two ASLR bases yields identical features; random bytes never crash recovery.
 - **Corpus regression:** recall (per discovery mode: hinted and hint-free) and false-positive numbers are compared against `tests/baseline/bench.json` with a 0.05 tolerance (compiler versions move cross-build rates by about 0.02); a drop or an FP increase fails `bench.py --baseline` and CI. `bench.py` scans strong signatures against the negative corpus (`corpus/negative/`) as well as unrelated source files, and both FP rates are gated; merged-pair refusals are reported but never gate (refusing an unmergeable pair is the design working). Update the baseline only for an intentional improvement, with `--save-baseline`, and review the diff. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint across x64, arm64, arm32, and thumb, and requires at least 0.90 agreement (M1 exit criterion); it also checks ground-truth coverage against the M0 0.95 criterion.
+- **Native parity tests** (`native/tests/`): the Rust port must reproduce the Python reference. `golden.rs` replays the x64 golden vectors, `scanner.rs` mirrors `tests/test_scanner.py`, and `corpus.rs` reproduces the x64 slice of `bench.py` against `tests/baseline/bench.json` with the same 0.05 tolerance. A feature, normalization, scoring, or matching change lands in both implementations and keeps these green; the corpus test skips when `corpus/build/` is absent. ARM64/ARM32/Thumb are not ported yet, so the native CLI must exit `3` for them rather than decoding with the wrong tables.
 - **Spec version check:** `tests/test_spec.py` asserts that `SPEC_VERSION`, `HASH_PERSON`, `spec/SPEC.md`, and `spec/CHANGELOG.md` agree.
 - **Live tests:** scripted target processes with known functions, including a hooked function and an injected region. These need a real or QEMU user-mode host for each architecture.
 - New normalization rules need a vector from at least one real compiler output, not just a hand-written snippet.
@@ -150,6 +161,21 @@ criterion "output identical to CLI for the same inputs" is test-verified
 dialog and menu glue itself is not exercised by CI because no IDA host runs
 there.
 See `PLAN.md` section 12.
+
+M6 is implemented: `core/scanner.py` (`SignatureScanner`, `ScanReport`, CRC-32
+page hashing, private/changed/untouched region priority), `RecoveryBudget` for
+Tier 1, and `ReferenceIndex` for string-anchor discovery with bounded sweeps.
+`profile_scan.py` measures full and incremental passes; the measured hot spot
+is Capstone decode in the index. See `PLAN.md` section 12.
+
+M7 is implemented for x64 in Rust under `native/`: `sigtool-native` mirrors the
+reference extractor, matcher, scanner, and signature document, and adds a
+binary signature DB (`native/src/db.rs`, SPEC.md §10). Parity is test-verified
+against the x64 golden vectors, `tests/test_scanner.py`, and the x64 corpus
+slice of `tests/baseline/bench.json`; all 51 x64 corpus signature ids match
+Python. ARM64/ARM32/Thumb decoding, live-PID sources, `merge`, and the IDA
+adapter are not ported yet, and the CLI exits `3` for non-x64 images. See
+`PLAN.md` section 12.
 
 ## Open decisions (ask before assuming)
 

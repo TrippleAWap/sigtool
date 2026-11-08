@@ -159,10 +159,14 @@ Each milestone has an exit criterion. Do not start the next until the current on
 
 **Exit:** measured throughput and CPU cost on a representative process set; documented hot spots.
 
-### M7: Native scanner port (later, scoped after M6)
+### M7: Native scanner port (implemented in Rust, x64 first)
 
-- C++ or Rust scanner implementing the spec, validated against the Python golden vectors and corpus results.
-- Binary DB format with mmap-friendly layout.
+- Rust crate under `native/` (`sigtool-native`) implementing the spec:
+  decoder/normalizer/recovery/features, signature documents, matcher, scanner,
+  and a CLI (`gen`, `locate`, `scan`, `db build`).
+- Validated against the Python golden vectors and the x64 corpus results; the
+  remaining architectures are follow-up ports (see section 12).
+- Binary DB format with an mmap-friendly layout (SPEC.md §10).
 
 ### Optional later phases
 
@@ -406,7 +410,9 @@ merging is the planned fix).**
   menu glue cannot run in CI (no IDA host); it is deliberately thin, and the
   first IDA-session check should follow `README.md` "In IDA".
 
-**Not started:** M7 onward.
+**Not started:** the ARM64/ARM32/Thumb native ports, native live-PID sources,
+native `merge`, and a native IDA adapter. Everything else through M7 is
+implemented.
 
 **M6 — implemented; native port is the follow-on (M7).**
 
@@ -440,3 +446,43 @@ merging is the planned fix).**
 - Exit criterion met: throughput and CPU cost measured on a representative
   process set (the running interpreter at `-O2` scale), hot spots documented in
   `profile_scan.py --json corpus/scan-profile.json`. M7 ports to C/Rust.
+
+**M7 — implemented for x64 in Rust; other architectures are follow-ups.**
+
+- `native/` is a separate crate (`sigtool-native`) that mirrors `core/`:
+  `source.rs`, `arch.rs`, `elf.rs` (ELF/PE `FileSource`), `normalize.rs`,
+  `recover.rs`, `features.rs`, `sigfile.rs`, `score.rs`, `validate.rs`,
+  `generate.rs`, `matcher.rs`, `scanner.rs`, `db.rs`, and `main.rs`. It uses
+  `iced-x86` for decoding, `blake2b_simd` for the spec hash, and `serde_yaml`
+  for the canonical document. No IDA or OS-specific code enters the library;
+  the CLI is the only front-end.
+- Parity is checked, not assumed. `native/tests/golden.rs` replays the x64
+  golden vectors (features, CFG blocks/edges/loops, degraded flags).
+  `native/tests/scanner.rs` mirrors `tests/test_scanner.py` (page skipping,
+  private-first priority, shared budget, reference index, truncation,
+  string-only discovery, stable `signature_id`). `native/tests/corpus.rs`
+  reproduces the x64 slice of `bench.py` and compares it to
+  `tests/baseline/bench.json` with the same 0.05 tolerance.
+- Measured on the generated x64 corpus: all 51 generated signature ids are
+  byte-identical to Python, every recall cell matches the baseline exactly
+  (hinted same-build 1.000, cross-build 37/96 = 0.385; hint-free same-build
+  9/51 = 0.176, cross-build 8/96 = 0.083), and false positives are 0/17
+  cross-source and 0/17 negative.
+- Binary DB (`native/src/db.rs`, SPEC.md §10): 64-byte header (magic
+  `SIGTDB\0\1`, format version, header/record sizes, flags, spec version,
+  record count, spec/records/blob offsets, blob length, table CRC-32),
+  40-byte records sorted by `signature_id`, and a padded blob of id, name, and
+  canonical YAML. `DbView` validates structure once and reads payloads
+  zero-copy; `MappedDb` maps the file read-only with `memmap2`. The spec
+  version is part of the header, so a DB from another feature spec is refused.
+- CLI: `sigtool-native gen`, `locate`, `scan` (YAML or `--db`), and
+  `db build`. Exit codes match the Python front-end: `0` success, `1` no
+  match, `2` usage/input, `3` unsupported arch, `4` self-test refusal.
+  `cargo fmt --all`, `cargo clippy --all-targets`, and `cargo test` are clean.
+- Not ported yet: ARM64/ARM32/Thumb decoding and recovery, live-PID sources,
+  multi-sample `merge`, and the IDA adapter. `gen`/`locate`/`scan` return exit
+  code `3` for a non-x64 image rather than decoding it with the wrong tables.
+  The Python implementation remains the reference for those paths.
+- Native throughput was not separately benchmarked against the Python scanner;
+  the M7 scope is spec parity plus the mmap-friendly DB. A native scan profile
+  is follow-up work if the scanner becomes the production path.
