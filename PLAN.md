@@ -483,6 +483,17 @@ implemented.
   multi-sample `merge`, and the IDA adapter. `gen`/`locate`/`scan` return exit
   code `3` for a non-x64 image rather than decoding it with the wrong tables.
   The Python implementation remains the reference for those paths.
-- Native throughput was not separately benchmarked against the Python scanner;
-  the M7 scope is spec parity plus the mmap-friendly DB. A native scan profile
-  is follow-up work if the scanner becomes the production path.
+- Throughput is measured against the Python reference on the same corpus
+  workload: `native/examples/profile_scan.rs` mirrors
+  `profile_scan.py --no-live --no-profiler`, and `compare_scan_profile.py` joins
+  the two JSON profiles. Six x64 binaries, the same signature sets, Tier 1
+  budget 100 000, one full and one incremental pass: Python 1503.4 ms vs native
+  39.7 ms on the full pass (37.8x, 18-49x per binary) and 0.52 ms vs 0.11 ms on
+  the incremental pass (4.9x). The comparison script also verifies workload
+  parity, so the ratio is not measuring different work: both sides generate the
+  same signature count and report the same hits and index instruction count for
+  every binary. The corpus is small (12 KiB of image), so this measures
+  per-instruction decode and dispatch cost rather than page-hashing throughput
+  at address-space scale, and the M6 live-process workload (98 s Python full
+  pass over a 44 MiB address space) still has no native counterpart because
+  there is no native PID source.

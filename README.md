@@ -21,7 +21,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 | M4 cross-arch | implemented: ARM32/Thumb extraction, multi-sample merging (`sigtool merge`), auto-locate (`sigtool locate`); merged cross-arch recall 0.707 same-opt / FP budget unmet — see PLAN §12 |
 | M5 IDA plugin | implemented: `IdaSource` over an injectable IDA facade with bounds hints and disagreement notes; generate/merge/locate actions; output test-verified identical to the CLI (UI glue untested in CI — no IDA host) |
 | M6 reference scanner | implemented: page-hashed incremental scanner, private/changed/untouched priority, shared recovery budget, per-region data-reference index for string anchors; profile recorded in PLAN §12 |
-| M7 native port | implemented for x64 in Rust under `native/`: extractor, matcher, scanner, signature document, CLI, and mmap-friendly binary DB; parity-tested against the Python golden vectors and x64 corpus; ARM/PID/merge/IDA ports are follow-ups |
+| M7 native port | implemented for x64 in Rust under `native/`: extractor, matcher, scanner, signature document, CLI, and mmap-friendly binary DB; parity-tested against the Python golden vectors and x64 corpus, and measured at 37.8x the Python scanner's full-pass throughput; ARM/PID/merge/IDA ports are follow-ups |
 
 ## Install and check
 
@@ -102,7 +102,16 @@ cargo run --release -- locate --signature fn.yaml --file other.so
 cargo run --release -- scan --file image.so --signature fn.yaml
 cargo run --release -- scan --file image.so --db signatures.db
 cargo run --release -- db build --signature fn.yaml --output signatures.db
+cargo run --release --example profile_scan      # scan-cost profile on the x64 corpus
 ```
+
+Scan cost is measured, not assumed. `native/examples/profile_scan.rs` mirrors
+`profile_scan.py --no-live --no-profiler`, and `compare_scan_profile.py` joins
+the two JSON profiles to report throughput on the binaries both implementations
+scan. On the same six x64 corpus binaries with identical signature sets: full
+pass 1503.4 ms vs 39.7 ms (37.8x, 18-49x per binary) and incremental pass
+0.52 ms vs 0.11 ms. The live-process workload is still Python-only because the
+native port has no PID source yet.
 
 The native CLI uses the same exit codes as `sigtool` and refuses non-x64 images
 with code `3` rather than decoding them with the wrong tables. `db build`

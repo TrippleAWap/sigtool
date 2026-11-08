@@ -167,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--corpus", type=Path, default=CORPUS)
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--no-live", action="store_true")
+    parser.add_argument(
+        "--no-profiler",
+        action="store_true",
+        help="time every binary uninstrumented (for throughput comparisons)",
+    )
     parser.add_argument("--live-signatures", type=int, default=24)
     args = parser.parse_args(argv)
 
@@ -182,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     for entry in binaries:
         path = args.corpus / str(entry["path"])
-        if path == largest:
+        if path == largest and not args.no_profiler:
             # Profile the largest binary in detail; others run unprofiled.
             profiler.enable()
             profiles.append(profile_binary(path))
@@ -226,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         for key, value in live.items():
             print(f"  {key:24s} {value}")
 
-    hot = top_hot_spots(profiler)
+    hot = [] if args.no_profiler else top_hot_spots(profiler)
     print()
     print("hot spots (largest binary, cumulative):")
     for line in hot:
