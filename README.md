@@ -21,7 +21,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 | M4 cross-arch | implemented: ARM32/Thumb extraction, multi-sample merging (`sigtool merge`), auto-locate (`sigtool locate`); merged cross-arch recall 0.707 same-opt / FP budget unmet — see PLAN §12 |
 | M5 IDA plugin | implemented: `IdaSource` over an injectable IDA facade with bounds hints and disagreement notes; generate/merge/locate actions; output test-verified identical to the CLI (UI glue untested in CI — no IDA host) |
 | M6 reference scanner | implemented: page-hashed incremental scanner, private/changed/untouched priority, shared recovery budget, per-region data-reference index for string anchors; profile recorded in PLAN §12 |
-| M7 native port | implemented for x64 in Rust under `native/`: extractor, matcher, scanner, signature document, CLI (gen/locate/scan/merge/db), and mmap-friendly binary DB; parity-tested against the Python golden vectors, x64 corpus, and merged output, and measured at 37.8x the Python scanner's full-pass throughput; ARM/PID/IDA ports are follow-ups |
+| M7 native port | implemented for x64 and arm64 in Rust under `native/`: extractor, matcher, scanner, signature document, CLI (gen/locate/scan/merge/db), and mmap-friendly binary DB; parity-tested against the Python golden vectors (x64 and arm64), x64 corpus, arm64 `gen` output, and merged output, and measured at 37.8x the Python scanner's full-pass throughput; ARM32/Thumb, PID, and IDA ports are follow-ups |
 
 ## Install and check
 
@@ -88,9 +88,10 @@ on Linux. Recall is tracked per discovery mode (hinted and hint-free).
 
 ### Native port
 
-`native/` is a Rust implementation of the spec for x64. It mirrors the Python
-reference (decoder, normalization, recovery, features, scoring, signature
-document, matcher, scanner) and adds a binary signature DB:
+`native/` is a Rust implementation of the spec for x64 and arm64 (`iced-x86`
+and `yaxpeax-arm` for decoding). It mirrors the Python reference (decoder,
+normalization, recovery, features, scoring, signature document, matcher,
+scanner) and adds a binary signature DB:
 
 ```bash
 cd native

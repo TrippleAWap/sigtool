@@ -7,8 +7,9 @@
 //! to that baseline within the same 0.05 tolerance. The corpus is generated (not
 //! committed), so the test skips when `corpus/build/ground_truth.json` is absent.
 //!
-//! ARM64/ARM32/Thumb are follow-up ports; this test deliberately scopes to x64,
-//! the reference architecture.
+//! The arm64 port is covered by the golden vectors; this test deliberately
+//! scopes to x64, the reference architecture, because the committed baseline is
+//! x64-only.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};

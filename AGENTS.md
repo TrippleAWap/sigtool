@@ -46,7 +46,7 @@ x86-64 passes golden vectors first and is the reference the other architectures 
 
 ## Conventions
 
-- **Language:** Python 3.10+ for the reference implementation, with type hints on all public functions. Dependencies: `capstone`, `pyyaml`, plus the standard library. Keep dependencies minimal; `core/` must be installable into IDA's bundled Python with `pip`. The native port is Rust (`iced-x86`, `blake2b_simd`, `serde`, `memmap2`, `crc32fast`, `clap`).
+- **Language:** Python 3.10+ for the reference implementation, with type hints on all public functions. Dependencies: `capstone`, `pyyaml`, plus the standard library. Keep dependencies minimal; `core/` must be installable into IDA's bundled Python with `pip`. The native port is Rust (`iced-x86`, `yaxpeax-arm`, `blake2b_simd`, `serde`, `memmap2`, `crc32fast`, `clap`).
 - **Style:** Python: format with `ruff format`, lint with `ruff check`, type-check with `mypy` (strict on `core/`). Rust: `cargo fmt --all`, `cargo clippy --all-targets`.
 - **Naming:** feature kinds are `str`, `const`, `callee`, `cfg`, `ops`. Arch identifiers: `x64`, `arm64`, `arm32`, `thumb`.
 - **Errors:** raise specific exceptions from `core`; front-ends translate them to exit codes and UI messages. The CLI exits non-zero on failed self-test or unsupported target.
@@ -96,7 +96,7 @@ commit the vectors, never the corpus binaries.
 - **Golden vectors** (`tests/vectors/`): bytes in, feature records out, per architecture (x64, arm64 with PAC, x64 with CET, arm32, thumb). Never hand-edit; regenerate with `python tests/vectors/generate.py` and review the diff. A vector change must be justified in the PR description. Vectors are generated from real clang + lld output, not hand-written snippets.
 - **Property tests:** normalization is idempotent; the same code at two ASLR bases yields identical features; random bytes never crash recovery.
 - **Corpus regression:** recall (per discovery mode: hinted and hint-free) and false-positive numbers are compared against `tests/baseline/bench.json` with a 0.05 tolerance (compiler versions move cross-build rates by about 0.02); a drop or an FP increase fails `bench.py --baseline` and CI. `bench.py` scans strong signatures against the negative corpus (`corpus/negative/`) as well as unrelated source files, and both FP rates are gated; merged-pair refusals are reported but never gate (refusing an unmergeable pair is the design working). Update the baseline only for an intentional improvement, with `--save-baseline`, and review the diff. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint across x64, arm64, arm32, and thumb, and requires at least 0.90 agreement (M1 exit criterion); it also checks ground-truth coverage against the M0 0.95 criterion.
-- **Native parity tests** (`native/tests/`): the Rust port must reproduce the Python reference. `golden.rs` replays the x64 golden vectors, `scanner.rs` mirrors `tests/test_scanner.py`, `merge.rs` mirrors `tests/test_merge.py`, and `corpus.rs` reproduces the x64 slice of `bench.py` against `tests/baseline/bench.json` with the same 0.05 tolerance. A feature, normalization, scoring, or matching change lands in both implementations and keeps these green; the corpus test skips when `corpus/build/` is absent. ARM64/ARM32/Thumb are not ported yet, so the native CLI must exit `3` for them rather than decoding with the wrong tables.
+- **Native parity tests** (`native/tests/`): the Rust port must reproduce the Python reference. `golden.rs` replays the x64 and arm64 golden vectors, `scanner.rs` mirrors `tests/test_scanner.py`, `merge.rs` mirrors `tests/test_merge.py`, and `corpus.rs` reproduces the x64 slice of `bench.py` against `tests/baseline/bench.json` with the same 0.05 tolerance. A feature, normalization, scoring, or matching change lands in both implementations and keeps these green; the corpus test skips when `corpus/build/` is absent. ARM32/Thumb are not ported yet, so the native CLI must exit `3` for them rather than decoding with the wrong tables.
 - **Spec version check:** `tests/test_spec.py` asserts that `SPEC_VERSION`, `HASH_PERSON`, `spec/SPEC.md`, and `spec/CHANGELOG.md` agree.
 - **Live tests:** scripted target processes with known functions, including a hooked function and an injected region. These need a real or QEMU user-mode host for each architecture.
 - New normalization rules need a vector from at least one real compiler output, not just a hand-written snippet.
@@ -172,17 +172,19 @@ Tier 1, and `ReferenceIndex` for string-anchor discovery with bounded sweeps.
 `profile_scan.py` measures full and incremental passes; the measured hot spot
 is Capstone decode in the index. See `PLAN.md` section 12.
 
-M7 is implemented for x64 in Rust under `native/`: `sigtool-native` mirrors the
-reference extractor, matcher, scanner, and signature document, and adds a
-binary signature DB (`native/src/db.rs`, SPEC.md §10). Parity is test-verified
-against the x64 golden vectors, `tests/test_scanner.py`, and the x64 corpus
-slice of `tests/baseline/bench.json`; all 51 x64 corpus signature ids match
-Python, and `merge` reproduces the Python front-end's merged YAML byte for
-byte. ARM64/ARM32/Thumb decoding, live-PID sources, and the IDA adapter are not
-ported yet, and the CLI exits `3` for non-x64 images. Corpus
-throughput is measured against the Python scanner on identical workloads:
-37.8x faster on the full pass (1503.4 ms vs 39.7 ms over six x64 binaries) and
-4.9x on the incremental pass. See `PLAN.md` section 12.
+M7 is implemented for x64 and arm64 in Rust under `native/`: `sigtool-native`
+mirrors the reference extractor, matcher, scanner, and signature document, and
+adds a binary signature DB (`native/src/db.rs`, SPEC.md §10). Parity is
+test-verified against the x64 and arm64 golden vectors, `tests/test_scanner.py`,
+and the x64 corpus slice of `tests/baseline/bench.json`; all 51 x64 corpus
+signature ids match Python, the arm64 corpus slice produces byte-identical
+`gen` YAML, and `merge` reproduces the Python front-end's merged YAML byte for
+byte. AArch64 decodes through `yaxpeax-arm` (`native/src/arm64.rs`); ARM32/Thumb
+decoding, live-PID sources, and the IDA adapter are not ported yet, and the CLI
+exits `3` for those images. Corpus throughput is measured against the Python
+scanner on identical workloads: 37.8x faster on the full pass (1503.4 ms vs
+39.7 ms over six x64 binaries) and 4.9x on the incremental pass. See `PLAN.md`
+section 12.
 
 ## Open decisions (ask before assuming)
 

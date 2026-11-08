@@ -3,9 +3,10 @@
 //! The crate mirrors the Python reference implementation in `core/`: one
 //! extractor for generation and scanning, bounded recovery over untrusted
 //! bytes, and deterministic output. x86-64 is the reference architecture and
-//! is the first port; ARM64/ARM32/Thumb are follow-ups.
+//! the first port; AArch64 is ported next, ARM32/Thumb are follow-ups.
 
 pub mod arch;
+mod arm64;
 pub mod db;
 pub mod elf;
 pub mod errors;

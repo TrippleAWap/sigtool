@@ -103,9 +103,12 @@ unchanged, so `SPEC_VERSION` stays `1` and the golden vectors are unaffected.
   `tests/test_scanner.py`, and the x64 corpus slice of
   `tests/baseline/bench.json`. All 51 x64 corpus signature ids are identical
   to Python.
-* `iced-x86` replaces Capstone as the decoder; per-arch normalization rules are
-  the same tables. ARM64/ARM32/Thumb decoding is not ported yet and the CLI
-  refuses non-x64 images instead of decoding them with the wrong tables.
+* `iced-x86` replaces Capstone as the x64 decoder and `yaxpeax-arm` replaces it
+  for AArch64; per-arch normalization rules are the same tables, including
+  `adrp`/`adr` address rebasing and literal-pool discrimination. Feature
+  semantics are unchanged, so `SPEC_VERSION` stays `1`. ARM32/Thumb decoding is
+  not ported yet and the CLI refuses those images instead of decoding them with
+  the wrong tables.
 * Binary signature database (SPEC.md §10): a deterministic, mmap-friendly file
   with a 64-byte header, a 40-byte-record table sorted by `signature_id`, and a
   padded payload blob. The header carries `SPEC_VERSION`, and table/payload

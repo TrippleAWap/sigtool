@@ -230,7 +230,7 @@ fn main() -> ExitCode {
 
 fn run_gen(args: GenArgs) -> Result<u8, CliError> {
     let source = load_file(&args.file)?;
-    ensure_x64(&source)?;
+    ensure_supported(&source)?;
     let addr = resolve_address(
         &source,
         args.addr.as_deref(),
@@ -414,7 +414,7 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
             )));
         };
         let source = load_file(Path::new(path))?;
-        ensure_x64(&source)?;
+        ensure_supported(&source)?;
         let addr = parse_address(addr_text, "--sample")?;
         if !source.is_mapped(addr, 1) {
             return Err(CliError::input(format!(
@@ -460,7 +460,7 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
 fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     let signature = load_signature(&args.signature)?;
     let source = load_file(&args.file)?;
-    ensure_x64(&source)?;
+    ensure_supported(&source)?;
     let matches = scan(&source, &signature, None, 256, true, None);
 
     if let Some(path) = &args.json {
@@ -557,7 +557,7 @@ fn match_document(
 
 fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     let source = load_file(&args.file)?;
-    ensure_x64(&source)?;
+    ensure_supported(&source)?;
     let signatures = if let Some(db_path) = &args.db {
         load_db_signatures(db_path)?
     } else {
@@ -702,10 +702,10 @@ fn classify_source_error(error: SourceFormatError) -> CliError {
     }
 }
 
-fn ensure_x64(source: &FileSource) -> Result<(), CliError> {
-    if source.arch() != Arch::X64 {
+fn ensure_supported(source: &FileSource) -> Result<(), CliError> {
+    if !matches!(source.arch(), Arch::X64 | Arch::Arm64) {
         return Err(CliError::unsupported(format!(
-            "the native port currently decodes x64 only, not {}",
+            "the native port currently decodes x64 and arm64 only, not {}",
             source.arch()
         )));
     }

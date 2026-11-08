@@ -1,4 +1,4 @@
-//! Instruction normalization: project x86-64 onto one vocabulary.
+//! Instruction normalization: project x86-64 and AArch64 onto one vocabulary.
 //!
 //! Two rules drive everything here:
 //!
@@ -8,11 +8,13 @@
 //! * Instructions that compilers or mitigations insert for alignment,
 //!   hardening, or patching carry no signal, so they are marked `Ignored`.
 //!
-//! The rules mirror `core/normalize.py`; iced-x86 replaces Capstone, so the
-//! mnemonic and operand projections are kept explicit.
+//! The rules mirror `core/normalize.py`; iced-x86 and yaxpeax-arm replace
+//! Capstone, so the mnemonic and operand projections are kept explicit.
 
 use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
+use yaxpeax_arm::armv8::a64::InstDecoder;
 
+use crate::arch::Arch;
 use crate::source::ByteSource;
 use crate::spec::MAX_THUNK_HOPS;
 
@@ -99,6 +101,20 @@ pub struct Insn {
 }
 
 impl Insn {
+    pub fn normal(addr: u64, size: usize, op: OpClass) -> Insn {
+        Insn {
+            addr,
+            size,
+            op,
+            kind: Kind::Normal,
+            consts: Vec::new(),
+            refs: Vec::new(),
+            callee: None,
+            target: None,
+            pool_end: 0,
+        }
+    }
+
     pub fn ignored(addr: u64, size: usize) -> Insn {
         Insn {
             addr,
@@ -174,12 +190,16 @@ enum Operand {
 }
 
 pub struct Normalizer<'a, S: ByteSource + ?Sized> {
-    source: &'a S,
+    pub(crate) source: &'a S,
+    pub(crate) arm64: InstDecoder,
 }
 
 impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     pub fn new(source: &'a S) -> Normalizer<'a, S> {
-        Normalizer { source }
+        Normalizer {
+            source,
+            arm64: InstDecoder::default(),
+        }
     }
 
     /// Decode a straight-line run starting at `addr`, stopping at a terminator.
@@ -190,6 +210,9 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     fn decode_block_depth(&self, addr: u64, max_bytes: usize, depth: usize) -> Vec<Insn> {
         if max_bytes == 0 {
             return Vec::new();
+        }
+        if self.source.arch() == Arch::Arm64 {
+            return self.arm64_block(addr, max_bytes, depth);
         }
         let data = self.source.read_partial(addr, max_bytes);
         if data.is_empty() {
@@ -222,13 +245,13 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         self.decode_block_depth(addr, 16, depth).into_iter().next()
     }
 
-    fn callee_name(&self, target: Option<u64>, depth: usize) -> Option<String> {
+    pub(crate) fn callee_name(&self, target: Option<u64>, depth: usize) -> Option<String> {
         let target = target?;
         let resolved = self.follow_thunk(target, depth)?;
         self.source.label_for_address(resolved)
     }
 
-    fn read_pointer(&self, addr: Option<u64>) -> Option<u64> {
+    pub(crate) fn read_pointer(&self, addr: Option<u64>) -> Option<u64> {
         let addr = addr?;
         let size = self.source.arch().pointer_size();
         let data = self.source.try_read(addr, size)?;
@@ -296,7 +319,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         Some(current)
     }
 
-    fn noreturn(&self, callee: Option<&str>) -> bool {
+    pub(crate) fn noreturn(&self, callee: Option<&str>) -> bool {
         let Some(callee) = callee else {
             return false;
         };
@@ -481,7 +504,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     }
 }
 
-fn sorted_unique(mut values: Vec<u64>) -> Vec<u64> {
+pub(crate) fn sorted_unique(mut values: Vec<u64>) -> Vec<u64> {
     values.sort_unstable();
     values.dedup();
     values

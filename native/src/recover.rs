@@ -129,7 +129,7 @@ pub fn recover<S: ByteSource + ?Sized>(
     hints: bool,
 ) -> Result<RecoveredFunction, DecodeError> {
     let arch = source.arch();
-    if arch != Arch::X64 {
+    if !matches!(arch, Arch::X64 | Arch::Arm64) {
         return Err(DecodeError(format!(
             "{} feature extraction is not implemented in the native port yet",
             arch

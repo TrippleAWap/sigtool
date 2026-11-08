@@ -410,8 +410,8 @@ merging is the planned fix).**
   menu glue cannot run in CI (no IDA host); it is deliberately thin, and the
   first IDA-session check should follow `README.md` "In IDA".
 
-**Not started:** the ARM64/ARM32/Thumb native ports, native live-PID sources,
-and a native IDA adapter. Everything else through M7 is implemented, including
+**Not started:** the ARM32/Thumb native ports, native live-PID sources, and a
+native IDA adapter. Everything else through M7 is implemented, including
 native `merge`.
 
 **M6 — implemented; native port is the follow-on (M7).**
@@ -447,7 +447,7 @@ native `merge`.
   process set (the running interpreter at `-O2` scale), hot spots documented in
   `profile_scan.py --json corpus/scan-profile.json`. M7 ports to C/Rust.
 
-**M7 — implemented for x64 in Rust; other architectures are follow-ups.**
+**M7 — implemented for x64 and arm64 in Rust; ARM32/Thumb are follow-ups.**
 
 - `native/` is a separate crate (`sigtool-native`) that mirrors `core/`:
   `source.rs`, `arch.rs`, `elf.rs` (ELF/PE `FileSource`), `normalize.rs`,
@@ -457,7 +457,7 @@ native `merge`.
   for the canonical document. No IDA or OS-specific code enters the library;
   the CLI is the only front-end.
 - Parity is checked, not assumed. `native/tests/golden.rs` replays the x64
-  golden vectors (features, CFG blocks/edges/loops, degraded flags).
+  and arm64 golden vectors (features, CFG blocks/edges/loops, degraded flags).
   `native/tests/scanner.rs` mirrors `tests/test_scanner.py` (page skipping,
   private-first priority, shared budget, reference index, truncation,
   string-only discovery, stable `signature_id`). `native/tests/corpus.rs`
@@ -489,10 +489,19 @@ native `merge`.
   all seven functions that merge successfully emit identical YAML in both
   implementations, and the one unmergeable pair (`_start`) is refused by both
   with the same message and exit code.
-- Not ported yet: ARM64/ARM32/Thumb decoding and recovery, live-PID sources,
-  and the IDA adapter. `gen`/`locate`/`scan`/`merge` return exit code `3` for a
-  non-x64 image rather than decoding it with the wrong tables. The Python
-  implementation remains the reference for those paths.
+- AArch64 is ported (`native/src/arm64.rs`) with `yaxpeax-arm` in place of
+  Capstone: `adrp` page deltas and `adr`/branch pc deltas are rebased onto
+  absolute addresses, `adrp`+`add`/`ldr` pairs resolve to one reference,
+  `movz`/`movk`/`movn` chains collapse to one constant, `[pc, #imm]` literal
+  pools are distinguished from `[sp, #imm]` by the literal-load encoding, and
+  the kind/class tables are the same as the reference. The golden test replays
+  every arm64 vector (`arm64-O0/O2/Os` and the `-mbranch-protection=standard`
+  PAC build), and `gen` on the arm64 corpus slice emits YAML byte-identical to
+  the Python front-end for every sampled function (5/5 across `-O0` and `-O2`).
+- Not ported yet: ARM32/Thumb decoding and recovery, live-PID sources, and the
+  IDA adapter. `gen`/`locate`/`scan`/`merge` return exit code `3` for an arm32,
+  thumb, or unknown architecture rather than decoding it with the wrong tables.
+  The Python implementation remains the reference for those paths.
 - Throughput is measured against the Python reference on the same corpus
   workload: `native/examples/profile_scan.rs` mirrors
   `profile_scan.py --no-live --no-profiler`, and `compare_scan_profile.py` joins

@@ -13,7 +13,8 @@
 //! ```
 //!
 //! The corpus is generated, not committed: run `python corpus/build.py` first.
-//! ARM64/ARM32/Thumb are not ported yet, so this measures the x64 slice only.
+//! The committed throughput baseline is x64-only and ARM32/Thumb are not ported
+//! yet, so this measures the x64 slice.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
