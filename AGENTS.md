@@ -79,6 +79,7 @@ cargo test                          # native parity: golden, scanner, x64 corpus
 cargo fmt --all && cargo clippy --all-targets
 cargo run --release -- gen --file IMAGE --addr A
 cargo run --release -- locate --signature S.yaml --file IMAGE
+cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:ADDR --name N
 cargo run --release -- scan --file IMAGE --signature S.yaml
 cargo run --release -- scan --file IMAGE --db signatures.db
 cargo run --release --example profile_scan  # native scan cost, same corpus workload
@@ -95,7 +96,7 @@ commit the vectors, never the corpus binaries.
 - **Golden vectors** (`tests/vectors/`): bytes in, feature records out, per architecture (x64, arm64 with PAC, x64 with CET, arm32, thumb). Never hand-edit; regenerate with `python tests/vectors/generate.py` and review the diff. A vector change must be justified in the PR description. Vectors are generated from real clang + lld output, not hand-written snippets.
 - **Property tests:** normalization is idempotent; the same code at two ASLR bases yields identical features; random bytes never crash recovery.
 - **Corpus regression:** recall (per discovery mode: hinted and hint-free) and false-positive numbers are compared against `tests/baseline/bench.json` with a 0.05 tolerance (compiler versions move cross-build rates by about 0.02); a drop or an FP increase fails `bench.py --baseline` and CI. `bench.py` scans strong signatures against the negative corpus (`corpus/negative/`) as well as unrelated source files, and both FP rates are gated; merged-pair refusals are reported but never gate (refusing an unmergeable pair is the design working). Update the baseline only for an intentional improvement, with `--save-baseline`, and review the diff. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint across x64, arm64, arm32, and thumb, and requires at least 0.90 agreement (M1 exit criterion); it also checks ground-truth coverage against the M0 0.95 criterion.
-- **Native parity tests** (`native/tests/`): the Rust port must reproduce the Python reference. `golden.rs` replays the x64 golden vectors, `scanner.rs` mirrors `tests/test_scanner.py`, and `corpus.rs` reproduces the x64 slice of `bench.py` against `tests/baseline/bench.json` with the same 0.05 tolerance. A feature, normalization, scoring, or matching change lands in both implementations and keeps these green; the corpus test skips when `corpus/build/` is absent. ARM64/ARM32/Thumb are not ported yet, so the native CLI must exit `3` for them rather than decoding with the wrong tables.
+- **Native parity tests** (`native/tests/`): the Rust port must reproduce the Python reference. `golden.rs` replays the x64 golden vectors, `scanner.rs` mirrors `tests/test_scanner.py`, `merge.rs` mirrors `tests/test_merge.py`, and `corpus.rs` reproduces the x64 slice of `bench.py` against `tests/baseline/bench.json` with the same 0.05 tolerance. A feature, normalization, scoring, or matching change lands in both implementations and keeps these green; the corpus test skips when `corpus/build/` is absent. ARM64/ARM32/Thumb are not ported yet, so the native CLI must exit `3` for them rather than decoding with the wrong tables.
 - **Spec version check:** `tests/test_spec.py` asserts that `SPEC_VERSION`, `HASH_PERSON`, `spec/SPEC.md`, and `spec/CHANGELOG.md` agree.
 - **Live tests:** scripted target processes with known functions, including a hooked function and an injected region. These need a real or QEMU user-mode host for each architecture.
 - New normalization rules need a vector from at least one real compiler output, not just a hand-written snippet.
@@ -176,8 +177,9 @@ reference extractor, matcher, scanner, and signature document, and adds a
 binary signature DB (`native/src/db.rs`, SPEC.md §10). Parity is test-verified
 against the x64 golden vectors, `tests/test_scanner.py`, and the x64 corpus
 slice of `tests/baseline/bench.json`; all 51 x64 corpus signature ids match
-Python. ARM64/ARM32/Thumb decoding, live-PID sources, `merge`, and the IDA
-adapter are not ported yet, and the CLI exits `3` for non-x64 images. Corpus
+Python, and `merge` reproduces the Python front-end's merged YAML byte for
+byte. ARM64/ARM32/Thumb decoding, live-PID sources, and the IDA adapter are not
+ported yet, and the CLI exits `3` for non-x64 images. Corpus
 throughput is measured against the Python scanner on identical workloads:
 37.8x faster on the full pass (1503.4 ms vs 39.7 ms over six x64 binaries) and
 4.9x on the incremental pass. See `PLAN.md` section 12.

@@ -11,6 +11,7 @@
 //! sigtool-native locate --signature fn.yaml --file other.so --json matches.json
 //! sigtool-native scan --file image.elf --signature fn.yaml --signature other.yaml
 //! sigtool-native scan --file image.elf --db signatures.db
+//! sigtool-native merge --sample a.elf:0x1000 --sample b.elf:0x2c40 --name fn
 //! sigtool-native db build --signature fn.yaml --output signatures.db
 //! ```
 //!
@@ -25,7 +26,7 @@
 //! * `3` unsupported target architecture or mode
 //! * `4` self-test failed, so no signature was emitted (AGENTS.md rule 7)
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -39,6 +40,7 @@ use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate, GenerateError, GenerationResult};
 use sigtool_native::matcher::{scan, Match};
+use sigtool_native::merge::{merge, MergeSample};
 use sigtool_native::scanner::{ScanHit, SignatureScanner};
 use sigtool_native::sigfile::Signature;
 use sigtool_native::source::{ByteSource, Module};
@@ -69,6 +71,8 @@ enum Command {
     Locate(LocateArgs),
     /// Match one or more signatures (or a DB) against an image
     Scan(ScanArgs),
+    /// Merge samples of one function into one signature
+    Merge(MergeArgs),
     /// Build and inspect signature databases
     Db(DbArgs),
 }
@@ -137,6 +141,22 @@ struct ScanArgs {
 }
 
 #[derive(Args)]
+struct MergeArgs {
+    /// One sample: image path and function address (repeatable, at least two)
+    #[arg(long = "sample", value_name = "FILE:ADDR", required = true)]
+    sample: Vec<String>,
+    /// Signature name (default: the first sample's symbol)
+    #[arg(long)]
+    name: Option<String>,
+    /// Write signature YAML here instead of stdout
+    #[arg(long, value_name = "FILE")]
+    output: Option<PathBuf>,
+    /// Write the quality report as JSON
+    #[arg(long = "json-report", value_name = "FILE")]
+    json_report: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct DbArgs {
     #[command(subcommand)]
     command: DbCommand,
@@ -194,6 +214,7 @@ fn main() -> ExitCode {
         Command::Gen(args) => run_gen(args),
         Command::Locate(args) => run_locate(args),
         Command::Scan(args) => run_scan(args),
+        Command::Merge(args) => run_merge(args),
         Command::Db(args) => run_db(args),
     };
     match result {
@@ -226,9 +247,14 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         None,
     )
     .map_err(classify_generate_error)?;
+    let arch = source.arch().as_str().to_string();
+    let label = source
+        .label_for_address(result.matched.address)
+        .unwrap_or_else(|| format!("0x{:x}", result.matched.address));
     write_outputs(
-        &source,
         &result,
+        &arch,
+        &label,
         args.output.as_deref(),
         args.json_report.as_deref(),
     )?;
@@ -252,8 +278,9 @@ fn classify_generate_error(error: GenerateError) -> CliError {
 }
 
 fn write_outputs(
-    source: &FileSource,
     result: &GenerationResult,
+    arch: &str,
+    label: &str,
     output: Option<&Path>,
     json_report: Option<&Path>,
 ) -> Result<(), CliError> {
@@ -273,21 +300,18 @@ fn write_outputs(
         }
     };
 
-    eprintln!("{}", report_text(source, result, &destination));
+    eprintln!("{}", report_text(result, &destination, arch, label));
 
     if let Some(path) = json_report {
-        let document = report_document(source, result);
+        let document = report_document(result, arch, label);
         write_json(path, &document)?;
     }
     Ok(())
 }
 
-fn report_text(source: &FileSource, result: &GenerationResult, destination: &str) -> String {
+fn report_text(result: &GenerationResult, destination: &str, arch: &str, label: &str) -> String {
     let signature = &result.signature;
     let report = &result.report;
-    let label = source
-        .label_for_address(result.matched.address)
-        .unwrap_or_else(|| format!("0x{:x}", result.matched.address));
     let mut lines = vec![
         format!(
             "signature {}  ({})",
@@ -295,10 +319,8 @@ fn report_text(source: &FileSource, result: &GenerationResult, destination: &str
             signature.signature_id().unwrap_or_default()
         ),
         format!(
-            "arch {}  verdict {}  confidence {}",
-            source.arch(),
-            report.verdict,
-            signature.confidence
+            "arch {arch}  verdict {}  confidence {}",
+            report.verdict, signature.confidence
         ),
         format!(
             "features {} (required {}, optional {})  anchors {}  evidence {:.3}",
@@ -323,18 +345,11 @@ fn report_text(source: &FileSource, result: &GenerationResult, destination: &str
     lines.join("\n")
 }
 
-fn report_document(source: &FileSource, result: &GenerationResult) -> BTreeMap<String, Value> {
+fn report_document(result: &GenerationResult, arch: &str, label: &str) -> BTreeMap<String, Value> {
     let signature = &result.signature;
     let report = &result.report;
     let mut self_test = BTreeMap::new();
-    self_test.insert(
-        "at".to_string(),
-        Value::String(
-            source
-                .label_for_address(result.matched.address)
-                .unwrap_or_else(|| format!("0x{:x}", result.matched.address)),
-        ),
-    );
+    self_test.insert("at".to_string(), Value::String(label.to_string()));
     self_test.insert("score".to_string(), json_number(result.matched.score));
     self_test.insert(
         "matched".to_string(),
@@ -347,10 +362,7 @@ fn report_document(source: &FileSource, result: &GenerationResult) -> BTreeMap<S
         Value::String(signature.signature_id().unwrap_or_default()),
     );
     document.insert("name".to_string(), Value::String(signature.name.clone()));
-    document.insert(
-        "arch".to_string(),
-        Value::String(source.arch().as_str().to_string()),
-    );
+    document.insert("arch".to_string(), Value::String(arch.to_string()));
     document.insert("verdict".to_string(), Value::String(report.verdict.clone()));
     document.insert(
         "confidence".to_string(),
@@ -382,6 +394,65 @@ fn report_document(source: &FileSource, result: &GenerationResult) -> BTreeMap<S
         Value::Array(report.notes.iter().cloned().map(Value::String).collect()),
     );
     document
+}
+
+// -- merge -------------------------------------------------------------------
+
+fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
+    if args.sample.len() < 2 {
+        return Err(CliError::input(
+            "merging needs at least two --sample arguments",
+        ));
+    }
+    let mut sources: Vec<FileSource> = Vec::new();
+    let mut addresses: Vec<u64> = Vec::new();
+    for text in &args.sample {
+        // Split on the last colon so Windows drive paths keep working.
+        let Some((path, addr_text)) = text.rsplit_once(':') else {
+            return Err(CliError::input(format!(
+                "--sample expects FILE:ADDR, got {text:?}"
+            )));
+        };
+        let source = load_file(Path::new(path))?;
+        ensure_x64(&source)?;
+        let addr = parse_address(addr_text, "--sample")?;
+        if !source.is_mapped(addr, 1) {
+            return Err(CliError::input(format!(
+                "address 0x{addr:x} is not mapped in {path}"
+            )));
+        }
+        sources.push(source);
+        addresses.push(addr);
+    }
+    let samples: Vec<MergeSample<'_>> = sources
+        .iter()
+        .zip(addresses.iter())
+        .map(|(source, addr)| MergeSample {
+            source,
+            addr: *addr,
+            opt: None,
+            tool: None,
+        })
+        .collect();
+    // The Python front-end reports a merge refusal as an input error (exit 2):
+    // the samples cannot be combined into one honest signature.
+    let result = merge(&samples, args.name.as_deref(), None)
+        .map_err(|error| CliError::input(format!("refusing to merge: {error}")))?;
+
+    let arches: BTreeSet<&str> = sources
+        .iter()
+        .map(|source| source.arch().as_str())
+        .collect();
+    let arch = arches.into_iter().collect::<Vec<&str>>().join("+");
+    let label = format!("{} samples", samples.len());
+    write_outputs(
+        &result,
+        &arch,
+        &label,
+        args.output.as_deref(),
+        args.json_report.as_deref(),
+    )?;
+    Ok(EXIT_OK)
 }
 
 // -- locate ------------------------------------------------------------------

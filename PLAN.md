@@ -411,8 +411,8 @@ merging is the planned fix).**
   first IDA-session check should follow `README.md` "In IDA".
 
 **Not started:** the ARM64/ARM32/Thumb native ports, native live-PID sources,
-native `merge`, and a native IDA adapter. Everything else through M7 is
-implemented.
+and a native IDA adapter. Everything else through M7 is implemented, including
+native `merge`.
 
 **M6 — implemented; native port is the follow-on (M7).**
 
@@ -475,14 +475,24 @@ implemented.
   canonical YAML. `DbView` validates structure once and reads payloads
   zero-copy; `MappedDb` maps the file read-only with `memmap2`. The spec
   version is part of the header, so a DB from another feature spec is refused.
-- CLI: `sigtool-native gen`, `locate`, `scan` (YAML or `--db`), and
+- CLI: `sigtool-native gen`, `locate`, `scan` (YAML or `--db`), `merge`, and
   `db build`. Exit codes match the Python front-end: `0` success, `1` no
   match, `2` usage/input, `3` unsupported arch, `4` self-test refusal.
   `cargo fmt --all`, `cargo clippy --all-targets`, and `cargo test` are clean.
+- Multi-sample `merge` is ported (`native/src/merge.rs`, `sigtool-native merge
+  --sample FILE:ADDR ...`): features present in every sample stay required,
+  subset features are demoted to optional half weight, anchors come only from
+  stable features, and the merged document must self-test on every sample. Like
+  the Python front-end, a refusal exits `2`. `native/tests/merge.rs` mirrors
+  `tests/test_merge.py` and pins one merged document to the Python reference
+  byte for byte; over the corpus pair `x64/O0/loops.elf` + `x64/O2/loops.elf`,
+  all seven functions that merge successfully emit identical YAML in both
+  implementations, and the one unmergeable pair (`_start`) is refused by both
+  with the same message and exit code.
 - Not ported yet: ARM64/ARM32/Thumb decoding and recovery, live-PID sources,
-  multi-sample `merge`, and the IDA adapter. `gen`/`locate`/`scan` return exit
-  code `3` for a non-x64 image rather than decoding it with the wrong tables.
-  The Python implementation remains the reference for those paths.
+  and the IDA adapter. `gen`/`locate`/`scan`/`merge` return exit code `3` for a
+  non-x64 image rather than decoding it with the wrong tables. The Python
+  implementation remains the reference for those paths.
 - Throughput is measured against the Python reference on the same corpus
   workload: `native/examples/profile_scan.rs` mirrors
   `profile_scan.py --no-live --no-profiler`, and `compare_scan_profile.py` joins

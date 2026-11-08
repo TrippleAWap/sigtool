@@ -98,8 +98,8 @@ Adds a Rust implementation under `native/` that implements the same spec for
 x64. Feature semantics, canonicalization, hashing, weights, and thresholds are
 unchanged, so `SPEC_VERSION` stays `1` and the golden vectors are unaffected.
 
-* Native extractor, matcher, scanner, and signature document mirror the Python
-  reference and are parity-tested against the x64 golden vectors,
+* Native extractor, matcher, scanner, merge, and signature document mirror the
+  Python reference and are parity-tested against the x64 golden vectors,
   `tests/test_scanner.py`, and the x64 corpus slice of
   `tests/baseline/bench.json`. All 51 x64 corpus signature ids are identical
   to Python.
@@ -110,5 +110,7 @@ unchanged, so `SPEC_VERSION` stays `1` and the golden vectors are unaffected.
   with a 64-byte header, a 40-byte-record table sorted by `signature_id`, and a
   padded payload blob. The header carries `SPEC_VERSION`, and table/payload
   CRC-32 checks detect corruption.
-* CLI (`sigtool-native`): `gen`, `locate`, `scan` (YAML or `--db`), and
-  `db build`, with the same exit-code contract as the Python front-end.
+* CLI (`sigtool-native`): `gen`, `locate`, `scan` (YAML or `--db`), `merge`,
+  and `db build`, with the same exit-code contract as the Python front-end.
+  `merge` emits the same document as the Python implementation for the same
+  samples; no feature, weight, or threshold semantics changed.
