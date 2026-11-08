@@ -582,24 +582,14 @@ fn x86_is_hotpatch(mnemonic: &str, operands: &[Operand]) -> bool {
 }
 
 fn x86_touches_stack_pointer(operands: &[Operand]) -> bool {
-    for operand in operands {
-        match *operand {
-            Operand::Reg(register) => {
-                if X86_STACK_REGS.contains(&register_name(register).as_str()) {
-                    return true;
-                }
-            }
-            Operand::Mem { base, index, .. } => {
-                if X86_STACK_REGS.contains(&register_name(base).as_str())
-                    || X86_STACK_REGS.contains(&register_name(index).as_str())
-                {
-                    return true;
-                }
-            }
-            _ => {}
+    operands.iter().any(|operand| match *operand {
+        Operand::Reg(register) => X86_STACK_REGS.contains(&register_name(register).as_str()),
+        Operand::Mem { base, index, .. } => {
+            X86_STACK_REGS.contains(&register_name(base).as_str())
+                || X86_STACK_REGS.contains(&register_name(index).as_str())
         }
-    }
-    false
+        _ => false,
+    })
 }
 
 fn x86_is_vector(operands: &[Operand]) -> bool {
