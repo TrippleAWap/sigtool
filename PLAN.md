@@ -512,7 +512,11 @@ implemented, including native `merge` and all four target architectures.
   functions (4/4 across `-O0` and `-O2`) emits YAML byte-identical to the
   Python front-end, except for the functions the decoder cannot represent: `yaxpeax-arm` 0.5 has no VFP/NEON instructions, so
   the auto-vectorized `recurse` builds at `-O2/-Os` are skipped by name in
-  `golden.rs` and are the one known parity gap.
+  `golden.rs`. The same crate returns `DecodeError::Incomplete` for the whole
+  ARMv7 media group (`uxtb`/`uxth`/`rev`/`rbit`/`usat`, parallel add/sub), so a
+  full arm32/thumb corpus sweep gives 99/102 `gen` documents byte-identical to
+  the Python front end; the three remaining are `parse_record` at `-O0/-O2/-Os`
+  in `arm32/parser.elf`, all containing `uxth`.
 - Not ported yet: live-PID sources and the IDA adapter. `gen`/`locate`/`scan`/
   `merge` return exit code `3` only for an unknown architecture. The Python
   implementation remains the reference for those paths.

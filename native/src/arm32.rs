@@ -187,6 +187,13 @@ fn thumb_branch_target(addr: u64, word: u32, size: usize) -> Option<u64> {
             let imm = ((hw & 0x7FF) as i16) << 5 >> 5;
             return Some(addr.wrapping_add(4).wrapping_add_signed(i64::from(imm) * 2));
         }
+        // CBZ/CBNZ: forward-only, zero-extended `i:imm5:0`, so the sign rules
+        // above do not apply. `i` is bit 9 and the immediate is bits 7..3.
+        if hw & 0xF500 == 0xB100 {
+            let i = u64::from((hw >> 9) & 1);
+            let imm5 = u64::from((hw >> 3) & 0x1F);
+            return Some(addr.wrapping_add(4).wrapping_add((i << 6) | (imm5 << 1)));
+        }
         return None;
     }
     if size != 4 || (word & 0xFFFF) >> 11 != 0b11110 {
@@ -380,6 +387,9 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         let mut it_mask: Option<u8> = None;
         while offset < data.len() {
             let mut reader = U8Reader::new(&data[offset..]);
+            // yaxpeax returns `Incomplete` for whole instruction groups it does
+            // not implement (VFP/NEON, the ARMv7 media group), so an error ends
+            // the block rather than being retried at another offset.
             let Ok(raw) = decoder.decode(&mut reader) else {
                 break;
             };
@@ -594,6 +604,9 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 }
             } else if ARM32_CONDITIONAL_JUMPS.contains(&mnemonic.as_str()) {
                 kind = Kind::CondJump;
+                // `cbz`/`cbnz` are forward-only, so the raw halfword path above
+                // is the only correct source for the target.
+                target = branch_target(addr, thumb, word, size, &ops);
             } else if ARM32_BRANCH_TABLE.contains(&mnemonic.as_str()) {
                 kind = Kind::Jump;
             } else if ARM32_TRAP.contains(&mnemonic.as_str()) {

@@ -109,8 +109,10 @@ unchanged, so `SPEC_VERSION` stays `1` and the golden vectors are unaffected.
   materialization, and IT-block normalization. Feature semantics are unchanged,
   so `SPEC_VERSION` stays `1`. ARM32 and Thumb are decoded through
   `yaxpeax-arm`'s ARMv7 module, which has no VFP/NEON instructions, so
-  auto-vectorized functions are the one decoding gap; every other arm32/thumb
-  vector matches the reference and the CLI decodes all four architectures.
+  auto-vectorized functions are one decoding gap and the ARMv7 media group
+  (`uxtb`, `uxth`, `rev`, `rbit`, `usat`, parallel add/sub) is the other; every
+  arm32/thumb golden vector that does not use them matches the reference, and
+  the CLI decodes all four architectures.
 * Binary signature database (SPEC.md §10): a deterministic, mmap-friendly file
   with a 64-byte header, a 40-byte-record table sorted by `signature_id`, and a
   padded payload blob. The header carries `SPEC_VERSION`, and table/payload
