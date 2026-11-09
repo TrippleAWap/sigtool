@@ -12,9 +12,9 @@ them on the binary path tail and reports throughput. It also checks that both
 sides produced the same signature count, hit count, and index instruction count
 per binary, so a timing difference cannot come from measuring different work.
 
-The native port decodes x64 and arm64, but the committed throughput baseline is
-x64-only, so the join is over the x64 corpus slice and the Python rows for
-arm64/arm32/thumb are ignored. The live-process workload in
+The native port decodes x64, arm64, arm32, and thumb, but the committed
+throughput baseline is x64-only, so the join is over the x64 corpus slice and
+the Python rows for arm64/arm32/thumb are ignored. The live-process workload in
 `profile_scan.py` has no native counterpart yet (there is no native PID
 source), so it is not compared here.
 """

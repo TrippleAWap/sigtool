@@ -13,8 +13,8 @@
 //! ```
 //!
 //! The corpus is generated, not committed: run `python corpus/build.py` first.
-//! The committed throughput baseline is x64-only and ARM32/Thumb are not ported
-//! yet, so this measures the x64 slice.
+//! The committed throughput baseline is x64-only, so this measures the x64
+//! slice even though the decoder also handles arm64, arm32, and thumb.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

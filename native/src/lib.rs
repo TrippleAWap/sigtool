@@ -3,7 +3,9 @@
 //! The crate mirrors the Python reference implementation in `core/`: one
 //! extractor for generation and scanning, bounded recovery over untrusted
 //! bytes, and deterministic output. x86-64 is the reference architecture and
-//! the first port; AArch64 is ported next, ARM32/Thumb are follow-ups.
+//! the first port; AArch64, ARM32, and Thumb are ported as well. The ARM32/Thumb
+//! decoder (`yaxpeax-arm`'s `armv7` module) has no VFP/NEON instructions, so
+//! auto-vectorized functions decode incompletely.
 
 pub mod arch;
 mod arm32;

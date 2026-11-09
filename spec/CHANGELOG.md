@@ -105,10 +105,12 @@ unchanged, so `SPEC_VERSION` stays `1` and the golden vectors are unaffected.
   to Python.
 * `iced-x86` replaces Capstone as the x64 decoder and `yaxpeax-arm` replaces it
   for AArch64; per-arch normalization rules are the same tables, including
-  `adrp`/`adr` address rebasing and literal-pool discrimination. Feature
-  semantics are unchanged, so `SPEC_VERSION` stays `1`. ARM32/Thumb decoding is
-  not ported yet and the CLI refuses those images instead of decoding them with
-  the wrong tables.
+  `adrp`/`adr` address rebasing, ARM32/Thumb literal pooling, `movw`/`movt`
+  materialization, and IT-block normalization. Feature semantics are unchanged,
+  so `SPEC_VERSION` stays `1`. ARM32 and Thumb are decoded through
+  `yaxpeax-arm`'s ARMv7 module, which has no VFP/NEON instructions, so
+  auto-vectorized functions are the one decoding gap; every other arm32/thumb
+  vector matches the reference and the CLI decodes all four architectures.
 * Binary signature database (SPEC.md §10): a deterministic, mmap-friendly file
   with a 64-byte header, a 40-byte-record table sorted by `signature_id`, and a
   padded payload blob. The header carries `SPEC_VERSION`, and table/payload

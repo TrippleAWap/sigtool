@@ -410,9 +410,9 @@ merging is the planned fix).**
   menu glue cannot run in CI (no IDA host); it is deliberately thin, and the
   first IDA-session check should follow `README.md` "In IDA".
 
-**Not started:** the ARM32/Thumb native ports, native live-PID sources, and a
-native IDA adapter. Everything else through M7 is implemented, including
-native `merge`.
+**Not started:** native live-PID sources and a native IDA adapter, plus VFP/NEON
+coverage for the native ARM32/Thumb decoder. Everything else through M7 is
+implemented, including native `merge` and all four target architectures.
 
 **M6 — implemented; native port is the follow-on (M7).**
 
@@ -447,7 +447,7 @@ native `merge`.
   process set (the running interpreter at `-O2` scale), hot spots documented in
   `profile_scan.py --json corpus/scan-profile.json`. M7 ports to C/Rust.
 
-**M7 — implemented for x64 and arm64 in Rust; ARM32/Thumb are follow-ups.**
+**M7 — implemented for x64, arm64, arm32, and thumb in Rust.**
 
 - `native/` is a separate crate (`sigtool-native`) that mirrors `core/`:
   `source.rs`, `arch.rs`, `elf.rs` (ELF/PE `FileSource`), `normalize.rs`,
@@ -498,10 +498,24 @@ native `merge`.
   every arm64 vector (`arm64-O0/O2/Os` and the `-mbranch-protection=standard`
   PAC build), and `gen` on the arm64 corpus slice emits YAML byte-identical to
   the Python front-end for every sampled function (5/5 across `-O0` and `-O2`).
-- Not ported yet: ARM32/Thumb decoding and recovery, live-PID sources, and the
-  IDA adapter. `gen`/`locate`/`scan`/`merge` return exit code `3` for an arm32,
-  thumb, or unknown architecture rather than decoding it with the wrong tables.
-  The Python implementation remains the reference for those paths.
+- ARM32 and Thumb are ported (`native/src/arm32.rs`) through `yaxpeax-arm`'s
+  `armv7` decoder, with mode tracked per address: `movw`/`movt` pairs collapse
+  to one constant, literal-pool loads resolve to the pooled value and extend
+  function bounds, `adr` and branch deltas are rebased onto absolute addresses,
+  condition suffixes and IT blocks are normalized, and the kind/class tables
+  are the same as the reference. `recover` accepts all four architectures.
+  Thumb branch targets are computed from the raw halfwords because yaxpeax's
+  16-bit conditional delta does not match the encoding, and ITSTATE is tracked
+  locally because yaxpeax leaves predication on the `it` instruction rather
+  than marking the following instructions conditional. The golden test replays
+  every arm32 and thumb vector, and `gen` on sampled arm32/thumb corpus
+  functions (4/4 across `-O0` and `-O2`) emits YAML byte-identical to the
+  Python front-end, except for the functions the decoder cannot represent: `yaxpeax-arm` 0.5 has no VFP/NEON instructions, so
+  the auto-vectorized `recurse` builds at `-O2/-Os` are skipped by name in
+  `golden.rs` and are the one known parity gap.
+- Not ported yet: live-PID sources and the IDA adapter. `gen`/`locate`/`scan`/
+  `merge` return exit code `3` only for an unknown architecture. The Python
+  implementation remains the reference for those paths.
 - Throughput is measured against the Python reference on the same corpus
   workload: `native/examples/profile_scan.rs` mirrors
   `profile_scan.py --no-live --no-profiler`, and `compare_scan_profile.py` joins
