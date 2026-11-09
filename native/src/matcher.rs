@@ -37,9 +37,10 @@ pub const DEFAULT_MAX_RECOVERIES: usize = 4_096;
 pub const MAX_INDEX_INSTRUCTIONS: usize = 200_000;
 pub const MAX_INDEX_RESYNCS: usize = 4_096;
 
-/// Hint-free discovery fallback: instructions decoded while collecting direct
-/// call targets. Bounded like the reference index for the same reason (rule 8).
-pub const MAX_CALL_DISCOVERY_INSTRUCTIONS: usize = 50_000;
+/// Hint-free discovery pass: instructions decoded while collecting boundaries,
+/// call targets, and constant references. Bounded like the reference index for
+/// the same reason (rule 8).
+pub const MAX_DISCOVERY_INSTRUCTIONS: usize = 50_000;
 
 /// One- and two-byte immediates occur everywhere; searching for them produces
 /// noise without narrowing anything, so they are not used as needles.
@@ -184,10 +185,10 @@ pub fn accepts(signature: &Signature, result: &MatchScore) -> bool {
 /// Find accepted matches for `signature` in `source`, best first.
 ///
 /// `hints = false` is the hint-free discovery mode: known function starts and
-/// front-end bounds are ignored, so candidates come from anchor hits, the
-/// bounded backward sweep, and direct call targets (exact entries recovered from
-/// code, not symbols). `index` adds the data-reference index, which turns
-/// string-anchor hits into candidates.
+/// front-end bounds are ignored, so candidates come from anchor hits, decoded
+/// constant values and instruction boundaries (`CodeIndex`), and direct call
+/// targets (exact entries recovered from code, not symbols). `index` adds the
+/// data-reference index, which turns string-anchor hits into candidates.
 pub fn scan<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
@@ -237,7 +238,7 @@ pub fn scan_candidates<S: ByteSource + ?Sized>(
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
-    for start in candidate_starts(source, hits, max_candidates, hints, index) {
+    for start in candidate_starts(source, signature, hits, max_candidates, hints, index) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
                 break;
@@ -429,7 +430,7 @@ pub fn self_test<S: ByteSource + ?Sized>(
     }
 
     let hits = anchor_hits(source, signature);
-    let mut candidates = candidate_starts(source, &hits, max_candidates, true, None);
+    let mut candidates = candidate_starts(source, signature, &hits, max_candidates, true, None);
     if !candidates.contains(&start) && hits.iter().any(|(_, key)| key.starts_with("str:")) {
         // String anchors only rank through the reference index; build it once
         // before declaring the function unreachable.
@@ -439,7 +440,7 @@ pub fn self_test<S: ByteSource + ?Sized>(
                 index.index_region(source, region);
             }
         }
-        candidates = candidate_starts(source, &hits, max_candidates, true, Some(&index));
+        candidates = candidate_starts(source, signature, &hits, max_candidates, true, Some(&index));
         if candidates.contains(&start) {
             matches = scan_candidates(
                 source,
@@ -646,6 +647,7 @@ fn utf16le(text: &str) -> Vec<u8> {
 /// the instructions that reference them (the M6 data-reference index).
 fn candidate_starts<S: ByteSource + ?Sized>(
     source: &S,
+    signature: &Signature,
     hits: &[(u64, String)],
     max_candidates: usize,
     use_hints: bool,
@@ -671,6 +673,40 @@ fn candidate_starts<S: ByteSource + ?Sized>(
     }
     landmarks.sort_unstable();
 
+    // Hint-free discovery gets one bounded linear pass over the code. Constants
+    // are matched by decoded value, so an immediate narrower than four bytes
+    // still lands (byte needles only know 4/8-byte encodings), boundaries come
+    // from real decoding instead of a restart that can desync and stop short of
+    // the landmark, and direct call targets are exact entries. A value
+    // materialized too often to identify a function is not used as a landmark.
+    let code = if use_hints {
+        None
+    } else {
+        Some(CodeIndex::build(source))
+    };
+    let const_landmarks: Vec<u64> = match &code {
+        Some(code) => signature
+            .anchors
+            .iter()
+            .filter_map(|anchor| match split_anchor(anchor) {
+                (Some(FeatureKind::Const), value) => parse_hex(value),
+                _ => None,
+            })
+            .flat_map(|value| {
+                let references = code.const_referencers(value);
+                if references.len() > MAX_HITS_PER_ANCHOR {
+                    Vec::new()
+                } else {
+                    references.to_vec()
+                }
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    landmarks.extend_from_slice(&const_landmarks);
+    landmarks.sort_unstable();
+    landmarks.dedup();
+
     let mut hint_starts: HashSet<u64> = HashSet::new();
     let mut swept_starts: HashSet<u64> = HashSet::new();
     if use_hints {
@@ -680,14 +716,13 @@ fn candidate_starts<S: ByteSource + ?Sized>(
                 .into_iter()
                 .filter(|start| source.is_executable(*start)),
         );
-    } else {
+    } else if let Some(code) = &code {
         // Without symbols, a direct call target is still an exact function
         // entry, while a backward sweep only guesses one from an interior
         // landmark. The reference has no such source in hint-free mode, so its
         // string-only signatures find nothing; this is a deliberate native
-        // improvement (measured in `PLAN.md` section 12). One bounded linear
-        // decode pass per hint-free scan pays for it.
-        hint_starts.extend(call_target_starts(source));
+        // improvement (measured in `PLAN.md` section 12).
+        hint_starts.extend(code.call_targets.iter().copied());
     }
     // Known starts are only a shortcut when they cover the hit; otherwise the
     // matcher still has to find the enclosing function from the bytes.
@@ -701,13 +736,32 @@ fn candidate_starts<S: ByteSource + ?Sized>(
             Some((start, _)) => {
                 hint_starts.insert(start);
             }
-            None => swept_starts.extend(swept_starts_from(source, *address)),
+            None => {
+                let starts = match &code {
+                    Some(code) => code.swept_starts(source, *address),
+                    None => swept_starts_from(source, *address),
+                };
+                swept_starts.extend(starts);
+            }
         }
+    }
+    // A const landmark is the instruction that materialises the value; the
+    // enclosing function starts at or before it, like any other anchor.
+    for reference in const_landmarks {
+        let starts = match &code {
+            Some(code) => code.swept_starts(source, reference),
+            None => swept_starts_from(source, reference),
+        };
+        swept_starts.extend(starts);
     }
     if let Some(index) = index {
         for data_addr in &data_hits {
             for reference in index.referencers(*data_addr) {
-                swept_starts.extend(swept_starts_from(source, *reference));
+                let starts = match &code {
+                    Some(code) => code.swept_starts(source, *reference),
+                    None => swept_starts_from(source, *reference),
+                };
+                swept_starts.extend(starts);
             }
         }
     }
@@ -720,53 +774,105 @@ fn candidate_starts<S: ByteSource + ?Sized>(
         .collect()
 }
 
-/// Starts of functions reachable through a direct call, from one bounded sweep.
+/// Code facts gathered in one resynchronizing linear pass over executable areas.
 ///
-/// Hint-free discovery otherwise depends on the signature finding a code
-/// landmark: a constant's bytes or a string's referencer. String-only
-/// signatures have neither when no reference index is supplied, and a landmark
-/// further than [`BACKWARD_SWEEP_BYTES`] into the body gives the sweep the wrong
-/// prologue. A called function's entry is in the code regardless of which
-/// anchors its signature happens to carry, so call targets recover those cases
-/// without trusting symbols (which hint-free mode deliberately ignores).
-fn call_target_starts<S: ByteSource + ?Sized>(source: &S) -> Vec<u64> {
-    let normalizer = Normalizer::new(source);
-    let mut starts: HashSet<u64> = HashSet::new();
-    let mut decoded = 0usize;
-    let mut resyncs = 0usize;
-    'regions: for region in source.regions() {
-        if !region.executable {
-            continue;
-        }
-        let mut cursor = region.start;
-        while cursor < region.end() {
-            if decoded >= MAX_CALL_DISCOVERY_INSTRUCTIONS || resyncs >= MAX_INDEX_RESYNCS {
-                break 'regions;
-            }
-            let span = (region.end() - cursor).min(0x1000) as usize;
-            let insns = normalizer.decode_block(cursor, span);
-            if insns.is_empty() {
-                cursor += 1;
-                resyncs += 1;
+/// Byte needles find a constant only by encoding, so an immediate written in
+/// fewer than four bytes is invisible to them. A backward sweep restarted a
+/// fixed window before a landmark can also start mid-instruction, desync, and
+/// stop before reaching the landmark. This pass decodes each executable region
+/// once, resynchronizing past undecodable bytes, and records real instruction
+/// boundaries, direct call targets, and the instructions that materialize each
+/// constant value. It is bounded by [`MAX_DISCOVERY_INSTRUCTIONS`] and
+/// [`MAX_INDEX_RESYNCS`], so a hostile image cannot make it run unbounded
+/// (AGENTS.md rule 8).
+#[derive(Debug, Default)]
+struct CodeIndex {
+    boundaries: HashMap<u64, Vec<u64>>,
+    call_targets: HashSet<u64>,
+    const_refs: HashMap<u64, Vec<u64>>,
+}
+
+impl CodeIndex {
+    fn build<S: ByteSource + ?Sized>(source: &S) -> CodeIndex {
+        let normalizer = Normalizer::new(source);
+        let mut index = CodeIndex::default();
+        let mut decoded = 0usize;
+        let mut resyncs = 0usize;
+        'regions: for region in source.regions() {
+            if !region.executable {
                 continue;
             }
-            for insn in &insns {
-                decoded += 1;
-                if matches!(insn.kind, Kind::Call | Kind::NoreturnCall) {
-                    if let Some(target) = insn.target {
-                        if source.is_executable(target) {
-                            starts.insert(target);
+            let mut boundaries: Vec<u64> = Vec::new();
+            let mut cursor = region.start;
+            while cursor < region.end() {
+                if decoded >= MAX_DISCOVERY_INSTRUCTIONS || resyncs >= MAX_INDEX_RESYNCS {
+                    break 'regions;
+                }
+                let span = (region.end() - cursor).min(0x1000) as usize;
+                let insns = normalizer.decode_block(cursor, span);
+                if insns.is_empty() {
+                    cursor += 1;
+                    resyncs += 1;
+                    continue;
+                }
+                for insn in &insns {
+                    decoded += 1;
+                    if !insn.padding {
+                        boundaries.push(insn.addr);
+                    }
+                    if matches!(insn.kind, Kind::Call | Kind::NoreturnCall) {
+                        if let Some(target) = insn.target {
+                            if source.is_executable(target) {
+                                index.call_targets.insert(target);
+                            }
                         }
                     }
+                    for value in &insn.consts {
+                        index.const_refs.entry(*value).or_default().push(insn.addr);
+                    }
                 }
+                let last = insns.last().expect("non-empty");
+                cursor = last.addr + last.size as u64;
             }
-            let last = insns.last().expect("non-empty");
-            cursor = last.addr + last.size as u64;
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            index.boundaries.insert(region.start, boundaries);
         }
+        for references in index.const_refs.values_mut() {
+            references.sort_unstable();
+            references.dedup();
+        }
+        index
     }
-    let mut out: Vec<u64> = starts.into_iter().collect();
-    out.sort_unstable();
-    out
+
+    /// Instructions that materialize `value`, sorted and deduplicated.
+    fn const_referencers(&self, value: u64) -> &[u64] {
+        self.const_refs
+            .get(&value)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Instruction boundaries in the sweep window ending at `address`.
+    ///
+    /// Falls back to a local decode when the pass stopped before indexing this
+    /// region, so truncation degrades to the previous behaviour instead of
+    /// losing candidates outright.
+    fn swept_starts<S: ByteSource + ?Sized>(&self, source: &S, address: u64) -> Vec<u64> {
+        let Some(region) = source.region_for(address) else {
+            return Vec::new();
+        };
+        let Some(boundaries) = self.boundaries.get(&region.start) else {
+            return swept_starts_from(source, address);
+        };
+        let low = address.saturating_sub(BACKWARD_SWEEP_BYTES);
+        let first = boundaries.partition_point(|boundary| *boundary < low);
+        boundaries[first..]
+            .iter()
+            .copied()
+            .take_while(|boundary| *boundary <= address)
+            .collect()
+    }
 }
 
 /// Instruction starts in a bounded window ending at `address`.

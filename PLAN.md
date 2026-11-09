@@ -484,16 +484,28 @@ implemented, including native `merge` and all four target architectures.
   into the function and still scored 1.000; because `dedupe` keeps the first
   overlapping span, it then suppressed the real entry. `Insn::padding` marks
   filler (`nop`, `int3`) so the sweep offers the first real boundary, while
-  `endbr64`, `bti`, and `mov edi, edi` stay marked as entry markers. Measured
-  on the x64 corpus, hint-free same-build recall is 25/51 = 0.490 against
-  Python's 9/51 = 0.176 (`O0->O0` 9/19 vs 0/19, `O2->O2` 8/16 vs 1/16,
-  `Os->Os` 8/16 equal), and cross-build is 21/96 = 0.219 against 8/96 = 0.083
-  (`O2->O0` 2/16 vs 0, `Os->O2` 8/16 vs 0). Hinted recall is unchanged
-  (same-build 1.000, cross-build 37/96 = 0.385) and both false-positive rates
-  stay 0/17: the padding rule only replaces a swept start with the real
-  boundary, and the call-target pass runs only when hints are off. The
-  call-target pass costs one bounded linear decode per hint-free scan
-  (`MAX_CALL_DISCOVERY_INSTRUCTIONS`, 50 000); the padding rule costs nothing.
+  `endbr64`, `bti`, and `mov edi, edi` stay marked as entry markers.
+  (c) One bounded, resynchronizing linear pass (`CodeIndex`) replaces the
+  per-landmark backward decode. It records real instruction boundaries (a
+  restart 512 bytes before a landmark could begin mid-instruction, desync, and
+  stop short of it), direct call targets, and the instruction that materializes
+  each constant **by decoded value**. Byte needles only know 4- and 8-byte
+  encodings, so `cmp edx, -0x39` (`83 fa c7`) hid a `const:0xffffffffffffffc7`
+  anchor completely, and value lookup also reaches constants below the
+  `MIN_SEARCHABLE_CONST` needle threshold. Values materialized more than
+  `MAX_HITS_PER_ANCHOR` times are not used as landmarks, so generic `0x0`/`0x1`
+  constants cannot flood the candidate list. Measured on the x64 corpus,
+  hint-free same-build recall is 40/51 = 0.784 against Python's 9/51 = 0.176
+  (`O0->O0` 14/19 vs 0/19, `O2->O2` 13/16 vs 1/16, `Os->Os` 13/16 vs 8/16),
+  and cross-build is 26/96 = 0.271 against 8/96 = 0.083. Hinted recall is
+  unchanged (same-build 1.000, cross-build 37/96 = 0.385) and both
+  false-positive rates stay 0/17, because the pass only runs when hints are
+  off. The remaining same-build misses are `_start` (an ELF entry point that
+  nothing calls and no anchor describes) and callee-only signatures with no
+  materialized constant or string; the ELF entry point is the next candidate
+  source. The pass is bounded by `MAX_DISCOVERY_INSTRUCTIONS` (50 000) and
+  `MAX_INDEX_RESYNCS`, and runs once per hint-free scan; caching it across the
+  signatures of one scan session is a future improvement.
 - Binary DB (`native/src/db.rs`, SPEC.md §10): 64-byte header (magic
   `SIGTDB\0\1`, format version, header/record sizes, flags, spec version,
   record count, spec/records/blob offsets, blob length, table CRC-32),
