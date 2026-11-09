@@ -360,9 +360,15 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         let (mnemonic, conditional) = arm32_mnemonic(raw, cc);
 
         if ARM32_IGNORED.contains(&mnemonic.as_str()) || mnemonic.starts_with("it") {
+            // `nop` is alignment filler; `hint`/`it` are real code and keep
+            // their address as a candidate start.
             // IT blocks carry predication only; Capstone already marked the
             // covered instructions conditional, so the marker is dropped.
-            return Insn::ignored(addr, size);
+            return if mnemonic == "nop" {
+                Insn::filler(addr, size)
+            } else {
+                Insn::ignored(addr, size)
+            };
         }
 
         if let Some(insn) = self.arm32_materialize(ops, &mnemonic, addr, size, state) {
@@ -491,6 +497,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             callee,
             target,
             pool_end,
+            padding: false,
         }
     }
 

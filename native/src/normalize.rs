@@ -98,6 +98,12 @@ pub struct Insn {
     pub target: Option<u64>,
     /// End of a literal-pool cell this instruction reads (ARM32 only).
     pub pool_end: u64,
+    /// Filler rather than a real entry marker. Alignment NOPs and `int3`
+    /// padding are skipped by features, but they are not where a function
+    /// starts; `endbr64`, `bti`, and `mov edi, edi` are ignored for features
+    /// yet do mark an entry, so they stay false. Candidate discovery uses this
+    /// to avoid reporting a function at the padding before it.
+    pub padding: bool,
 }
 
 impl Insn {
@@ -112,6 +118,7 @@ impl Insn {
             callee: None,
             target: None,
             pool_end: 0,
+            padding: false,
         }
     }
 
@@ -126,6 +133,15 @@ impl Insn {
             callee: None,
             target: None,
             pool_end: 0,
+            padding: false,
+        }
+    }
+
+    /// An ignored instruction that is alignment filler, not an entry marker.
+    pub fn filler(addr: u64, size: usize) -> Insn {
+        Insn {
+            padding: true,
+            ..Insn::ignored(addr, size)
         }
     }
 }
@@ -396,7 +412,13 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         let size = raw.len();
 
         if is_x86_ignored(&mnemonic) || x86_is_hotpatch(&mnemonic, &operands) {
-            return Insn::ignored(addr, size);
+            // Multi-byte NOPs and `int3` are alignment filler; `endbr64` and the
+            // `mov edi, edi` hot-patch mark a real entry and keep their address.
+            return if mnemonic == "nop" || mnemonic == "int3" {
+                Insn::filler(addr, size)
+            } else {
+                Insn::ignored(addr, size)
+            };
         }
 
         let mut kind = Kind::Normal;
@@ -449,6 +471,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 callee: None,
                 target: None,
                 pool_end: 0,
+                padding: false,
             };
         }
 
@@ -510,6 +533,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             callee,
             target,
             pool_end: 0,
+            padding: false,
         }
     }
 

@@ -786,7 +786,13 @@ fn swept_starts_from<S: ByteSource + ?Sized>(source: &S, address: u64) -> Vec<u6
         if insn.size == 0 {
             break;
         }
-        starts.push(cursor);
+        // Alignment filler before a function is not the function: starting
+        // there makes recovery fall through into the real entry and accept a
+        // match whose span begins at the padding, so the entry is never
+        // reported. Skip the filler boundary and offer the first real one.
+        if !insn.padding {
+            starts.push(cursor);
+        }
         cursor += insn.size as u64;
     }
     starts

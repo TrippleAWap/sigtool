@@ -203,7 +203,13 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         let touches_stack_pointer = arm64_touches_stack_pointer(ops, mnemonic, word);
 
         if ARM64_IGNORED.contains(&mnemonic) {
-            return Insn::ignored(addr, size);
+            // `nop` is alignment filler; `bti` and the pointer-authentication
+            // instructions are real entry markers and keep their address.
+            return if mnemonic == "nop" {
+                Insn::filler(addr, size)
+            } else {
+                Insn::ignored(addr, size)
+            };
         }
 
         if mnemonic == "adrp" {
@@ -373,6 +379,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             callee,
             target,
             pool_end: 0,
+            padding: false,
         }
     }
 
