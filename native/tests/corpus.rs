@@ -1,5 +1,6 @@
-//! Corpus parity: the native extractor and matcher must reproduce the Python
-//! reference's x64 corpus results.
+//! Corpus gate: the native extractor and matcher must be at least as good as the
+//! Python reference on the x64 corpus, and better where a native-only
+//! improvement exists (hint-free discovery currently is).
 //!
 //! `bench.py` measures recall per discovery mode and false positives against
 //! `tests/baseline/bench.json`. This test runs the x64 slice of the same

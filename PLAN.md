@@ -471,10 +471,21 @@ implemented, including native `merge` and all four target architectures.
   reproduces the x64 slice of `bench.py` and compares it to
   `tests/baseline/bench.json` with the same 0.05 tolerance.
 - Measured on the generated x64 corpus: all 51 generated signature ids are
-  byte-identical to Python, every recall cell matches the baseline exactly
-  (hinted same-build 1.000, cross-build 37/96 = 0.385; hint-free same-build
-  9/51 = 0.176, cross-build 8/96 = 0.083), and false positives are 0/17
-  cross-source and 0/17 negative.
+  byte-identical to Python, every hinted recall cell matches the baseline
+  exactly (same-build 1.000, cross-build 37/96 = 0.385), and both
+  false-positive rates match (0/17 cross-source, 0/17 negative).
+- Native beats the reference on hint-free discovery. The Python matcher derives
+  candidates only from anchor landmarks, so a signature whose anchors are
+  strings finds nothing without a reference index, and the reference reports no
+  match at all. Native adds direct call targets as exact candidate starts when
+  symbols are ignored: a function a signature describes is usually called by
+  something, whatever anchors its signature carries. Hint-free same-build
+  recall is now 15/51 = 0.294 against Python's 9/51 = 0.176 (`O0->O0` 6/19 vs
+  0/19, `Os->O0` 1/16 vs 0/16, `O2->O2` and `Os->Os` unchanged); cross-build
+  stays 8/96 = 0.083 because a differently optimized body fails on features,
+  not on discovery. Hinted recall and both FP rates are unchanged, since the
+  fallback only runs when hints are off. The cost is one bounded linear decode
+  pass per hint-free scan (`MAX_CALL_DISCOVERY_INSTRUCTIONS`, 50 000).
 - Binary DB (`native/src/db.rs`, SPEC.md §10): 64-byte header (magic
   `SIGTDB\0\1`, format version, header/record sizes, flags, spec version,
   record count, spec/records/blob offsets, blob length, table CRC-32),

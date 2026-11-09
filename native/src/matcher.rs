@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::errors::SelfTestError;
 use crate::features::{extract, Feature, FeatureKind};
-use crate::normalize::Normalizer;
+use crate::normalize::{Kind, Normalizer};
 use crate::recover::{recover, RecoveryLimits};
 use crate::sigfile::Signature;
 use crate::source::{ByteSource, Region};
@@ -36,6 +36,10 @@ pub const DEFAULT_MAX_RECOVERIES: usize = 4_096;
 /// undecodable bytes must not cost one resync per byte.
 pub const MAX_INDEX_INSTRUCTIONS: usize = 200_000;
 pub const MAX_INDEX_RESYNCS: usize = 4_096;
+
+/// Hint-free discovery fallback: instructions decoded while collecting direct
+/// call targets. Bounded like the reference index for the same reason (rule 8).
+pub const MAX_CALL_DISCOVERY_INSTRUCTIONS: usize = 50_000;
 
 /// One- and two-byte immediates occur everywhere; searching for them produces
 /// noise without narrowing anything, so they are not used as needles.
@@ -180,9 +184,10 @@ pub fn accepts(signature: &Signature, result: &MatchScore) -> bool {
 /// Find accepted matches for `signature` in `source`, best first.
 ///
 /// `hints = false` is the hint-free discovery mode: known function starts and
-/// front-end bounds are ignored, so candidates come only from anchor hits and
-/// the bounded backward sweep. `index` adds the data-reference index, which
-/// turns string-anchor hits into candidates.
+/// front-end bounds are ignored, so candidates come from anchor hits, the
+/// bounded backward sweep, and direct call targets (exact entries recovered from
+/// code, not symbols). `index` adds the data-reference index, which turns
+/// string-anchor hits into candidates.
 pub fn scan<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
@@ -675,6 +680,14 @@ fn candidate_starts<S: ByteSource + ?Sized>(
                 .into_iter()
                 .filter(|start| source.is_executable(*start)),
         );
+    } else {
+        // Without symbols, a direct call target is still an exact function
+        // entry, while a backward sweep only guesses one from an interior
+        // landmark. The reference has no such source in hint-free mode, so its
+        // string-only signatures find nothing; this is a deliberate native
+        // improvement (measured in `PLAN.md` section 12). One bounded linear
+        // decode pass per hint-free scan pays for it.
+        hint_starts.extend(call_target_starts(source));
     }
     // Known starts are only a shortcut when they cover the hit; otherwise the
     // matcher still has to find the enclosing function from the bytes.
@@ -707,6 +720,55 @@ fn candidate_starts<S: ByteSource + ?Sized>(
         .collect()
 }
 
+/// Starts of functions reachable through a direct call, from one bounded sweep.
+///
+/// Hint-free discovery otherwise depends on the signature finding a code
+/// landmark: a constant's bytes or a string's referencer. String-only
+/// signatures have neither when no reference index is supplied, and a landmark
+/// further than [`BACKWARD_SWEEP_BYTES`] into the body gives the sweep the wrong
+/// prologue. A called function's entry is in the code regardless of which
+/// anchors its signature happens to carry, so call targets recover those cases
+/// without trusting symbols (which hint-free mode deliberately ignores).
+fn call_target_starts<S: ByteSource + ?Sized>(source: &S) -> Vec<u64> {
+    let normalizer = Normalizer::new(source);
+    let mut starts: HashSet<u64> = HashSet::new();
+    let mut decoded = 0usize;
+    let mut resyncs = 0usize;
+    'regions: for region in source.regions() {
+        if !region.executable {
+            continue;
+        }
+        let mut cursor = region.start;
+        while cursor < region.end() {
+            if decoded >= MAX_CALL_DISCOVERY_INSTRUCTIONS || resyncs >= MAX_INDEX_RESYNCS {
+                break 'regions;
+            }
+            let span = (region.end() - cursor).min(0x1000) as usize;
+            let insns = normalizer.decode_block(cursor, span);
+            if insns.is_empty() {
+                cursor += 1;
+                resyncs += 1;
+                continue;
+            }
+            for insn in &insns {
+                decoded += 1;
+                if matches!(insn.kind, Kind::Call | Kind::NoreturnCall) {
+                    if let Some(target) = insn.target {
+                        if source.is_executable(target) {
+                            starts.insert(target);
+                        }
+                    }
+                }
+            }
+            let last = insns.last().expect("non-empty");
+            cursor = last.addr + last.size as u64;
+        }
+    }
+    let mut out: Vec<u64> = starts.into_iter().collect();
+    out.sort_unstable();
+    out
+}
+
 /// Instruction starts in a bounded window ending at `address`.
 fn swept_starts_from<S: ByteSource + ?Sized>(source: &S, address: u64) -> Vec<u64> {
     let Some(region) = source.region_for(address) else {
@@ -732,9 +794,10 @@ fn swept_starts_from<S: ByteSource + ?Sized>(source: &S, address: u64) -> Vec<u6
 
 /// Order candidate starts for the fewest wasted recoveries.
 ///
-/// Exact (hint) starts come first, closest to a landmark; swept starts follow,
-/// earliest address first, since the prologue precedes the anchor that found
-/// them. Distant candidates of both kinds rank last, by address.
+/// Exact starts (symbols when hinted, direct call targets otherwise) come first,
+/// closest to a landmark; swept starts follow, earliest address first, since the
+/// prologue precedes the anchor that found them. Distant candidates of both
+/// kinds rank last, by address.
 fn rank(hint_starts: HashSet<u64>, swept_starts: HashSet<u64>, landmarks: &[u64]) -> Vec<u64> {
     // (near, kind, sort_key, start)
     let mut ranked: Vec<(u8, u8, u64, u64)> = Vec::new();
