@@ -129,7 +129,7 @@ pub fn recover<S: ByteSource + ?Sized>(
     hints: bool,
 ) -> Result<RecoveredFunction, DecodeError> {
     let arch = source.arch();
-    if !matches!(arch, Arch::X64 | Arch::Arm64) {
+    if !matches!(arch, Arch::X64 | Arch::Arm64 | Arch::Arm32 | Arch::Thumb) {
         return Err(DecodeError(format!(
             "{} feature extraction is not implemented in the native port yet",
             arch
@@ -255,9 +255,13 @@ pub fn recover<S: ByteSource + ?Sized>(
         degraded = true;
     }
     // ARM32 pools sit inline after the last instruction and are part of the
-    // function. x86-64 never sets `pool_end`; the field stays for parity with
-    // the reference structure.
-    let pool_end = 0;
+    // function; every other architecture leaves `pool_end` at 0.
+    let pool_end = ordered
+        .iter()
+        .flat_map(|block| block.insns.iter())
+        .map(|insn| insn.pool_end)
+        .max()
+        .unwrap_or(0);
     Ok(RecoveredFunction {
         entry: addr,
         arch,

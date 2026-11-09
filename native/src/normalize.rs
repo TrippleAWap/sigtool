@@ -130,6 +130,61 @@ impl Insn {
     }
 }
 
+/// A register value materialised in a block but not yet observed.
+#[derive(Clone, Copy)]
+pub(crate) struct PendingValue {
+    pub(crate) value: u64,
+    pub(crate) is_page: bool,
+    pub(crate) width: usize,
+}
+
+/// Register values produced by `adrp`, `movz`/`movk` chains, literal loads, and
+/// `movw`/`movt` pairs, kept until the instruction that consumes them (or the
+/// block end).
+#[derive(Default)]
+pub(crate) struct ArmState {
+    values: Vec<(u16, PendingValue)>,
+}
+
+impl ArmState {
+    pub(crate) fn insert(&mut self, register: u16, pending: PendingValue) {
+        match self.values.iter_mut().find(|(slot, _)| *slot == register) {
+            Some(slot) => slot.1 = pending,
+            None => self.values.push((register, pending)),
+        }
+    }
+
+    pub(crate) fn get(&self, register: u16) -> Option<PendingValue> {
+        self.values
+            .iter()
+            .find(|(slot, _)| *slot == register)
+            .map(|(_, pending)| *pending)
+    }
+
+    pub(crate) fn take(&mut self, register: u16) -> Option<PendingValue> {
+        let index = self.values.iter().position(|(slot, _)| *slot == register)?;
+        Some(self.values.swap_remove(index).1)
+    }
+
+    /// Consume pending constants, keeping unresolved page markers: a page that
+    /// is never consumed is an address and must never flush as a constant.
+    pub(crate) fn take_consts(&mut self) -> Vec<u64> {
+        let mut values: Vec<u64> = self
+            .values
+            .iter()
+            .filter(|(_, pending)| !pending.is_page)
+            .map(|(_, pending)| canonical_const(pending.value, pending.width))
+            .collect();
+        values.sort_unstable();
+        self.values.retain(|(_, pending)| pending.is_page);
+        values
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.values.clear();
+    }
+}
+
 /// Normalise an immediate so equal source constants compare equal.
 ///
 /// Compilers materialise `-1` as `mov rax, -1` on one path and `mov eax, -1`
@@ -213,6 +268,9 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         }
         if self.source.arch() == Arch::Arm64 {
             return self.arm64_block(addr, max_bytes, depth);
+        }
+        if self.source.arch().is_arm() {
+            return self.arm32_block(addr, max_bytes, depth);
         }
         let data = self.source.read_partial(addr, max_bytes);
         if data.is_empty() {

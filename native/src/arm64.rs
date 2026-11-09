@@ -16,7 +16,8 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv8::a64::{Instruction, Opcode, Operand, SizeCode};
 
 use crate::normalize::{
-    canonical_const, sorted_unique, DataRef, Insn, Kind, Normalizer, OpClass, MASK32, MASK64,
+    canonical_const, sorted_unique, ArmState, DataRef, Insn, Kind, Normalizer, OpClass,
+    PendingValue, MASK32, MASK64,
 };
 use crate::source::ByteSource;
 
@@ -71,60 +72,6 @@ const ARM64_COND_BRANCHES: &[&str] = &["cbz", "cbnz", "tbz", "tbnz"];
 const ARM64_FP_PREFIXES: &[&str] = &[
     "fmov", "fadd", "fsub", "fmul", "fdiv", "fcmp", "fcvt", "scvtf", "ucvtf",
 ];
-
-/// A register value materialised in the block but not yet observed.
-#[derive(Clone, Copy)]
-struct PendingValue {
-    value: u64,
-    is_page: bool,
-    width: usize,
-}
-
-/// Register values produced by `adrp`, `movz`/`movk` chains, and literal
-/// loads, kept until the instruction that consumes them (or the block end).
-#[derive(Default)]
-struct ArmState {
-    values: Vec<(u16, PendingValue)>,
-}
-
-impl ArmState {
-    fn insert(&mut self, register: u16, pending: PendingValue) {
-        match self.values.iter_mut().find(|(slot, _)| *slot == register) {
-            Some(slot) => slot.1 = pending,
-            None => self.values.push((register, pending)),
-        }
-    }
-
-    fn get(&self, register: u16) -> Option<PendingValue> {
-        self.values
-            .iter()
-            .find(|(slot, _)| *slot == register)
-            .map(|(_, pending)| *pending)
-    }
-
-    fn take(&mut self, register: u16) -> Option<PendingValue> {
-        let index = self.values.iter().position(|(slot, _)| *slot == register)?;
-        Some(self.values.swap_remove(index).1)
-    }
-
-    /// Consume pending constants, keeping unresolved `adrp` pages: a page that
-    /// is never consumed is an address and must never flush as a constant.
-    fn take_consts(&mut self) -> Vec<u64> {
-        let mut values: Vec<u64> = self
-            .values
-            .iter()
-            .filter(|(_, pending)| !pending.is_page)
-            .map(|(_, pending)| canonical_const(pending.value, pending.width))
-            .collect();
-        values.sort_unstable();
-        self.values.retain(|(_, pending)| pending.is_page);
-        values
-    }
-
-    fn clear(&mut self) {
-        self.values.clear();
-    }
-}
 
 #[derive(Clone, Copy)]
 struct RegRef {
@@ -465,7 +412,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         Some(Insn::normal(addr, 4, OpClass::Move))
     }
 
-    fn read_pointer32(&self, addr: u64) -> Option<u64> {
+    pub(crate) fn read_pointer32(&self, addr: u64) -> Option<u64> {
         let data = self.source.try_read(addr, 4)?;
         if data.len() < 4 {
             return None;

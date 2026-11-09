@@ -6,6 +6,7 @@
 //! the first port; AArch64 is ported next, ARM32/Thumb are follow-ups.
 
 pub mod arch;
+mod arm32;
 mod arm64;
 pub mod db;
 pub mod elf;
