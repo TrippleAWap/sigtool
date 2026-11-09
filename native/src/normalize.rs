@@ -433,6 +433,25 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             }
         }
 
+        // Capstone spells CET's `notrack` prefix into the mnemonic
+        // ("notrack jmp"), so the reference never enters its branch arm and
+        // reads the instruction as ordinary flow. iced drops the prefix and
+        // reports a plain jump; restore the reference reading so recovery does
+        // not stop at a jump the reference continues past.
+        if raw.segment_prefix() == Register::DS && (mnemonic == "jmp" || mnemonic == "call") {
+            return Insn {
+                addr,
+                size,
+                op: OpClass::Misc,
+                kind: Kind::Normal,
+                consts: Vec::new(),
+                refs,
+                callee: None,
+                target: None,
+                pool_end: 0,
+            };
+        }
+
         if mnemonic == "call" || mnemonic == "lcall" {
             kind = Kind::Call;
             match operands.first() {

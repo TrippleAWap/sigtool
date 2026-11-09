@@ -89,13 +89,6 @@ fn golden_vectors_match_reference_features() {
     for path in files {
         let text = std::fs::read_to_string(&path).expect("vector file");
         let vector: Value = serde_json::from_str(&text).expect("vector json");
-        // The ported decoders are x64, arm64, arm32, and thumb. The `x64-cet`
-        // vectors exercise CET-specific decoding that the native port does not
-        // reproduce yet, so they stay out of this parity gate.
-        let arch = vector["arch"].as_str().unwrap_or_default();
-        if !(arch == "x64" || arch.starts_with("arm64") || arch == "arm32" || arch == "thumb") {
-            continue;
-        }
         let source = source_from_vector(&vector);
         let functions = vector["functions"].as_object().expect("functions");
         for (name, info) in functions {
