@@ -1,21 +1,21 @@
 //! ARM32 and Thumb decoding and normalization for the native port.
 //!
-//! The rules mirror `core/normalize.py` (`_arm32`, `_arm32_materialize`,
-//! `_arm32_literal_load`, `_arm32_pc_add`, `_arm32_class`). yaxpeax-arm plays
-//! the part of Capstone, so the projection below reads the same facts the
-//! reference reads off `CsInsn`: the stripped condition suffix, the PC-relative
-//! literal pool, and the `movw`/`movt` chain. Decoder differences handled here
-//! rather than downstream:
+//! The projection mirrors `core/normalize.py` (`_arm32`, `_arm32_materialize`,
+//! `_arm32_literal_load`, `_arm32_pc_add`, `_arm32_class`) function for
+//! function. Decoding goes through Capstone, the same engine the reference
+//! uses, so mnemonic spellings (shifted-register aliases, `.w` markers),
+//! condition codes, and operand shapes arrive identically instead of being
+//! reconstructed from another decoder's output.
 //!
-//! * One decoder serves both modes, so `is_thumb` at the block start picks the
-//!   mode for every instruction in that block.
-//! * Capstone reports absolute branch targets and `adr` values; yaxpeax
-//!   reports pc-relative deltas, which are rebased onto addresses here.
-//! * `[pc, #imm]` literal loads arrive as an offset from the decoded PC value,
-//!   which differs between ARM (`addr + 8`) and Thumb (`(addr + 4) & ~3`).
+//! Unlike x64 (`iced-x86`) and AArch64 (`yaxpeax-arm`), ARM32/Thumb needs the C
+//! decoder: `yaxpeax-arm` 0.5 returns `DecodeError::Incomplete` for the whole
+//! ARMv7 media group and has no VFP/NEON instructions, and those two gaps cover
+//! ordinary compiled code (`uxth`, vectorized loops).
 
-use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
-use yaxpeax_arm::armv7::{ConditionCode, InstDecoder, Instruction, Opcode, Operand};
+use capstone::arch::arm::{ArchMode, ArmCC, ArmOperandType, ArmReg};
+use capstone::arch::ArchOperand;
+use capstone::prelude::*;
+use capstone::{Capstone, Insn as CsInsn, RegId};
 
 use crate::normalize::{
     canonical_const, sorted_unique, ArmState, DataRef, Insn, Kind, Normalizer, OpClass,
@@ -23,9 +23,9 @@ use crate::normalize::{
 };
 use crate::source::ByteSource;
 
-const PC: u8 = 15;
-const LR: u8 = 14;
-const SP: u8 = 13;
+const PC: RegId = RegId(ArmReg::ARM_REG_PC as u16);
+const LR: RegId = RegId(ArmReg::ARM_REG_LR as u16);
+const SP: RegId = RegId(ArmReg::ARM_REG_SP as u16);
 
 const ARM32_IGNORED: &[&str] = &["nop", "hint"];
 const ARM32_TRAP: &[&str] = &["udf", "svc"];
@@ -46,43 +46,76 @@ const ARM32_STORE_PREFIXES: &[&str] = &["str", "stm", "strex", "strd"];
 const ARM32_BRANCH_TABLE: &[&str] = &["tbb", "tbh"];
 const ARM32_CONDITIONAL_JUMPS: &[&str] = &["cbz", "cbnz"];
 
-fn condition_suffix(condition: ConditionCode) -> Option<&'static str> {
-    match condition {
-        ConditionCode::EQ => Some("eq"),
-        ConditionCode::NE => Some("ne"),
-        ConditionCode::HS => Some("hs"),
-        ConditionCode::LO => Some("lo"),
-        ConditionCode::MI => Some("mi"),
-        ConditionCode::PL => Some("pl"),
-        ConditionCode::VS => Some("vs"),
-        ConditionCode::VC => Some("vc"),
-        ConditionCode::HI => Some("hi"),
-        ConditionCode::LS => Some("ls"),
-        ConditionCode::GE => Some("ge"),
-        ConditionCode::LT => Some("lt"),
-        ConditionCode::GT => Some("gt"),
-        ConditionCode::LE => Some("le"),
-        _ => None,
-    }
+/// One operand, reduced to the facts the reference reads off `CsInsn`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArmOp {
+    Reg(RegId),
+    Imm(i64),
+    Mem { base: RegId, disp: i64 },
+}
+
+fn reg_key(reg: RegId) -> u16 {
+    reg.0
+}
+
+fn is_vector_reg(cs: &Capstone, reg: RegId) -> bool {
+    let Some(name) = cs.reg_name(reg) else {
+        return false;
+    };
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    matches!(first, 'v' | 'q' | 'd' | 's' | 'b' | 'h')
+        && name.len() > 1
+        && chars.all(|ch| ch.is_ascii_digit())
+}
+
+fn arm_capstone(thumb: bool) -> Option<Capstone> {
+    let mode = if thumb {
+        ArchMode::Thumb
+    } else {
+        ArchMode::Arm
+    };
+    Capstone::new().arm().mode(mode).detail(true).build().ok()
+}
+
+fn cc_suffix(cc: ArmCC) -> Option<&'static str> {
+    Some(match cc {
+        ArmCC::ARM_CC_EQ => "eq",
+        ArmCC::ARM_CC_NE => "ne",
+        ArmCC::ARM_CC_HS => "hs",
+        ArmCC::ARM_CC_LO => "lo",
+        ArmCC::ARM_CC_MI => "mi",
+        ArmCC::ARM_CC_PL => "pl",
+        ArmCC::ARM_CC_VS => "vs",
+        ArmCC::ARM_CC_VC => "vc",
+        ArmCC::ARM_CC_HI => "hi",
+        ArmCC::ARM_CC_LS => "ls",
+        ArmCC::ARM_CC_GE => "ge",
+        ArmCC::ARM_CC_LT => "lt",
+        ArmCC::ARM_CC_GT => "gt",
+        ArmCC::ARM_CC_LE => "le",
+        _ => return None,
+    })
 }
 
 /// Strip the Thumb width marker and the condition suffix from the mnemonic.
 ///
 /// The suffix is removed only when the decoder reports a condition, so
 /// mnemonics that merely end in a condition pair (`umlal`, `mls`) survive.
-fn arm32_mnemonic(raw: &Instruction) -> (String, bool) {
-    let text = raw.to_string();
-    let mut mnemonic = text
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    for marker in [".w", ".n"] {
-        if let Some(stripped) = mnemonic.strip_suffix(marker) {
-            mnemonic = stripped.to_owned();
-        }
+fn arm32_mnemonic(raw: &CsInsn<'_>, cc: ArmCC) -> (String, bool) {
+    let mut mnemonic = raw.mnemonic().unwrap_or_default().to_owned();
+    if let Some(stripped) = mnemonic
+        .strip_suffix(".w")
+        .or_else(|| mnemonic.strip_suffix(".n"))
+    {
+        mnemonic = stripped.to_owned();
     }
-    if let Some(suffix) = condition_suffix(raw.condition) {
+    if cc == ArmCC::ARM_CC_AL || cc == ArmCC::ARM_CC_INVALID {
+        return (mnemonic, false);
+    }
+    if let Some(suffix) = cc_suffix(cc) {
         if let Some(stripped) = mnemonic.strip_suffix(suffix) {
             return (stripped.to_owned(), true);
         }
@@ -90,181 +123,74 @@ fn arm32_mnemonic(raw: &Instruction) -> (String, bool) {
     (mnemonic, false)
 }
 
-fn reg_of(operand: &Operand) -> Option<u8> {
-    match operand {
-        Operand::Reg(register) | Operand::RegWBack(register, _) => Some(register.number()),
-        _ => None,
-    }
-}
-
-/// Base register and byte offset of a memory operand.
-fn mem_of(operand: &Operand) -> Option<(u8, i64)> {
-    match operand {
-        Operand::RegDeref(base) => Some((base.number(), 0)),
-        Operand::RegDerefPostindexOffset(base, offset, add, _)
-        | Operand::RegDerefPreindexOffset(base, offset, add, _) => {
-            let offset = i64::from(*offset);
-            Some((base.number(), if *add { offset } else { -offset }))
-        }
-        _ => None,
-    }
-}
-
-fn imm_of(operand: &Operand) -> Option<u64> {
-    match operand {
-        Operand::Imm12(value) => Some(u64::from(*value)),
-        Operand::Imm32(value) => Some(u64::from(*value)),
-        _ => None,
-    }
-}
-
-fn reg_list(operand: &Operand) -> Option<u16> {
-    match operand {
-        Operand::RegList(mask) => Some(*mask),
-        _ => None,
-    }
-}
-
-/// PC value the instruction sees, per the ARM and Thumb pipeline rules.
-/// Is this the ARM/Thumb `movw`/`movt` (move wide immediate) encoding?
-///
-/// yaxpeax decodes `movw` as a plain `MOV` with an immediate, but Capstone — and
-/// therefore the reference — names the width, and the two ends of a
-/// `movw`/`movt` pair materialise one constant instead of two.
-fn move_wide(thumb: bool, word: u32) -> Option<&'static str> {
-    if thumb {
-        let first = (word & 0xFFFF) as u16;
-        return match first & 0xFBF0 {
-            0xF240 => Some("movw"),
-            0xF2C0 => Some("movt"),
-            _ => None,
+/// Capstone expands a register list (`pop {r4, pc}`) into one `Reg` per entry.
+fn arm_operands(cs: &Capstone, detail: &capstone::InsnDetail<'_>) -> (Vec<ArmOp>, bool) {
+    let arch = detail.arch_detail();
+    let mut ops = Vec::new();
+    let mut vector = false;
+    for operand in arch.operands() {
+        let ArchOperand::ArmOperand(operand) = operand else {
+            continue;
         };
-    }
-    // ARM move-wide immediate: bits 27..20 are 0011 0000 (movw) or
-    // 0011 0100 (movt); the data-processing `mov rd, #imm` has 0011 101x.
-    match word & 0x0FF0_0000 {
-        0x0300_0000 => Some("movw"),
-        0x0340_0000 => Some("movt"),
-        _ => None,
-    }
-}
-
-/// Capstone names a shifted register move by the shift (`lsl r0, r0, #4`);
-/// yaxpeax keeps it as `mov rd, rm, lsl 4`, so the display carries the alias.
-fn shift_alias(text: &str) -> Option<&'static str> {
-    text.split([' ', ',', '.']).find_map(|token| match token {
-        "lsl" => Some("lsl"),
-        "lsr" => Some("lsr"),
-        "asr" => Some("asr"),
-        "ror" => Some("ror"),
-        "rrx" => Some("rrx"),
-        _ => None,
-    })
-}
-
-fn pc_value(addr: u64, thumb: bool) -> u64 {
-    if thumb {
-        (addr + 4) & !3
-    } else {
-        addr + 8
-    }
-}
-
-/// Thumb branch target from the raw halfwords.
-///
-/// yaxpeax's 16-bit conditional delta does not match the encoding (an `imm8`
-/// branch with `imm8 = 5` arrives as 6), so the target is computed here with
-/// the architectural `pc + 4 + offset` rule instead. Handles the 16-bit
-/// conditional and unconditional forms plus the 32-bit `b.w`/`bl` pair.
-fn thumb_branch_target(addr: u64, word: u32, size: usize) -> Option<u64> {
-    if size == 2 {
-        let hw = (word & 0xFFFF) as u16;
-        if hw >> 12 == 0xD && ((hw >> 8) & 0xF) < 0xE {
-            let offset = i64::from(hw as i8) * 2;
-            return Some(addr.wrapping_add(4).wrapping_add_signed(offset));
-        }
-        if hw >> 11 == 0b0001_1100 {
-            let imm = ((hw & 0x7FF) as i16) << 5 >> 5;
-            return Some(addr.wrapping_add(4).wrapping_add_signed(i64::from(imm) * 2));
-        }
-        // CBZ/CBNZ: forward-only, zero-extended `i:imm5:0`, so the sign rules
-        // above do not apply. `i` is bit 9 and the immediate is bits 7..3.
-        if hw & 0xF500 == 0xB100 {
-            let i = u64::from((hw >> 9) & 1);
-            let imm5 = u64::from((hw >> 3) & 0x1F);
-            return Some(addr.wrapping_add(4).wrapping_add((i << 6) | (imm5 << 1)));
-        }
-        return None;
-    }
-    if size != 4 || (word & 0xFFFF) >> 11 != 0b11110 {
-        return None;
-    }
-    let hw1 = word & 0xFFFF;
-    let hw2 = word >> 16;
-    let s = ((hw1 >> 10) & 1) as i32;
-    let j1 = ((hw2 >> 13) & 1) as i32;
-    let j2 = ((hw2 >> 11) & 1) as i32;
-    let i1 = (j1 ^ s) ^ 1;
-    let i2 = (j2 ^ s) ^ 1;
-    let imm10 = (hw1 & 0x3FF) as i32;
-    let imm11 = (hw2 & 0x7FF) as i32;
-    let offset = ((s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1)) << 7 >> 7;
-    Some(addr.wrapping_add(4).wrapping_add_signed(i64::from(offset)))
-}
-
-fn branch_target(addr: u64, thumb: bool, word: u32, size: usize, ops: &[&Operand]) -> Option<u64> {
-    if thumb {
-        if let Some(target) = thumb_branch_target(addr, word, size) {
-            return Some(target);
-        }
-    }
-    // yaxpeax reports the branch delta in instruction units relative to the
-    // instruction address (its display shows the same value Capstone reports as
-    // an absolute target minus this address), so ARM (4-byte) and Thumb
-    // (2-byte) branches scale differently and no pipeline offset is added.
-    for operand in ops {
-        match operand {
-            Operand::BranchOffset(delta) => {
-                return Some(addr.wrapping_add_signed(i64::from(*delta) * 4));
+        match operand.op_type {
+            ArmOperandType::Reg(reg) => {
+                vector |= is_vector_reg(cs, reg);
+                ops.push(ArmOp::Reg(reg));
             }
-            Operand::BranchThumbOffset(delta) => {
-                return Some(addr.wrapping_add_signed(i64::from(*delta) * 2));
-            }
+            ArmOperandType::Imm(value) => ops.push(ArmOp::Imm(i64::from(value))),
+            ArmOperandType::Mem(mem) => ops.push(ArmOp::Mem {
+                base: mem.base(),
+                disp: i64::from(mem.disp()),
+            }),
             _ => {}
         }
     }
-    ops.iter().find_map(|operand| imm_of(operand))
+    (ops, vector)
 }
 
-/// `adr` reports an address directly, or a pc-relative delta to rebase.
-fn adr_target(addr: u64, thumb: bool, word: u32, size: usize, ops: &[&Operand]) -> Option<u64> {
-    branch_target(addr, thumb, word, size, ops)
-}
-
-fn moves_pc(ops: &[&Operand]) -> bool {
-    ops.len() >= 2 && reg_of(ops[0]) == Some(PC) && reg_of(ops[1]) == Some(LR)
-}
-
-fn touches_stack_pointer(ops: &[&Operand]) -> bool {
-    ops.iter().any(|operand| {
-        reg_of(operand) == Some(SP) || mem_of(operand).is_some_and(|(base, _)| base == SP)
+fn arm_target(ops: &[ArmOp]) -> Option<u64> {
+    ops.iter().rev().find_map(|operand| match operand {
+        ArmOp::Imm(value) => Some(*value as u64),
+        _ => None,
     })
 }
 
-fn arm32_is_ret(mnemonic: &str, ops: &[&Operand]) -> bool {
+fn touches_stack_pointer(ops: &[ArmOp]) -> bool {
+    ops.iter().any(|operand| match operand {
+        ArmOp::Reg(reg) => *reg == SP,
+        ArmOp::Mem { base, .. } => *base == SP,
+        ArmOp::Imm(_) => false,
+    })
+}
+
+fn moves_pc(ops: &[ArmOp]) -> bool {
+    matches!(
+        (ops.first(), ops.get(1)),
+        (Some(ArmOp::Reg(destination)), Some(ArmOp::Reg(source)))
+            if *destination == PC && *source == LR
+    )
+}
+
+fn arm32_is_ret(mnemonic: &str, ops: &[ArmOp]) -> bool {
     if mnemonic == "bx" {
-        return ops.first().and_then(|operand| reg_of(operand)) == Some(LR);
+        return matches!(ops.first(), Some(ArmOp::Reg(reg)) if *reg == LR);
     }
     if mnemonic == "pop" || mnemonic.starts_with("ldm") {
-        return ops.iter().any(|operand| {
-            reg_of(operand) == Some(PC)
-                || reg_list(operand).is_some_and(|mask| mask & (1 << 15) != 0)
-        });
+        return ops
+            .iter()
+            .any(|operand| matches!(operand, ArmOp::Reg(reg) if *reg == PC));
     }
     false
 }
 
-fn arm32_class(mnemonic: &str, conditional: bool, ops: &[&Operand]) -> OpClass {
+fn starts_with_any(mnemonic: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| mnemonic.starts_with(prefix))
+}
+
+fn arm32_class(mnemonic: &str, conditional: bool, ops: &[ArmOp], vector: bool) -> OpClass {
+    if vector {
+        return OpClass::Vector;
+    }
     if arm32_is_ret(mnemonic, ops) {
         return if conditional {
             OpClass::Cond
@@ -279,7 +205,7 @@ fn arm32_class(mnemonic: &str, conditional: bool, ops: &[&Operand]) -> OpClass {
             OpClass::Branch
         };
     }
-    if mnemonic == "bl" || mnemonic == "blx" || mnemonic == "blr" {
+    if matches!(mnemonic, "bl" | "blx" | "blr") {
         return OpClass::Call;
     }
     if ARM32_CONDITIONAL_JUMPS.contains(&mnemonic) {
@@ -324,20 +250,14 @@ fn arm32_class(mnemonic: &str, conditional: bool, ops: &[&Operand]) -> OpClass {
     if ARM32_CMP.contains(&base) {
         return OpClass::Cmp;
     }
-    let is_store = ARM32_STORE_PREFIXES
-        .iter()
-        .any(|prefix| mnemonic.starts_with(prefix));
-    if is_store {
+    if starts_with_any(mnemonic, ARM32_STORE_PREFIXES) {
         return if touches_stack_pointer(ops) {
             OpClass::Stack
         } else {
             OpClass::Store
         };
     }
-    let is_load = ARM32_LOAD_PREFIXES
-        .iter()
-        .any(|prefix| mnemonic.starts_with(prefix));
-    if is_load {
+    if starts_with_any(mnemonic, ARM32_LOAD_PREFIXES) {
         return if touches_stack_pointer(ops) {
             OpClass::Stack
         } else {
@@ -345,89 +265,68 @@ fn arm32_class(mnemonic: &str, conditional: bool, ops: &[&Operand]) -> OpClass {
         };
     }
     if touches_stack_pointer(ops) {
-        return OpClass::Stack;
+        OpClass::Stack
+    } else {
+        OpClass::Misc
     }
-    OpClass::Misc
 }
 
-fn arm32_stack_exit(ops: &[&Operand], conditional: bool, exits: bool) -> Kind {
-    if exits
-        && ops.iter().any(|operand| {
-            reg_of(operand) == Some(PC)
-                || reg_list(operand).is_some_and(|mask| mask & (1 << 15) != 0)
-        })
-    {
-        return if conditional {
-            Kind::CondJump
-        } else {
-            Kind::Ret
-        };
+/// PC value the instruction sees, per the ARM and Thumb pipeline rules.
+fn pc_value(addr: u64, thumb: bool) -> u64 {
+    if thumb {
+        (addr + 4) & !3
+    } else {
+        addr + 8
     }
-    Kind::Normal
+}
+
+fn arm32_immediate_consts(ops: &[ArmOp]) -> Vec<u64> {
+    if touches_stack_pointer(ops) {
+        return Vec::new();
+    }
+    ops.iter()
+        .filter_map(|operand| match operand {
+            ArmOp::Imm(value) => Some(canonical_const(*value as u64, 4)),
+            _ => None,
+        })
+        .collect()
 }
 
 impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
-    pub(crate) fn arm32_block(&self, addr: u64, max_bytes: usize, depth: usize) -> Vec<Insn> {
-        let base = addr & !1; // the Thumb bit is metadata, never a byte offset
+    pub(crate) fn arm32_block(&self, base: u64, max_bytes: usize, depth: usize) -> Vec<Insn> {
+        if max_bytes == 0 {
+            return Vec::new();
+        }
         let data = self.source.read_partial(base, max_bytes);
         if data.is_empty() {
             return Vec::new();
         }
         let thumb = self.source.is_thumb(base);
-        let mut decoder = InstDecoder::default();
-        decoder.set_thumb_mode(thumb);
+        let Some(cs) = arm_capstone(thumb) else {
+            return Vec::new();
+        };
+        let Ok(instructions) = cs.disasm_all(&data, base) else {
+            return Vec::new();
+        };
 
         let mut state = ArmState::default();
         let mut out: Vec<Insn> = Vec::new();
-        let mut offset = 0usize;
-        // ITSTATE: yaxpeax leaves predication on the `it` instruction, while
-        // Capstone (and therefore the reference) marks the following one to
-        // four instructions conditional. Only the flag matters for feature
-        // extraction, so the mask is just advanced.
-        let mut it_mask: Option<u8> = None;
-        while offset < data.len() {
-            let mut reader = U8Reader::new(&data[offset..]);
-            // yaxpeax returns `Incomplete` for whole instruction groups it does
-            // not implement (VFP/NEON, the ARMv7 media group), so an error ends
-            // the block rather than being retried at another offset.
-            let Ok(raw) = decoder.decode(&mut reader) else {
+        for raw in instructions.iter() {
+            let size = raw.len();
+            if size == 0 {
+                break;
+            }
+            let Ok(detail) = cs.insn_detail(raw) else {
                 break;
             };
-            let size = raw.len().to_const() as usize;
-            if size == 0 || offset + size > data.len() {
-                break;
-            }
-            let mut word = 0u32;
-            if offset + 4 <= data.len() {
-                word = u32::from_le_bytes([
-                    data[offset],
-                    data[offset + 1],
-                    data[offset + 2],
-                    data[offset + 3],
-                ]);
-            }
-            let hw = word & 0xFFFF;
-            let is_it = thumb && size == 2 && hw & 0xFF00 == 0xBF00 && hw & 0xF != 0;
-            let in_it = it_mask.is_some();
-            if is_it {
-                it_mask = Some((hw & 0xF) as u8);
-            } else if let Some(mask) = it_mask {
-                let next = (mask << 1) & 0xF;
-                it_mask = if next == 0 { None } else { Some(next) };
-            }
-            let insn = self.arm32(
-                &raw,
-                base + offset as u64,
-                size,
-                thumb,
-                word,
-                in_it,
-                &mut state,
-                depth,
-            );
+            let cc = match detail.arch_detail() {
+                ArchDetail::ArmDetail(arm) => arm.cc(),
+                _ => ArmCC::ARM_CC_INVALID,
+            };
+            let (ops, vector) = arm_operands(&cs, &detail);
+            let insn = self.arm32(raw, &ops, cc, vector, thumb, &mut state, depth);
             let terminating = insn.kind.is_terminating();
             out.push(insn);
-            offset += size;
             if terminating {
                 break;
             }
@@ -448,80 +347,36 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     #[allow(clippy::too_many_arguments)]
     fn arm32(
         &self,
-        raw: &Instruction,
-        addr: u64,
-        size: usize,
+        raw: &CsInsn<'_>,
+        ops: &[ArmOp],
+        cc: ArmCC,
+        vector: bool,
         thumb: bool,
-        word: u32,
-        in_it: bool,
         state: &mut ArmState,
         depth: usize,
     ) -> Insn {
-        let (mut mnemonic, display_conditional) = arm32_mnemonic(raw);
-        let conditional = display_conditional || in_it;
-        // ARM has no `adr` encoding: `add rd, pc, #imm` is a pseudo-instruction
-        // that Capstone keeps as `add`. yaxpeax aliases it to `adr`, so undo
-        // that in ARM mode; Thumb really does have the alias, and the reference
-        // treats `adr` there as an absolute address.
-        if !thumb && mnemonic == "adr" {
-            mnemonic = "add".to_owned();
-        }
-        if let Some(wide) = move_wide(thumb, word) {
-            mnemonic = wide.to_owned();
-        } else if (mnemonic == "mov" || mnemonic == "movs") && !matches!(raw.opcode, Opcode::MOVT) {
-            if let Some(alias) = shift_alias(&raw.to_string()) {
-                mnemonic = alias.to_owned();
-            }
-        }
-        let ops: Vec<&Operand> = raw
-            .operands
-            .iter()
-            .filter(|operand| !matches!(operand, Operand::Nothing))
-            .collect();
+        let addr = raw.address();
+        let size = raw.len();
+        let (mnemonic, conditional) = arm32_mnemonic(raw, cc);
 
-        // IT blocks carry predication only; their instructions keep the
-        // condition suffix, which `arm32_mnemonic` strips above.
         if ARM32_IGNORED.contains(&mnemonic.as_str()) || mnemonic.starts_with("it") {
+            // IT blocks carry predication only; Capstone already marked the
+            // covered instructions conditional, so the marker is dropped.
             return Insn::ignored(addr, size);
         }
 
-        if mnemonic == "movw" || mnemonic == "movt" {
-            if let (Some(destination), Some(immediate)) = (
-                ops.first().and_then(reg_of_op),
-                ops.get(1).and_then(|op| imm_of(op)),
-            ) {
-                let value = if mnemonic == "movt" {
-                    let previous = state
-                        .take(u16::from(destination))
-                        .filter(|pending| !pending.is_page)
-                        .map_or(0, |pending| pending.value);
-                    previous | ((immediate & 0xFFFF) << 16)
-                } else {
-                    immediate & 0xFFFF
-                };
-                state.insert(
-                    u16::from(destination),
-                    PendingValue {
-                        value: value & MASK32,
-                        is_page: false,
-                        width: 4,
-                    },
-                );
-                return Insn::normal(addr, size, OpClass::Move);
-            }
+        if let Some(insn) = self.arm32_materialize(ops, &mnemonic, addr, size, state) {
+            return insn;
         }
 
         if mnemonic == "mvn" {
             // `-x` is materialised as `mvn rd, #~x`; mirror AArch64 `movn`.
-            // yaxpeax prints the immediate form as `mvn rd, rd, #imm`, so the
-            // immediate is located anywhere in the operand list.
-            let immediate = ops.iter().find_map(|operand| imm_of(operand));
-            if let (Some(destination), Some(immediate)) =
-                (ops.first().and_then(reg_of_op), immediate)
+            if let (Some(&ArmOp::Reg(destination)), Some(&ArmOp::Imm(immediate))) =
+                (ops.first(), ops.get(1))
             {
-                let value = (!(immediate & MASK32)) & MASK32;
+                let value = (!(immediate as u64 & MASK32)) & MASK32;
                 state.insert(
-                    u16::from(destination),
+                    reg_key(destination),
                     PendingValue {
                         value,
                         is_page: false,
@@ -536,8 +391,8 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         // before the pending flush below deletes it.
         let mut indirect_target = None;
         if matches!(mnemonic.as_str(), "bx" | "blx" | "blr") {
-            if let Some(register) = ops.last().and_then(|operand| reg_of(operand)) {
-                if let Some(held) = state.take(u16::from(register)) {
+            if let Some(&ArmOp::Reg(register)) = ops.last() {
+                if let Some(held) = state.take(reg_key(register)) {
                     if !held.is_page {
                         indirect_target = Some(held.value);
                     }
@@ -553,30 +408,31 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         let mut pool_end = 0u64;
 
         if mnemonic == "adr" {
-            if let Some(value) = adr_target(addr, thumb, word, size, &ops) {
+            if let Some(&ArmOp::Imm(value)) = ops.get(1) {
                 refs.push(DataRef {
-                    addr: value,
+                    addr: value as u64,
                     width: 1,
                 });
             }
         } else {
-            pool_end = self.arm32_literal_load(&ops, &mnemonic, addr, thumb, state, &mut refs);
+            pool_end = self.arm32_literal_load(ops, &mnemonic, addr, thumb, state, &mut refs);
             if pool_end == 0 {
-                self.arm32_pc_add(&ops, &mnemonic, addr, thumb, state, &mut refs);
+                self.arm32_pc_add(ops, &mnemonic, addr, thumb, state, &mut refs);
             }
-            if matches!(mnemonic.as_str(), "pop" | "push")
+            if mnemonic == "pop"
+                || mnemonic == "push"
                 || mnemonic.starts_with("ldm")
                 || mnemonic.starts_with("stm")
             {
                 let exits = mnemonic == "pop" || mnemonic.starts_with("ldm");
-                kind = arm32_stack_exit(&ops, conditional, exits);
+                kind = arm32_stack_exit(ops, conditional, exits);
             } else if mnemonic == "b" {
                 kind = if conditional {
                     Kind::CondJump
                 } else {
                     Kind::Jump
                 };
-                target = branch_target(addr, thumb, word, size, &ops);
+                target = arm_target(ops);
                 if kind == Kind::Jump {
                     callee = self.callee_name(target, depth);
                 }
@@ -584,7 +440,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 if indirect_target.is_some() {
                     kind = Kind::Jump;
                     target = indirect_target;
-                } else if ops.first().and_then(|operand| reg_of(operand)) == Some(LR) {
+                } else if matches!(ops.first(), Some(ArmOp::Reg(reg)) if *reg == LR) {
                     kind = if conditional {
                         Kind::CondJump
                     } else {
@@ -595,7 +451,13 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 }
             } else if matches!(mnemonic.as_str(), "bl" | "blx" | "blr") {
                 kind = Kind::Call;
-                target = branch_target(addr, thumb, word, size, &ops).or(indirect_target);
+                target = ops
+                    .last()
+                    .and_then(|operand| match operand {
+                        ArmOp::Imm(value) => Some(*value as u64),
+                        _ => None,
+                    })
+                    .or(indirect_target);
                 if target.is_some() {
                     callee = self.callee_name(target, depth);
                 }
@@ -604,31 +466,25 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 }
             } else if ARM32_CONDITIONAL_JUMPS.contains(&mnemonic.as_str()) {
                 kind = Kind::CondJump;
-                // `cbz`/`cbnz` are forward-only, so the raw halfword path above
-                // is the only correct source for the target.
-                target = branch_target(addr, thumb, word, size, &ops);
+                target = arm_target(ops);
             } else if ARM32_BRANCH_TABLE.contains(&mnemonic.as_str()) {
                 kind = Kind::Jump;
             } else if ARM32_TRAP.contains(&mnemonic.as_str()) {
                 kind = Kind::Trap;
-            } else if mnemonic == "mov" && moves_pc(&ops) {
+            } else if mnemonic == "mov" && moves_pc(ops) {
                 kind = Kind::Ret;
             }
         }
 
         let mut consts = pending;
-        if kind == Kind::Normal && !touches_stack_pointer(&ops) {
-            consts.extend(
-                ops.iter()
-                    .filter_map(|operand| imm_of(operand))
-                    .map(|immediate| canonical_const(immediate, 4)),
-            );
+        if kind == Kind::Normal {
+            consts.extend(arm32_immediate_consts(ops));
         }
 
         Insn {
             addr,
             size,
-            op: arm32_class(&mnemonic, conditional, &ops),
+            op: arm32_class(&mnemonic, conditional, ops, vector),
             kind,
             consts: sorted_unique(consts),
             refs,
@@ -636,6 +492,43 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             target,
             pool_end,
         }
+    }
+
+    /// `movw`/`movt` materialise one 32-bit constant across two instructions.
+    fn arm32_materialize(
+        &self,
+        ops: &[ArmOp],
+        mnemonic: &str,
+        addr: u64,
+        size: usize,
+        state: &mut ArmState,
+    ) -> Option<Insn> {
+        if mnemonic != "movw" && mnemonic != "movt" {
+            return None;
+        }
+        let (Some(&ArmOp::Reg(destination)), Some(&ArmOp::Imm(immediate))) =
+            (ops.first(), ops.get(1))
+        else {
+            return None;
+        };
+        let value = if mnemonic == "movt" {
+            let previous = state
+                .take(reg_key(destination))
+                .filter(|pending| !pending.is_page)
+                .map_or(0, |pending| pending.value);
+            previous | (((immediate as u64) & 0xFFFF) << 16)
+        } else {
+            (immediate as u64) & 0xFFFF
+        };
+        state.insert(
+            reg_key(destination),
+            PendingValue {
+                value: value & MASK32,
+                is_page: false,
+                width: 4,
+            },
+        );
+        Some(Insn::normal(addr, size, OpClass::Move))
     }
 
     /// Resolve `ldr rd, [pc, #imm]` against the function's literal pool.
@@ -646,7 +539,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     /// of the referenced cell, or 0 when this is not a literal load.
     fn arm32_literal_load(
         &self,
-        ops: &[&Operand],
+        ops: &[ArmOp],
         mnemonic: &str,
         addr: u64,
         thumb: bool,
@@ -657,19 +550,19 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             return 0;
         }
         for (index, operand) in ops.iter().enumerate() {
-            let Some((base, offset)) = mem_of(operand) else {
+            let ArmOp::Mem { base, disp } = operand else {
                 continue;
             };
-            if base != PC {
+            if *base != PC {
                 continue;
             }
             if index == 0 {
                 return 0;
             }
-            let Some(destination) = reg_of(ops[index - 1]) else {
+            let ArmOp::Reg(destination) = ops[index - 1] else {
                 return 0;
             };
-            let literal = pc_value(addr, thumb).wrapping_add_signed(offset);
+            let literal = pc_value(addr, thumb).wrapping_add_signed(*disp);
             let Some(value) = self.read_pointer32(literal) else {
                 return 0;
             };
@@ -680,7 +573,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 });
             } else {
                 state.insert(
-                    u16::from(destination),
+                    reg_key(destination),
                     PendingValue {
                         value,
                         is_page: false,
@@ -700,27 +593,33 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     /// reference exactly like AArch64's `adrp`+`add` pair.
     fn arm32_pc_add(
         &self,
-        ops: &[&Operand],
+        ops: &[ArmOp],
         mnemonic: &str,
         addr: u64,
         thumb: bool,
         state: &mut ArmState,
         refs: &mut Vec<DataRef>,
     ) {
-        if !ops.iter().any(|operand| reg_of(operand) == Some(PC)) {
+        if !ops
+            .iter()
+            .any(|operand| matches!(operand, ArmOp::Reg(reg) if *reg == PC))
+        {
             return;
         }
         let base = pc_value(addr, thumb);
         let subtracting = mnemonic.starts_with('s') || mnemonic.starts_with('r');
-        let immediate = ops.iter().find_map(|operand| imm_of(operand));
+        let immediate = ops.iter().find_map(|operand| match operand {
+            ArmOp::Imm(value) => Some(*value as u64),
+            _ => None,
+        });
         for operand in ops.iter().skip(1) {
-            let Some(register) = reg_of(operand) else {
+            let ArmOp::Reg(register) = operand else {
                 continue;
             };
-            if register == PC {
+            if *register == PC {
                 continue;
             }
-            let Some(held) = state.take(u16::from(register)) else {
+            let Some(held) = state.take(reg_key(*register)) else {
                 continue;
             };
             if held.is_page {
@@ -737,9 +636,9 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             });
             // Keep an address marker so the intermediate never flushes as a
             // constant, but let later arithmetic still see the value.
-            if let Some(destination) = ops.first().and_then(|operand| reg_of(operand)) {
+            if let Some(&ArmOp::Reg(destination)) = ops.first() {
                 state.insert(
-                    u16::from(destination),
+                    reg_key(destination),
                     PendingValue {
                         value: resolved,
                         is_page: true,
@@ -749,7 +648,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             }
             return;
         }
-        if let Some(destination) = ops.first().and_then(|operand| reg_of(operand)) {
+        if let Some(&ArmOp::Reg(destination)) = ops.first() {
             if let Some(immediate) = immediate {
                 let resolved = if subtracting {
                     base.wrapping_sub(immediate)
@@ -761,7 +660,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                     width: 4,
                 });
                 state.insert(
-                    u16::from(destination),
+                    reg_key(destination),
                     PendingValue {
                         value: resolved,
                         is_page: true,
@@ -770,7 +669,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 );
             } else {
                 state.insert(
-                    u16::from(destination),
+                    reg_key(destination),
                     PendingValue {
                         value: base,
                         is_page: true,
@@ -782,7 +681,21 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     }
 }
 
-/// `reg_of` for an `Option<&Operand>` from the filtered operand list.
-fn reg_of_op(operand: &&Operand) -> Option<u8> {
-    reg_of(operand)
+/// `pop {..., pc}` and `ldm ... pc` return; everything else is stack.
+///
+/// A conditional return is a conditional exit, never an unconditional
+/// terminator: the block continues when the predicate is false.
+fn arm32_stack_exit(ops: &[ArmOp], conditional: bool, exits: bool) -> Kind {
+    if exits
+        && ops
+            .iter()
+            .any(|operand| matches!(operand, ArmOp::Reg(reg) if *reg == PC))
+    {
+        return if conditional {
+            Kind::CondJump
+        } else {
+            Kind::Ret
+        };
+    }
+    Kind::Normal
 }

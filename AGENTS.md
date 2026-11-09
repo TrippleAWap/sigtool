@@ -28,7 +28,7 @@ tests/      vectors/ (golden), property/, live/
 3. **Determinism.** Same input must produce byte-identical signatures: fixed hash seeds, sorted features, no dict or set ordering leaks, no timestamps or absolute paths in output. Run twice and diff when touching output code.
 4. **No absolute addresses in features.** Drop any immediate or displacement that falls inside a mapped module range. Store `module+rva` in provenance only.
 5. **Every signature file carries the spec version.** Changing feature semantics, canonicalization, or hashing means bumping the spec version and updating `spec/` and the changelog.
-6. **No IR lifting, symbolic execution, or learned models in the scan path.** Capstone in Python and `iced-x86` in the native port, plus per-arch normalization tables only.
+6. **No IR lifting, symbolic execution, or learned models in the scan path.** Capstone in Python and for ARM32/Thumb in the native port, `iced-x86` for x64 and `yaxpeax-arm` for AArch64 there, plus per-arch normalization tables only.
 7. **Never emit a signature that fails self-test.** Small functions are allowed but get a `confidence: low` tag and rely on neighbor context; they are not refused.
 8. **Treat target process memory as untrusted input.** Decoders and recovery must never crash, hang, or read unbounded data on random or truncated bytes. Bound all descent, loops, and reads.
 9. **Read-only access to target processes.** The tool never writes to, suspends, or injects into a target.
@@ -46,7 +46,7 @@ x86-64 passes golden vectors first and is the reference the other architectures 
 
 ## Conventions
 
-- **Language:** Python 3.10+ for the reference implementation, with type hints on all public functions. Dependencies: `capstone`, `pyyaml`, plus the standard library. Keep dependencies minimal; `core/` must be installable into IDA's bundled Python with `pip`. The native port is Rust (`iced-x86`, `yaxpeax-arm`, `blake2b_simd`, `serde`, `memmap2`, `crc32fast`, `clap`).
+- **Language:** Python 3.10+ for the reference implementation, with type hints on all public functions. Dependencies: `capstone`, `pyyaml`, plus the standard library. Keep dependencies minimal; `core/` must be installable into IDA's bundled Python with `pip`. The native port is Rust (`iced-x86`, `yaxpeax-arm`, `capstone`, `blake2b_simd`, `serde`, `memmap2`, `crc32fast`, `clap`); Capstone builds its bundled C library, so a C toolchain is required to build the crate.
 - **Style:** Python: format with `ruff format`, lint with `ruff check`, type-check with `mypy` (strict on `core/`). Rust: `cargo fmt --all`, `cargo clippy --all-targets`.
 - **Naming:** feature kinds are `str`, `const`, `callee`, `cfg`, `ops`. Arch identifiers: `x64`, `arm64`, `arm32`, `thumb`.
 - **Errors:** raise specific exceptions from `core`; front-ends translate them to exit codes and UI messages. The CLI exits non-zero on failed self-test or unsupported target.
@@ -96,7 +96,7 @@ commit the vectors, never the corpus binaries.
 - **Golden vectors** (`tests/vectors/`): bytes in, feature records out, per architecture (x64, arm64 with PAC, x64 with CET, arm32, thumb). Never hand-edit; regenerate with `python tests/vectors/generate.py` and review the diff. A vector change must be justified in the PR description. Vectors are generated from real clang + lld output, not hand-written snippets.
 - **Property tests:** normalization is idempotent; the same code at two ASLR bases yields identical features; random bytes never crash recovery.
 - **Corpus regression:** recall (per discovery mode: hinted and hint-free) and false-positive numbers are compared against `tests/baseline/bench.json` with a 0.05 tolerance (compiler versions move cross-build rates by about 0.02); a drop or an FP increase fails `bench.py --baseline` and CI. `bench.py` scans strong signatures against the negative corpus (`corpus/negative/`) as well as unrelated source files, and both FP rates are gated; merged-pair refusals are reported but never gate (refusing an unmergeable pair is the design working). Update the baseline only for an intentional improvement, with `--save-baseline`, and review the diff. `tests/test_corpus_bounds.py` measures recovered bounds against ELF symbol sizes without a size hint across x64, arm64, arm32, and thumb, and requires at least 0.90 agreement (M1 exit criterion); it also checks ground-truth coverage against the M0 0.95 criterion.
-- **Native parity tests** (`native/tests/`): the Rust port must reproduce the Python reference. `golden.rs` replays the x64, arm64, arm32, and thumb golden vectors, `scanner.rs` mirrors `tests/test_scanner.py`, `merge.rs` mirrors `tests/test_merge.py`, and `corpus.rs` reproduces the x64 slice of `bench.py` against `tests/baseline/bench.json` with the same 0.05 tolerance. A feature, normalization, scoring, or matching change lands in both implementations and keeps these green; the corpus test skips when `corpus/build/` is absent. The ARM32/Thumb decoder (`yaxpeax-arm`'s ARMv7 module) has no VFP/NEON instructions, so the auto-vectorized `recurse` vectors at `-O2/-Os` are skipped by name in `golden.rs`; every other arm32/thumb vector must match, and the skip list must not grow without the same documented decoder gap. That crate also returns `DecodeError::Incomplete` for the ARMv7 media group (`uxtb`, `uxth`, `rev`, `rbit`, `usat`, parallel add/sub), so functions containing those instructions decode incompletely even though no golden vector exercises that path.
+- **Native parity tests** (`native/tests/`): the Rust port must reproduce the Python reference. `golden.rs` replays the x64, arm64, arm32, and thumb golden vectors, `scanner.rs` mirrors `tests/test_scanner.py`, `merge.rs` mirrors `tests/test_merge.py`, and `corpus.rs` reproduces the x64 slice of `bench.py` against `tests/baseline/bench.json` with the same 0.05 tolerance. A feature, normalization, scoring, or matching change lands in both implementations and keeps these green; the corpus test skips when `corpus/build/` is absent. ARM32/Thumb decode through Capstone (`native/src/arm32.rs`), the same engine as the Python reference, because `yaxpeax-arm` 0.5 returns `DecodeError::Incomplete` for the ARMv7 media group and has no VFP/NEON instructions; all arm32/thumb vectors, including the auto-vectorized `recurse` builds, must match with no skip list.
 - **Spec version check:** `tests/test_spec.py` asserts that `SPEC_VERSION`, `HASH_PERSON`, `spec/SPEC.md`, and `spec/CHANGELOG.md` agree.
 - **Live tests:** scripted target processes with known functions, including a hooked function and an injected region. These need a real or QEMU user-mode host for each architecture.
 - New normalization rules need a vector from at least one real compiler output, not just a hand-written snippet.
@@ -180,10 +180,10 @@ and the x64 corpus slice of `tests/baseline/bench.json`; all 51 x64 corpus
 signature ids match Python, the arm64 corpus slice produces byte-identical
 `gen` YAML, and `merge` reproduces the Python front-end's merged YAML byte for
 byte. AArch64 decodes through `yaxpeax-arm` (`native/src/arm64.rs`) and
-ARM32/Thumb through its ARMv7 decoder (`native/src/arm32.rs`); NEON is absent
-from that decoder, so auto-vectorized ARM32/Thumb functions are not decoded
-natively yet. Live-PID sources and the IDA adapter are not ported, and the CLI
-exits `3` only for an unknown architecture. Corpus throughput is measured
+ARM32/Thumb through Capstone (`native/src/arm32.rs`), which covers VFP/NEON and
+the ARMv7 media group that the pure-Rust decoder cannot. Live-PID sources and
+the IDA adapter are not ported, and the CLI exits `3` only for an unknown
+architecture. Corpus throughput is measured
 against the Python scanner on identical workloads: 37.8x faster on the full
 pass (1503.4 ms vs 39.7 ms over six x64 binaries) and 4.9x on the incremental
 pass. See `PLAN.md` section 12.

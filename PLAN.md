@@ -497,26 +497,21 @@ implemented, including native `merge` and all four target architectures.
   the kind/class tables are the same as the reference. The golden test replays
   every arm64 vector (`arm64-O0/O2/Os` and the `-mbranch-protection=standard`
   PAC build), and `gen` on the arm64 corpus slice emits YAML byte-identical to
-  the Python front-end for every sampled function (5/5 across `-O0` and `-O2`).
-- ARM32 and Thumb are ported (`native/src/arm32.rs`) through `yaxpeax-arm`'s
-  `armv7` decoder, with mode tracked per address: `movw`/`movt` pairs collapse
-  to one constant, literal-pool loads resolve to the pooled value and extend
-  function bounds, `adr` and branch deltas are rebased onto absolute addresses,
-  condition suffixes and IT blocks are normalized, and the kind/class tables
-  are the same as the reference. `recover` accepts all four architectures.
-  Thumb branch targets are computed from the raw halfwords because yaxpeax's
-  16-bit conditional delta does not match the encoding, and ITSTATE is tracked
-  locally because yaxpeax leaves predication on the `it` instruction rather
-  than marking the following instructions conditional. The golden test replays
-  every arm32 and thumb vector, and `gen` on sampled arm32/thumb corpus
-  functions (4/4 across `-O0` and `-O2`) emits YAML byte-identical to the
-  Python front-end, except for the functions the decoder cannot represent: `yaxpeax-arm` 0.5 has no VFP/NEON instructions, so
-  the auto-vectorized `recurse` builds at `-O2/-Os` are skipped by name in
-  `golden.rs`. The same crate returns `DecodeError::Incomplete` for the whole
-  ARMv7 media group (`uxtb`/`uxth`/`rev`/`rbit`/`usat`, parallel add/sub), so a
-  full arm32/thumb corpus sweep gives 99/102 `gen` documents byte-identical to
-  the Python front end; the three remaining are `parse_record` at `-O0/-O2/-Os`
-  in `arm32/parser.elf`, all containing `uxth`.
+  the Python front-end for every sampled function (5/5 across `-O0` and `-O2`).- ARM32 and Thumb are ported (`native/src/arm32.rs`) through Capstone, the same
+  decoder as the Python reference, so operand shapes, condition codes, mnemonic
+  spellings, and mode handling arrive identically instead of being
+  reconstructed. Mode is tracked per address, `movw`/`movt` pairs collapse to
+  one constant, literal-pool loads resolve to the pooled value and extend
+  function bounds, `adr` and branch targets arrive absolute, and condition
+  suffixes and IT blocks are normalized exactly as the reference does.
+  `recover` accepts all four architectures. Decoding had to move off
+  `yaxpeax-arm` 0.5, which returns `DecodeError::Incomplete` for the entire
+  ARMv7 media group (`uxtb`/`uxth`/`rev`/`rbit`/`usat`, parallel add/sub) and
+  has no VFP/NEON instructions; that gap covered ordinary compiled code and
+  made three corpus functions diverge. With Capstone the golden test replays
+  every arm32 and thumb vector, including the auto-vectorized `recurse` builds,
+  with no skips, and a full sweep of all 102 arm32/thumb corpus functions
+  emits `gen` YAML byte-identical to the Python front end.
 - Not ported yet: live-PID sources and the IDA adapter. `gen`/`locate`/`scan`/
   `merge` return exit code `3` only for an unknown architecture. The Python
   implementation remains the reference for those paths.
