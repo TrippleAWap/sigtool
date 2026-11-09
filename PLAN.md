@@ -449,6 +449,12 @@ implemented, including native `merge` and all four target architectures.
 
 **M7 — implemented for x64, arm64, arm32, and thumb in Rust.**
 
+- Quality bar: the port must be **at least as good as the Python reference,
+  preferably better**. The parity results below are the measurements that show
+  it currently is equal; a native-only improvement that leaves every gated
+  metric (recall per discovery mode, both FP rates, bounds agreement,
+  self-test) no worse is allowed, preferred, and recorded here with its
+  numbers. Byte equality is evidence, never the requirement.
 - `native/` is a separate crate (`sigtool-native`) that mirrors `core/`:
   `source.rs`, `arch.rs`, `elf.rs` (ELF/PE `FileSource`), `normalize.rs`,
   `recover.rs`, `features.rs`, `sigfile.rs`, `score.rs`, `validate.rs`,
@@ -456,8 +462,9 @@ implemented, including native `merge` and all four target architectures.
   `iced-x86` for decoding, `blake2b_simd` for the spec hash, and `serde_yaml`
   for the canonical document. No IDA or OS-specific code enters the library;
   the CLI is the only front-end.
-- Parity is checked, not assumed. `native/tests/golden.rs` replays the x64
-  and arm64 golden vectors (features, CFG blocks/edges/loops, degraded flags).
+- Equality is measured, not assumed. `native/tests/golden.rs` replays the x64
+  (including CET), arm64 (including PAC), arm32, and thumb golden vectors
+  (features, CFG blocks/edges/loops, degraded flags) with no skips.
   `native/tests/scanner.rs` mirrors `tests/test_scanner.py` (page skipping,
   private-first priority, shared budget, reference index, truncation,
   string-only discovery, stable `signature_id`). `native/tests/corpus.rs`
@@ -497,13 +504,14 @@ implemented, including native `merge` and all four target architectures.
   the kind/class tables are the same as the reference. The golden test replays
   every arm64 vector (`arm64-O0/O2/Os` and the `-mbranch-protection=standard`
   PAC build), and `gen` on the arm64 corpus slice emits YAML byte-identical to
-  the Python front-end for every sampled function (5/5 across `-O0` and `-O2`).- ARM32 and Thumb are ported (`native/src/arm32.rs`) through Capstone, the same
-  decoder as the Python reference, so operand shapes, condition codes, mnemonic
-  spellings, and mode handling arrive identically instead of being
-  reconstructed. Mode is tracked per address, `movw`/`movt` pairs collapse to
+  the Python front-end for every sampled function (5/5 across `-O0` and `-O2`).
+- ARM32 and Thumb are ported (`native/src/arm32.rs`) through Capstone, chosen
+  for instruction coverage rather than identity with the reference, so operand
+  shapes, condition codes, mnemonic spellings, and mode handling arrive
+  directly instead of being reconstructed. Mode is tracked per address, `movw`/`movt` pairs collapse to
   one constant, literal-pool loads resolve to the pooled value and extend
   function bounds, `adr` and branch targets arrive absolute, and condition
-  suffixes and IT blocks are normalized exactly as the reference does.
+  suffixes and IT blocks are normalized as the reference does today.
   `recover` accepts all four architectures. Decoding had to move off
   `yaxpeax-arm` 0.5, which returns `DecodeError::Incomplete` for the entire
   ARMv7 media group (`uxtb`/`uxth`/`rev`/`rbit`/`usat`, parallel add/sub) and

@@ -21,7 +21,7 @@ for the signature spec, and [`AGENTS.md`](AGENTS.md) for contribution rules.
 | M4 cross-arch | implemented: ARM32/Thumb extraction, multi-sample merging (`sigtool merge`), auto-locate (`sigtool locate`); merged cross-arch recall 0.707 same-opt / FP budget unmet — see PLAN §12 |
 | M5 IDA plugin | implemented: `IdaSource` over an injectable IDA facade with bounds hints and disagreement notes; generate/merge/locate actions; output test-verified identical to the CLI (UI glue untested in CI — no IDA host) |
 | M6 reference scanner | implemented: page-hashed incremental scanner, private/changed/untouched priority, shared recovery budget, per-region data-reference index for string anchors; profile recorded in PLAN §12 |
-| M7 native port | implemented for x64, arm64, arm32, and thumb in Rust under `native/`: extractor, matcher, scanner, signature document, CLI (gen/locate/scan/merge/db), and mmap-friendly binary DB; parity-tested against the Python golden vectors (all four architectures), x64 corpus, sampled arm64/arm32/thumb `gen` output, and merged output, and measured at 37.8x the Python scanner's full-pass throughput; ARM32/Thumb decode through Capstone (the reference's engine), so the whole instruction set is covered; PID and IDA ports are follow-ups |
+| M7 native port | implemented for x64, arm64, arm32, and thumb in Rust under `native/`: extractor, matcher, scanner, signature document, CLI (gen/locate/scan/merge/db), and mmap-friendly binary DB; held to "at least as good as Python, preferably better" — golden vectors (all four architectures, incl. CET and PAC), the x64 corpus, and `gen`/`merge` output currently match exactly, and full-pass scan throughput is 37.8x the Python scanner; ARM32/Thumb decode through Capstone for full instruction coverage; PID and IDA ports are follow-ups |
 
 ## Install and check
 
@@ -83,7 +83,7 @@ gaps are tracked in `tests/baseline/bench.json` and analysed in PLAN §12.
 CI (`.github/workflows/ci.yml`) runs format, lint, types, the spec-version check,
 the corpus build, pytest, and the baseline regression on Linux, plus the live
 Windows PID-mode tests on a Windows runner, plus the native Rust format, clippy,
-and parity tests (golden vectors, scanner behaviour, and the x64 corpus slice)
+and native quality gates (golden vectors, scanner behaviour, and the x64 corpus slice)
 on Linux. Recall is tracked per discovery mode (hinted and hint-free).
 
 ### Native port
