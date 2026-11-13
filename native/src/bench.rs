@@ -88,6 +88,13 @@ pub struct BenchReport {
     pub recall: Vec<RecallCell>,
     pub false_positives: Vec<FalsePositiveCell>,
     pub negative_false_positives: Vec<FalsePositiveCell>,
+    /// The same two measurements over every signature, whatever its verdict.
+    /// A verdict is a promise about strong signatures only; these show how
+    /// precise the matcher is for the weak and small ones a user still ships.
+    #[serde(default)]
+    pub any_false_positives: Vec<FalsePositiveCell>,
+    #[serde(default)]
+    pub any_negative_false_positives: Vec<FalsePositiveCell>,
 }
 
 /// One generated signature and where it came from.
@@ -409,7 +416,7 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
         .copied()
         .filter(|s| s.verdict == "strong")
         .collect();
-    let false_positives = false_positive_cells(&strong, |sample| {
+    let corpus_targets = |sample: &Sample| -> Vec<&Target> {
         targets
             .iter()
             .filter(|t| {
@@ -417,13 +424,17 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
                     && (sample.arch == MERGED || t.arch == sample.arch)
             })
             .collect()
-    });
-    let negative_false_positives = false_positive_cells(&strong, |sample| {
+    };
+    let negative_targets = |sample: &Sample| -> Vec<&Target> {
         negatives
             .iter()
             .filter(|t| sample.arch == MERGED || t.arch == sample.arch)
             .collect()
-    });
+    };
+    let false_positives = false_positive_cells(&strong, corpus_targets);
+    let negative_false_positives = false_positive_cells(&strong, negative_targets);
+    let any_false_positives = false_positive_cells(&all, corpus_targets);
+    let any_negative_false_positives = false_positive_cells(&all, negative_targets);
 
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
@@ -434,6 +445,8 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
         recall,
         false_positives,
         negative_false_positives,
+        any_false_positives,
+        any_negative_false_positives,
     })
 }
 
@@ -518,6 +531,16 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
             &baseline.negative_false_positives,
             &current.negative_false_positives,
         ),
+        (
+            "any-verdict false positives",
+            &baseline.any_false_positives,
+            &current.any_false_positives,
+        ),
+        (
+            "any-verdict negative false positives",
+            &baseline.any_negative_false_positives,
+            &current.any_negative_false_positives,
+        ),
     ] {
         for cell in base {
             let Some(current) = now.iter().find(|c| c.arch == cell.arch) else {
@@ -592,6 +615,20 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
         let value = ratio(with, total);
         out.push((label.to_string(), value, 0.0, with == 0));
     }
+    // Not a section 6 target: precision of every shipped signature, whatever
+    // its verdict. The aim is "as low as recall allows".
+    for (label, cells) in [
+        ("any-verdict FP rate (corpus)", &report.any_false_positives),
+        (
+            "any-verdict FP rate (negative)",
+            &report.any_negative_false_positives,
+        ),
+    ] {
+        let (with, total) = cells.iter().fold((0, 0), |(w, t), c| {
+            (w + c.signatures_with_hits, t + c.signatures)
+        });
+        out.push((label.to_string(), ratio(with, total), 0.0, with == 0));
+    }
     out
 }
 
@@ -647,6 +684,14 @@ pub fn render(report: &BenchReport) -> String {
         (
             "false positives (strong vs negative corpus)",
             &report.negative_false_positives,
+        ),
+        (
+            "false positives (any verdict vs other corpus sources)",
+            &report.any_false_positives,
+        ),
+        (
+            "false positives (any verdict vs negative corpus)",
+            &report.any_negative_false_positives,
         ),
     ] {
         let _ = writeln!(text, "\n{label}");
