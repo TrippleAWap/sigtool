@@ -85,7 +85,7 @@ jobs:
         run: python -m pytest
 
   native:
-    name: native (rust, x64 parity)
+    name: native (rust, corpus gate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,3 +123,7 @@ jobs:
       - name: Tests
         working-directory: native
         run: cargo test
+
+      - name: Corpus bench
+        working-directory: native
+        run: cargo run --release -- bench --baseline ../tests/baseline/native-bench.json

@@ -1,0 +1,1251 @@
+{
+  "spec_version": "1",
+  "signatures": 247,
+  "refused": 0,
+  "merged_refused": 8,
+  "verdicts": {
+    "arm32": {
+      "small": 17,
+      "strong": 16,
+      "weak": 18
+    },
+    "arm64": {
+      "small": 14,
+      "strong": 23,
+      "weak": 14
+    },
+    "merged": {
+      "small": 4,
+      "strong": 15,
+      "weak": 24
+    },
+    "thumb": {
+      "small": 17,
+      "strong": 17,
+      "weak": 17
+    },
+    "x64": {
+      "small": 13,
+      "strong": 17,
+      "weak": 21
+    }
+  },
+  "recall": [
+    {
+      "arch": "arm32",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 9,
+      "attempts": 19
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 19,
+      "attempts": 19
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 4,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 4,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "arm32",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 19
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 19,
+      "attempts": 19
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 2,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 2,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 6,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 13,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 9,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 11,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 8,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 12,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 14,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 14,
+      "attempts": 16
+    },
+    {
+      "arch": "arm64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 12,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 4,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 6,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 11,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 11,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 7,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 14,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 6,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 6,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 12,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 15,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 8,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 10,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 8,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 10,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 11,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 13,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 12,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 14,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 2,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 11,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 6,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 4,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 7,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 11,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 11,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 7,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 14,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 3,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 4,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 5,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 12,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 15,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 8,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 10,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 4,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 6,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 13,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 12,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 14,
+      "attempts": 14
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 9,
+      "attempts": 19
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 19,
+      "attempts": 19
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 3,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 3,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 7,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 13,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 5,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 9,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 15,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "thumb",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 14,
+      "attempts": 19
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 19,
+      "attempts": 19
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 2,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 1,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 2,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 2,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 4,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 13,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 8,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 10,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 3,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 5,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 11,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 14,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 13,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 16,
+      "attempts": 16
+    }
+  ],
+  "false_positives": [
+    {
+      "arch": "arm32",
+      "signatures": 16,
+      "signatures_with_hits": 0,
+      "hits": 0
+    },
+    {
+      "arch": "arm64",
+      "signatures": 23,
+      "signatures_with_hits": 0,
+      "hits": 0
+    },
+    {
+      "arch": "merged",
+      "signatures": 15,
+      "signatures_with_hits": 4,
+      "hits": 6
+    },
+    {
+      "arch": "thumb",
+      "signatures": 17,
+      "signatures_with_hits": 0,
+      "hits": 0
+    },
+    {
+      "arch": "x64",
+      "signatures": 17,
+      "signatures_with_hits": 0,
+      "hits": 0
+    }
+  ],
+  "negative_false_positives": [
+    {
+      "arch": "arm32",
+      "signatures": 16,
+      "signatures_with_hits": 0,
+      "hits": 0
+    },
+    {
+      "arch": "arm64",
+      "signatures": 23,
+      "signatures_with_hits": 0,
+      "hits": 0
+    },
+    {
+      "arch": "merged",
+      "signatures": 15,
+      "signatures_with_hits": 2,
+      "hits": 24
+    },
+    {
+      "arch": "thumb",
+      "signatures": 17,
+      "signatures_with_hits": 0,
+      "hits": 0
+    },
+    {
+      "arch": "x64",
+      "signatures": 17,
+      "signatures_with_hits": 0,
+      "hits": 0
+    }
+  ]
+}

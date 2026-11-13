@@ -82,6 +82,8 @@ cargo run --release -- locate --signature S.yaml --file IMAGE
 cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:ADDR --name N
 cargo run --release -- scan --file IMAGE --signature S.yaml
 cargo run --release -- scan --file IMAGE --db signatures.db
+cargo run --release -- bench --baseline ../tests/baseline/native-bench.json  # corpus gate, all arches
+cargo run --release -- bench --save-baseline ../tests/baseline/native-bench.json  # intentional improvement
 cargo run --release --example profile_scan  # native scan cost, same corpus workload
 python compare_scan_profile.py      # Python vs native throughput, per binary
 cargo run --release -- db build --signature S.yaml --output signatures.db

@@ -74,6 +74,8 @@ enum Command {
     Merge(MergeArgs),
     /// Build and inspect signature databases
     Db(DbArgs),
+    /// Measure corpus recall and false positives; gate against a baseline
+    Bench(BenchArgs),
 }
 
 #[derive(Args)]
@@ -177,6 +179,25 @@ struct DbBuildArgs {
     output: PathBuf,
 }
 
+#[derive(Args)]
+struct BenchArgs {
+    /// Corpus directory holding ground_truth.json
+    #[arg(long, value_name = "DIR", default_value = "../corpus/build")]
+    corpus: PathBuf,
+    /// Limit to one architecture (repeatable): x64, arm64, arm32, thumb
+    #[arg(long)]
+    arch: Vec<String>,
+    /// Fail when recall drops or false positives rise beyond --tolerance
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+    /// Write the metrics as a new baseline (review the diff)
+    #[arg(long = "save-baseline", value_name = "FILE")]
+    save_baseline: Option<PathBuf>,
+    /// Allowed recall drop / false-positive increase
+    #[arg(long, default_value_t = sigtool_native::bench::DEFAULT_TOLERANCE)]
+    tolerance: f64,
+}
+
 /// A front-end input problem with the exit code it maps to.
 #[derive(Debug)]
 struct CliError {
@@ -215,6 +236,7 @@ fn main() -> ExitCode {
         Command::Scan(args) => run_scan(args),
         Command::Merge(args) => run_merge(args),
         Command::Db(args) => run_db(args),
+        Command::Bench(args) => run_bench(args),
     };
     match result {
         Ok(code) => ExitCode::from(code),
@@ -802,4 +824,55 @@ fn json_number(value: f64) -> Value {
 
 fn round6(value: f64) -> f64 {
     format!("{value:.6}").parse::<f64>().unwrap_or(value)
+}
+
+fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
+    use sigtool_native::bench;
+    let report = bench::run(&args.corpus, &args.arch).map_err(CliError::input)?;
+    print!("{}", bench::render(&report));
+    let write = |path: &Path, report: &bench::BenchReport| -> Result<(), CliError> {
+        let text =
+            serde_json::to_string_pretty(report).map_err(|e| CliError::input(e.to_string()))?;
+        std::fs::write(
+            path,
+            text + "
+",
+        )
+        .map_err(|e| CliError::input(format!("{}: {e}", path.display())))
+    };
+    if let Some(path) = &args.save_baseline {
+        write(path, &report)?;
+        println!(
+            "
+wrote baseline {}",
+            path.display()
+        );
+    }
+    let mut failed = report.refused > 0;
+    if let Some(path) = &args.baseline {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| CliError::input(format!("{}: {e}", path.display())))?;
+        let baseline: bench::BenchReport = serde_json::from_str(&text)
+            .map_err(|e| CliError::input(format!("{}: {e}", path.display())))?;
+        let failures = bench::compare(&baseline, &report, args.tolerance);
+        if failures.is_empty() {
+            println!(
+                "
+baseline comparison: OK within {:.2} ({})",
+                args.tolerance,
+                path.display()
+            );
+        } else {
+            println!(
+                "
+baseline comparison: FAILED ({})",
+                path.display()
+            );
+            for failure in &failures {
+                println!("  {failure}");
+            }
+            failed = true;
+        }
+    }
+    Ok(if failed { EXIT_NOT_FOUND } else { EXIT_OK })
 }

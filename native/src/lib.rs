@@ -11,6 +11,7 @@
 pub mod arch;
 mod arm32;
 mod arm64;
+pub mod bench;
 pub mod db;
 pub mod elf;
 pub mod errors;
