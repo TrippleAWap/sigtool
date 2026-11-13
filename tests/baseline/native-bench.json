@@ -16,8 +16,8 @@
     },
     "merged": {
       "small": 4,
-      "strong": 15,
-      "weak": 24
+      "strong": 6,
+      "weak": 33
     },
     "thumb": {
       "small": 17,
@@ -1199,9 +1199,9 @@
     },
     {
       "arch": "merged",
-      "signatures": 15,
-      "signatures_with_hits": 4,
-      "hits": 6
+      "signatures": 6,
+      "signatures_with_hits": 0,
+      "hits": 0
     },
     {
       "arch": "thumb",
@@ -1231,9 +1231,9 @@
     },
     {
       "arch": "merged",
-      "signatures": 15,
-      "signatures_with_hits": 2,
-      "hits": 24
+      "signatures": 6,
+      "signatures_with_hits": 0,
+      "hits": 0
     },
     {
       "arch": "thumb",
@@ -1246,6 +1246,70 @@
       "signatures": 17,
       "signatures_with_hits": 0,
       "hits": 0
+    }
+  ],
+  "any_false_positives": [
+    {
+      "arch": "arm32",
+      "signatures": 51,
+      "signatures_with_hits": 10,
+      "hits": 105
+    },
+    {
+      "arch": "arm64",
+      "signatures": 51,
+      "signatures_with_hits": 13,
+      "hits": 63
+    },
+    {
+      "arch": "merged",
+      "signatures": 43,
+      "signatures_with_hits": 17,
+      "hits": 289
+    },
+    {
+      "arch": "thumb",
+      "signatures": 51,
+      "signatures_with_hits": 10,
+      "hits": 89
+    },
+    {
+      "arch": "x64",
+      "signatures": 51,
+      "signatures_with_hits": 6,
+      "hits": 32
+    }
+  ],
+  "any_negative_false_positives": [
+    {
+      "arch": "arm32",
+      "signatures": 51,
+      "signatures_with_hits": 14,
+      "hits": 118
+    },
+    {
+      "arch": "arm64",
+      "signatures": 51,
+      "signatures_with_hits": 14,
+      "hits": 80
+    },
+    {
+      "arch": "merged",
+      "signatures": 43,
+      "signatures_with_hits": 16,
+      "hits": 382
+    },
+    {
+      "arch": "thumb",
+      "signatures": 51,
+      "signatures_with_hits": 14,
+      "hits": 128
+    },
+    {
+      "arch": "x64",
+      "signatures": 51,
+      "signatures_with_hits": 7,
+      "hits": 34
     }
   ]
 }

@@ -46,9 +46,13 @@ pub fn quality_report(
     instruction_count: usize,
     degraded: bool,
 ) -> QualityReport {
+    // Only required data features are evidence a match must carry. A merged
+    // signature demotes features one sample lacks to optional; counting those
+    // labelled `fibonacci` strong on the constants 1 and 2 plus an x64-only
+    // callee, and it then matched in every negative binary.
     let data: Vec<&ScoredFeature> = scored
         .iter()
-        .filter(|item| DATA_KINDS.contains(&item.feature.kind))
+        .filter(|item| item.required && DATA_KINDS.contains(&item.feature.kind))
         .collect();
     let data_kinds: HashSet<FeatureKind> = data.iter().map(|item| item.feature.kind).collect();
     let required = scored.iter().filter(|item| item.required).count();
