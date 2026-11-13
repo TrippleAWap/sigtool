@@ -35,6 +35,12 @@ pub const MERGED: &str = "merged";
 /// Architectures merged into one cross-arch signature per function and opt.
 const MERGE_ARCHES: [&str; 2] = ["x64", "arm64"];
 
+/// Selects the recall cells of one target group.
+type CellFilter<'a> = &'a dyn Fn(&RecallCell) -> bool;
+
+/// `(arch or source->target, source opt, target opt, discovery)`.
+type CellKey = (String, String, String, String);
+
 /// One recall cell: signatures from `arch`/`source_opt` scanned against the
 /// same function built at `target_opt`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -362,9 +368,10 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
     let mut recall_jobs: Vec<(usize, usize, bool)> = Vec::new();
     for (s, sample) in all.iter().enumerate() {
         for (t, target) in targets.iter().enumerate() {
-            let arch_ok = sample.arch == MERGED || sample.arch == target.arch;
-            if arch_ok
-                && target.source_file == sample.source_file
+            // Every architecture is a target: same-arch cells measure
+            // comparison quality, `a->b` cells measure the actual goal,
+            // finding one function across architectures.
+            if target.source_file == sample.source_file
                 && target.functions.contains_key(&sample.name)
             {
                 recall_jobs.push((s, t, true));
@@ -393,15 +400,14 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
                 .is_none_or(|next| next.score < matches[0].score);
         (found, top)
     });
-    let mut cells: BTreeMap<(String, String, String, String), (usize, usize, usize)> =
-        BTreeMap::new();
+    let mut cells: BTreeMap<CellKey, (usize, usize, usize)> = BTreeMap::new();
     for ((s, t, hints), hit) in recall_jobs.iter().zip(&recall_hits) {
         let sample = all[*s];
         let target = &targets[*t];
-        let arch = if sample.arch == MERGED {
-            format!("{MERGED}->{}", target.arch)
-        } else {
+        let arch = if sample.arch == target.arch {
             sample.arch.clone()
+        } else {
+            format!("{}->{}", sample.arch, target.arch)
         };
         let discovery = if *hints { HINTED } else { HINT_FREE };
         let cell = cells
@@ -614,34 +620,37 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
         let value = ratio(top, attempts);
         out.push((format!("{name} (top-1)"), value, goal, value >= goal));
     };
+    // Groups: same arch (comparison quality), cross arch from one sample (the
+    // goal), merged (two samples), and merged held out (an architecture
+    // neither sample came from: the honest cross-arch number for merging).
+    let same_arch = |c: &RecallCell| !c.arch.contains("->");
+    let cross_arch = |c: &RecallCell| c.arch.contains("->") && !c.arch.starts_with(MERGED);
+    let merged = |c: &RecallCell| c.arch.starts_with(MERGED);
+    let held_out = |c: &RecallCell| {
+        c.arch.starts_with(MERGED)
+            && !MERGE_ARCHES
+                .iter()
+                .any(|arch| c.arch == format!("{MERGED}->{arch}"))
+    };
+    let groups: [(&str, CellFilter<'_>, f64, f64); 4] = [
+        ("same arch", &same_arch, 0.90, 0.70),
+        ("cross arch, one sample", &cross_arch, 0.90, 0.70),
+        ("merged", &merged, 0.90, 0.70),
+        ("merged, held-out arch", &held_out, 0.90, 0.70),
+    ];
     for discovery in [HINTED, HINT_FREE] {
-        rate(
-            &format!("same-opt recall, single arch, {discovery}"),
-            &|c| {
-                c.discovery == discovery
-                    && !c.arch.starts_with(MERGED)
-                    && c.source_opt == c.target_opt
-            },
-            0.90,
-        );
-        rate(
-            &format!("cross-opt recall, single arch, {discovery}"),
-            &|c| {
-                c.discovery == discovery
-                    && !c.arch.starts_with(MERGED)
-                    && c.source_opt != c.target_opt
-            },
-            0.70,
-        );
-        rate(
-            &format!("same-opt recall, merged, {discovery}"),
-            &|c| {
-                c.discovery == discovery
-                    && c.arch.starts_with(MERGED)
-                    && c.source_opt == c.target_opt
-            },
-            0.90,
-        );
+        for (group, filter, same_goal, cross_goal) in &groups {
+            rate(
+                &format!("{group}, same opt, {discovery}"),
+                &|c| c.discovery == discovery && filter(c) && c.source_opt == c.target_opt,
+                *same_goal,
+            );
+            rate(
+                &format!("{group}, cross opt, {discovery}"),
+                &|c| c.discovery == discovery && filter(c) && c.source_opt != c.target_opt,
+                *cross_goal,
+            );
+        }
     }
     for (label, cells) in [
         ("strong FP rate (corpus)", &report.false_positives),
