@@ -295,8 +295,18 @@ generation and never decodes with its own tables.
    so re-indexing a changed region subtracts its old count before adding the
    new one. Each region is tracked separately so a runtime scanner can drop a
    freed region and rebuild the merged map incrementally.
-* **Tier 2 — comparison.** Accepted only when both gates pass:
-  `score >= thresholds.match` and `matched_required >= min_distinct`.
+* **Tier 2 — comparison.** Accepted only when every gate passes:
+  `score >= thresholds.match`, `matched_required >= min_distinct`, and, for a
+  low-information signature, shape corroboration.
+* **Shape corroboration.** A signature is low-information when none of its
+  required features is a `str`, a `callee`, or a `const` whose magnitude (either
+  sign) is at least `0x100`. Constants such as loop steps, field offsets, and
+  `-8` stack alignment occur in most functions, and on the corpus every false
+  positive came from such a signature. Its candidate must also agree with at
+  least 0.8 of the signature's shape dimensions. A dimension is a shape key
+  without its bucket (`cfg:blocks`, `ops:arith`, ...); it agrees when any of the
+  signature's buckets for it matched, so a merged signature carrying one bucket
+  per sample architecture still corroborates on each of them.
 
 Score definition, rounded to six decimals:
 

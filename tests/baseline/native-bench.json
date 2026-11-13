@@ -37,6 +37,7 @@
       "target_opt": "O0",
       "discovery": "hint-free",
       "hits": 9,
+      "top_hits": 9,
       "attempts": 19
     },
     {
@@ -45,6 +46,7 @@
       "target_opt": "O0",
       "discovery": "hinted",
       "hits": 19,
+      "top_hits": 17,
       "attempts": 19
     },
     {
@@ -53,6 +55,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -61,6 +64,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -69,6 +73,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -77,6 +82,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -84,7 +90,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -92,7 +99,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -101,6 +109,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 10,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -109,6 +118,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 12,
       "attempts": 16
     },
     {
@@ -117,6 +127,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 10,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -125,6 +136,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 12,
       "attempts": 16
     },
     {
@@ -132,7 +144,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -140,7 +153,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -149,6 +163,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 10,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -157,6 +172,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 12,
       "attempts": 16
     },
     {
@@ -165,6 +181,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 10,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -173,6 +190,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 12,
       "attempts": 16
     },
     {
@@ -181,6 +199,7 @@
       "target_opt": "O0",
       "discovery": "hint-free",
       "hits": 10,
+      "top_hits": 10,
       "attempts": 19
     },
     {
@@ -189,6 +208,7 @@
       "target_opt": "O0",
       "discovery": "hinted",
       "hits": 19,
+      "top_hits": 17,
       "attempts": 19
     },
     {
@@ -197,6 +217,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 0,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -205,6 +226,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 2,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -213,6 +235,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 0,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -221,6 +244,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 2,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -228,7 +252,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 6,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -236,7 +261,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -245,6 +271,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 13,
+      "top_hits": 11,
       "attempts": 16
     },
     {
@@ -253,6 +280,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 13,
       "attempts": 16
     },
     {
@@ -261,6 +289,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 9,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -269,6 +298,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 11,
+      "top_hits": 9,
       "attempts": 16
     },
     {
@@ -276,7 +306,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 8,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -284,7 +315,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 10,
+      "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -292,7 +324,8 @@
       "source_opt": "Os",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 12,
+      "hits": 9,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -300,7 +333,8 @@
       "source_opt": "Os",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 14,
+      "hits": 11,
+      "top_hits": 9,
       "attempts": 16
     },
     {
@@ -309,6 +343,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 14,
+      "top_hits": 13,
       "attempts": 16
     },
     {
@@ -317,6 +352,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 14,
       "attempts": 16
     },
     {
@@ -324,7 +360,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 3,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 14
     },
     {
@@ -332,7 +369,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 12,
+      "hits": 8,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -341,6 +379,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 0,
+      "top_hits": 0,
       "attempts": 14
     },
     {
@@ -348,7 +387,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 5,
+      "hits": 0,
+      "top_hits": 0,
       "attempts": 14
     },
     {
@@ -357,6 +397,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 0,
+      "top_hits": 0,
       "attempts": 14
     },
     {
@@ -364,7 +405,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 5,
+      "hits": 0,
+      "top_hits": 0,
       "attempts": 14
     },
     {
@@ -372,31 +414,35 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 4,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 15
     },
     {
       "arch": "merged->arm32",
       "source_opt": "O2",
       "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 1,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 1,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "O2",
+      "target_opt": "O2",
       "discovery": "hinted",
       "hits": 6,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->arm32",
-      "source_opt": "O2",
-      "target_opt": "O2",
-      "discovery": "hint-free",
-      "hits": 3,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->arm32",
-      "source_opt": "O2",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 8,
+      "top_hits": 3,
       "attempts": 15
     },
     {
@@ -404,7 +450,8 @@
       "source_opt": "O2",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 3,
+      "hits": 2,
+      "top_hits": 1,
       "attempts": 15
     },
     {
@@ -412,7 +459,8 @@
       "source_opt": "O2",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 6,
+      "top_hits": 3,
       "attempts": 15
     },
     {
@@ -420,7 +468,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 14
     },
     {
@@ -428,23 +477,26 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 3,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm32",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
       "hits": 8,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->arm32",
-      "source_opt": "Os",
-      "target_opt": "O2",
-      "discovery": "hint-free",
-      "hits": 5,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->arm32",
-      "source_opt": "Os",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 11,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -452,7 +504,8 @@
       "source_opt": "Os",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 5,
+      "hits": 4,
+      "top_hits": 3,
       "attempts": 14
     },
     {
@@ -460,7 +513,8 @@
       "source_opt": "Os",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 11,
+      "hits": 8,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -469,6 +523,7 @@
       "target_opt": "O0",
       "discovery": "hint-free",
       "hits": 7,
+      "top_hits": 7,
       "attempts": 14
     },
     {
@@ -477,6 +532,7 @@
       "target_opt": "O0",
       "discovery": "hinted",
       "hits": 14,
+      "top_hits": 14,
       "attempts": 14
     },
     {
@@ -485,6 +541,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 0,
+      "top_hits": 0,
       "attempts": 14
     },
     {
@@ -492,7 +549,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 6,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 14
     },
     {
@@ -501,6 +559,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 0,
+      "top_hits": 0,
       "attempts": 14
     },
     {
@@ -508,7 +567,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 5,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 14
     },
     {
@@ -516,7 +576,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 6,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 15
     },
     {
@@ -524,7 +585,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 5,
+      "top_hits": 3,
       "attempts": 15
     },
     {
@@ -533,6 +595,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 12,
+      "top_hits": 9,
       "attempts": 15
     },
     {
@@ -541,6 +604,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 15,
+      "top_hits": 13,
       "attempts": 15
     },
     {
@@ -549,6 +613,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 8,
+      "top_hits": 7,
       "attempts": 15
     },
     {
@@ -557,6 +622,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 10,
+      "top_hits": 7,
       "attempts": 15
     },
     {
@@ -564,7 +630,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 8,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 14
     },
     {
@@ -572,7 +639,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 10,
+      "hits": 5,
+      "top_hits": 3,
       "attempts": 14
     },
     {
@@ -580,15 +648,17 @@
       "source_opt": "Os",
       "target_opt": "O2",
       "discovery": "hint-free",
+      "hits": 9,
+      "top_hits": 8,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->arm64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
       "hits": 11,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->arm64",
-      "source_opt": "Os",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 13,
+      "top_hits": 9,
       "attempts": 14
     },
     {
@@ -597,6 +667,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 12,
+      "top_hits": 11,
       "attempts": 14
     },
     {
@@ -605,214 +676,241 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 14,
+      "top_hits": 12,
       "attempts": 14
     },
     {
       "arch": "merged->thumb",
       "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 1,
+      "top_hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 6,
+      "top_hits": 6,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 0,
+      "top_hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 0,
+      "top_hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 0,
+      "top_hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 0,
+      "top_hits": 0,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 1,
+      "top_hits": 1,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 1,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 1,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 6,
+      "top_hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 1,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "O2",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 6,
+      "top_hits": 3,
+      "attempts": 15
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 1,
+      "top_hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 2,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 8,
+      "top_hits": 6,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 2,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->thumb",
+      "source_opt": "Os",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 8,
+      "top_hits": 6,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hint-free",
+      "hits": 7,
+      "top_hits": 7,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O0",
+      "discovery": "hinted",
+      "hits": 14,
+      "top_hits": 12,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hint-free",
+      "hits": 1,
+      "top_hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "O2",
+      "discovery": "hinted",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hint-free",
+      "hits": 1,
+      "top_hits": 1,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O0",
+      "target_opt": "Os",
+      "discovery": "hinted",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
       "hits": 2,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O0",
-      "target_opt": "O0",
-      "discovery": "hinted",
-      "hits": 11,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O0",
-      "target_opt": "O2",
-      "discovery": "hint-free",
-      "hits": 0,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O0",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 5,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O0",
-      "target_opt": "Os",
-      "discovery": "hint-free",
-      "hits": 0,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O0",
-      "target_opt": "Os",
-      "discovery": "hinted",
-      "hits": 5,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O2",
-      "target_opt": "O0",
-      "discovery": "hint-free",
-      "hits": 3,
+      "top_hits": 2,
       "attempts": 15
     },
     {
-      "arch": "merged->thumb",
+      "arch": "merged->x64",
       "source_opt": "O2",
       "target_opt": "O0",
-      "discovery": "hinted",
-      "hits": 6,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O2",
-      "target_opt": "O2",
-      "discovery": "hint-free",
-      "hits": 3,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O2",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 8,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O2",
-      "target_opt": "Os",
-      "discovery": "hint-free",
-      "hits": 3,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "O2",
-      "target_opt": "Os",
-      "discovery": "hinted",
-      "hits": 8,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "Os",
-      "target_opt": "O0",
-      "discovery": "hint-free",
-      "hits": 4,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "Os",
-      "target_opt": "O0",
-      "discovery": "hinted",
-      "hits": 7,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "Os",
-      "target_opt": "O2",
-      "discovery": "hint-free",
-      "hits": 5,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "Os",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 11,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "Os",
-      "target_opt": "Os",
-      "discovery": "hint-free",
-      "hits": 5,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->thumb",
-      "source_opt": "Os",
-      "target_opt": "Os",
-      "discovery": "hinted",
-      "hits": 11,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O0",
-      "target_opt": "O0",
-      "discovery": "hint-free",
-      "hits": 7,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O0",
-      "target_opt": "O0",
-      "discovery": "hinted",
-      "hits": 14,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O0",
-      "target_opt": "O2",
-      "discovery": "hint-free",
-      "hits": 1,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O0",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 3,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O0",
-      "target_opt": "Os",
-      "discovery": "hint-free",
-      "hits": 1,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O0",
-      "target_opt": "Os",
       "discovery": "hinted",
       "hits": 4,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O2",
-      "target_opt": "O0",
-      "discovery": "hint-free",
-      "hits": 3,
-      "attempts": 15
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "O2",
-      "target_opt": "O0",
-      "discovery": "hinted",
-      "hits": 5,
+      "top_hits": 2,
       "attempts": 15
     },
     {
@@ -821,6 +919,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 12,
+      "top_hits": 10,
       "attempts": 15
     },
     {
@@ -829,6 +928,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 15,
+      "top_hits": 12,
       "attempts": 15
     },
     {
@@ -836,7 +936,8 @@
       "source_opt": "O2",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 8,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 15
     },
     {
@@ -844,7 +945,8 @@
       "source_opt": "O2",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 10,
+      "hits": 9,
+      "top_hits": 7,
       "attempts": 15
     },
     {
@@ -852,15 +954,17 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 14
+    },
+    {
+      "arch": "merged->x64",
+      "source_opt": "Os",
+      "target_opt": "O0",
+      "discovery": "hinted",
       "hits": 4,
-      "attempts": 14
-    },
-    {
-      "arch": "merged->x64",
-      "source_opt": "Os",
-      "target_opt": "O0",
-      "discovery": "hinted",
-      "hits": 6,
+      "top_hits": 2,
       "attempts": 14
     },
     {
@@ -868,7 +972,8 @@
       "source_opt": "Os",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 10,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 14
     },
     {
@@ -876,7 +981,8 @@
       "source_opt": "Os",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 13,
+      "hits": 10,
+      "top_hits": 8,
       "attempts": 14
     },
     {
@@ -885,6 +991,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 12,
+      "top_hits": 11,
       "attempts": 14
     },
     {
@@ -893,6 +1000,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 14,
+      "top_hits": 12,
       "attempts": 14
     },
     {
@@ -901,6 +1009,7 @@
       "target_opt": "O0",
       "discovery": "hint-free",
       "hits": 9,
+      "top_hits": 7,
       "attempts": 19
     },
     {
@@ -909,6 +1018,7 @@
       "target_opt": "O0",
       "discovery": "hinted",
       "hits": 19,
+      "top_hits": 15,
       "attempts": 19
     },
     {
@@ -917,6 +1027,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -925,6 +1036,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 3,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -933,6 +1045,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -941,6 +1054,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 3,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -948,7 +1062,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -956,7 +1071,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -965,6 +1081,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 10,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -973,6 +1090,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 12,
       "attempts": 16
     },
     {
@@ -981,6 +1099,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 7,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -989,6 +1108,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 13,
+      "top_hits": 11,
       "attempts": 16
     },
     {
@@ -996,7 +1116,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -1004,7 +1125,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1013,6 +1135,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 9,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -1021,6 +1144,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 15,
+      "top_hits": 11,
       "attempts": 16
     },
     {
@@ -1029,6 +1153,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 10,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -1037,6 +1162,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 12,
       "attempts": 16
     },
     {
@@ -1045,6 +1171,7 @@
       "target_opt": "O0",
       "discovery": "hint-free",
       "hits": 14,
+      "top_hits": 14,
       "attempts": 19
     },
     {
@@ -1053,6 +1180,7 @@
       "target_opt": "O0",
       "discovery": "hinted",
       "hits": 19,
+      "top_hits": 19,
       "attempts": 19
     },
     {
@@ -1061,6 +1189,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -1069,6 +1198,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1077,6 +1207,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 1,
+      "top_hits": 1,
       "attempts": 16
     },
     {
@@ -1085,6 +1216,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1093,6 +1225,7 @@
       "target_opt": "O0",
       "discovery": "hint-free",
       "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1101,6 +1234,7 @@
       "target_opt": "O0",
       "discovery": "hinted",
       "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1109,6 +1243,7 @@
       "target_opt": "O2",
       "discovery": "hint-free",
       "hits": 13,
+      "top_hits": 10,
       "attempts": 16
     },
     {
@@ -1117,6 +1252,7 @@
       "target_opt": "O2",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 13,
       "attempts": 16
     },
     {
@@ -1125,6 +1261,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 8,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -1133,6 +1270,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 10,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -1140,7 +1278,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 3,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1148,7 +1287,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
+      "hits": 4,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1156,15 +1296,17 @@
       "source_opt": "Os",
       "target_opt": "O2",
       "discovery": "hint-free",
+      "hits": 8,
+      "top_hits": 7,
+      "attempts": 16
+    },
+    {
+      "arch": "x64",
+      "source_opt": "Os",
+      "target_opt": "O2",
+      "discovery": "hinted",
       "hits": 11,
-      "attempts": 16
-    },
-    {
-      "arch": "x64",
-      "source_opt": "Os",
-      "target_opt": "O2",
-      "discovery": "hinted",
-      "hits": 14,
+      "top_hits": 9,
       "attempts": 16
     },
     {
@@ -1173,6 +1315,7 @@
       "target_opt": "Os",
       "discovery": "hint-free",
       "hits": 13,
+      "top_hits": 11,
       "attempts": 16
     },
     {
@@ -1181,6 +1324,7 @@
       "target_opt": "Os",
       "discovery": "hinted",
       "hits": 16,
+      "top_hits": 14,
       "attempts": 16
     }
   ],
@@ -1252,26 +1396,26 @@
     {
       "arch": "arm32",
       "signatures": 51,
-      "signatures_with_hits": 10,
-      "hits": 105
+      "signatures_with_hits": 6,
+      "hits": 57
     },
     {
       "arch": "arm64",
       "signatures": 51,
-      "signatures_with_hits": 13,
-      "hits": 63
+      "signatures_with_hits": 6,
+      "hits": 45
     },
     {
       "arch": "merged",
       "signatures": 43,
-      "signatures_with_hits": 17,
-      "hits": 289
+      "signatures_with_hits": 4,
+      "hits": 128
     },
     {
       "arch": "thumb",
       "signatures": 51,
-      "signatures_with_hits": 10,
-      "hits": 89
+      "signatures_with_hits": 6,
+      "hits": 45
     },
     {
       "arch": "x64",
@@ -1284,32 +1428,32 @@
     {
       "arch": "arm32",
       "signatures": 51,
-      "signatures_with_hits": 14,
-      "hits": 118
+      "signatures_with_hits": 6,
+      "hits": 42
     },
     {
       "arch": "arm64",
       "signatures": 51,
-      "signatures_with_hits": 14,
-      "hits": 80
+      "signatures_with_hits": 6,
+      "hits": 54
     },
     {
       "arch": "merged",
       "signatures": 43,
-      "signatures_with_hits": 16,
-      "hits": 382
+      "signatures_with_hits": 4,
+      "hits": 120
     },
     {
       "arch": "thumb",
       "signatures": 51,
-      "signatures_with_hits": 14,
-      "hits": 128
+      "signatures_with_hits": 6,
+      "hits": 42
     },
     {
       "arch": "x64",
       "signatures": 51,
-      "signatures_with_hits": 7,
-      "hits": 34
+      "signatures_with_hits": 4,
+      "hits": 28
     }
   ]
 }

@@ -119,3 +119,14 @@ unchanged, so `SPEC_VERSION` stays `1` and the golden vectors are unaffected.
   and `db build`, with the same exit-code contract as the Python front-end.
   `merge` emits the same document as the Python implementation for the same
   samples; no feature, weight, or threshold semantics changed.
+
+## v1 — native matcher precision
+
+Matching and reporting only; extraction, feature records, and the signature
+document are unchanged, so `SPEC_VERSION` stays `1`.
+
+* Shape corroboration for low-information signatures (SPEC.md §8). On the
+  corpus it halves any-verdict false positives (0.227 → 0.113 against other
+  sources, 0.263 → 0.105 against the negative corpus) and raises top-1 recall.
+* The `strong` verdict counts only required data features, so a merged
+  signature is no longer strong on features one sample lacks.

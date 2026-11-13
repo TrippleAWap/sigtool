@@ -167,7 +167,73 @@ pub fn compare(signature: &Signature, features: &[Feature]) -> MatchScore {
     }
 }
 
-/// Apply both gates: weighted threshold and minimum distinct evidence.
+/// Shape dimensions (`cfg:blocks`, `ops:arith`, ...) a candidate must agree
+/// with when the signature's data evidence is low-information.
+///
+/// Measured on the corpus: 0.7-1.0 give the same single-arch FP rate, and
+/// above 0.8 merged signatures start failing self-test on their own samples
+/// (an op class one architecture lacks is a dimension that sample cannot
+/// agree with), so 0.8 is the strictest value that costs no merges.
+pub const MIN_SHAPE_AGREEMENT: f64 = 0.8;
+
+/// A constant within a byte of zero (either sign) is compiler boilerplate:
+/// loop steps, field offsets, `-8` stack alignment. It identifies nothing.
+pub fn low_information_const(value: &str) -> bool {
+    let digits = value.strip_prefix("0x").unwrap_or(value);
+    match u64::from_str_radix(digits, 16) {
+        Ok(number) => number < MIN_SEARCHABLE_CONST || number.wrapping_neg() < MIN_SEARCHABLE_CONST,
+        Err(_) => false,
+    }
+}
+
+/// True when no required feature identifies the function by itself: every
+/// required feature is a small constant, or there are none (shape-only
+/// signatures of tiny functions). The corpus bench showed that every false
+/// positive came from such a signature, typically one whose evidence was the
+/// constants 1 and 2.
+pub fn needs_shape_corroboration(signature: &Signature) -> bool {
+    !signature.features.iter().any(|feature| {
+        feature.required
+            && match feature.kind {
+                FeatureKind::Str | FeatureKind::Callee => true,
+                FeatureKind::Const => !low_information_const(&feature.value),
+                _ => false,
+            }
+    })
+}
+
+/// Fraction of the signature's shape dimensions the candidate agrees with.
+///
+/// A dimension is a shape key without its bucket (`cfg:blocks:4` is dimension
+/// `cfg:blocks`). It agrees when any of the signature's buckets for it was
+/// matched, which keeps merged signatures (one bucket per sample
+/// architecture) usable on every architecture they were merged from.
+pub fn shape_agreement(signature: &Signature, matched: &[String]) -> f64 {
+    let matched: HashSet<&str> = matched.iter().map(String::as_str).collect();
+    let mut dimensions: std::collections::BTreeMap<String, bool> =
+        std::collections::BTreeMap::new();
+    for feature in &signature.features {
+        if !matches!(feature.kind, FeatureKind::Cfg | FeatureKind::Ops) {
+            continue;
+        }
+        let key = feature.key();
+        let dimension = key
+            .rsplit_once(':')
+            .map(|(head, _)| head)
+            .unwrap_or(&key)
+            .to_string();
+        let agrees = matched.contains(key.as_str());
+        let entry = dimensions.entry(dimension).or_insert(false);
+        *entry |= agrees;
+    }
+    if dimensions.is_empty() {
+        return 1.0;
+    }
+    dimensions.values().filter(|agrees| **agrees).count() as f64 / dimensions.len() as f64
+}
+
+/// Apply the gates: weighted threshold, minimum distinct evidence, and shape
+/// corroboration for low-information signatures.
 ///
 /// The distinct gate is vacuous for a signature with no required features
 /// (shape-only signatures of very small functions), which would otherwise be
@@ -180,6 +246,8 @@ pub fn accepts(signature: &Signature, result: &MatchScore) -> bool {
         .count();
     result.score >= signature.match_threshold
         && result.matched_required >= signature.min_distinct.min(required_count)
+        && (!needs_shape_corroboration(signature)
+            || shape_agreement(signature, &result.matched) >= MIN_SHAPE_AGREEMENT)
 }
 
 /// Find accepted matches for `signature` in `source`, best first.
