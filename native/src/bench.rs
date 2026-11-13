@@ -44,12 +44,19 @@ pub struct RecallCell {
     pub target_opt: String,
     pub discovery: String,
     pub hits: usize,
+    /// Hits where the expected function is the single best match: the
+    /// scanner's answer, not merely one of many places a loose signature fits.
+    #[serde(default)]
+    pub top_hits: usize,
     pub attempts: usize,
 }
 
 impl RecallCell {
     pub fn rate(&self) -> f64 {
         ratio(self.hits, self.attempts)
+    }
+    pub fn top_rate(&self) -> f64 {
+        ratio(self.top_hits, self.attempts)
     }
     fn key(&self) -> (String, String, String, String) {
         (
@@ -369,10 +376,25 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
         let (s, t, hints) = recall_jobs[job];
         let sample = all[s];
         let target = &targets[t];
-        scan_addresses(&target.source, &sample.signature, hints)
-            .contains(&target.functions[&sample.name])
+        let expected = target.functions[&sample.name];
+        let matches = scan(
+            &target.source,
+            &sample.signature,
+            None,
+            MAX_CANDIDATE_STARTS,
+            hints,
+            None,
+        );
+        let found = matches.iter().any(|m| m.address == expected);
+        // Matches are sorted best first; a tie for first is ambiguous.
+        let top = matches.first().is_some_and(|m| m.address == expected)
+            && matches
+                .get(1)
+                .is_none_or(|next| next.score < matches[0].score);
+        (found, top)
     });
-    let mut cells: BTreeMap<(String, String, String, String), (usize, usize)> = BTreeMap::new();
+    let mut cells: BTreeMap<(String, String, String, String), (usize, usize, usize)> =
+        BTreeMap::new();
     for ((s, t, hints), hit) in recall_jobs.iter().zip(&recall_hits) {
         let sample = all[*s];
         let target = &targets[*t];
@@ -390,20 +412,24 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
                 discovery.to_string(),
             ))
             .or_default();
-        cell.1 += 1;
-        if *hit {
+        cell.2 += 1;
+        if hit.0 {
             cell.0 += 1;
+        }
+        if hit.1 {
+            cell.1 += 1;
         }
     }
     let recall = cells
         .into_iter()
         .map(
-            |((arch, source_opt, target_opt, discovery), (hits, attempts))| RecallCell {
+            |((arch, source_opt, target_opt, discovery), (hits, top_hits, attempts))| RecallCell {
                 arch,
                 source_opt,
                 target_opt,
                 discovery,
                 hits,
+                top_hits,
                 attempts,
             },
         )
@@ -511,13 +537,24 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
     for cell in &baseline.recall {
         match now.get(&cell.key()) {
             None => failures.push(format!("missing recall cell {:?}", cell.key())),
-            Some(current) if current.rate() + tolerance < cell.rate() => failures.push(format!(
-                "recall {:?}: {:.3} < baseline {:.3} - {tolerance:.2}",
-                cell.key(),
-                current.rate(),
-                cell.rate()
-            )),
-            Some(_) => {}
+            Some(current) => {
+                if current.rate() + tolerance < cell.rate() {
+                    failures.push(format!(
+                        "recall {:?}: {:.3} < baseline {:.3} - {tolerance:.2}",
+                        cell.key(),
+                        current.rate(),
+                        cell.rate()
+                    ));
+                }
+                if current.top_rate() + tolerance < cell.top_rate() {
+                    failures.push(format!(
+                        "top-1 recall {:?}: {:.3} < baseline {:.3} - {tolerance:.2}",
+                        cell.key(),
+                        current.top_rate(),
+                        cell.top_rate()
+                    ));
+                }
+            }
         }
     }
     for (label, base, now) in [
@@ -565,13 +602,17 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
 pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
     let mut out = Vec::new();
     let mut rate = |name: &str, filter: &dyn Fn(&RecallCell) -> bool, goal: f64| {
-        let (hits, attempts) = report
+        let (hits, top, attempts) = report
             .recall
             .iter()
             .filter(|c| filter(c))
-            .fold((0, 0), |(h, a), c| (h + c.hits, a + c.attempts));
+            .fold((0, 0, 0), |(h, t, a), c| {
+                (h + c.hits, t + c.top_hits, a + c.attempts)
+            });
         let value = ratio(hits, attempts);
-        out.push((name.to_string(), value, goal, value >= goal));
+        out.push((format!("{name} (found)"), value, goal, value >= goal));
+        let value = ratio(top, attempts);
+        out.push((format!("{name} (top-1)"), value, goal, value >= goal));
     };
     for discovery in [HINTED, HINT_FREE] {
         rate(
@@ -652,13 +693,14 @@ pub fn render(report: &BenchReport) -> String {
             let same_build = cell.source_opt == cell.target_opt;
             let _ = writeln!(
                 text,
-                "  {} {}->{}: {}/{} = {:.3}{}",
+                "  {} {}->{}: {}/{} = {:.3}  top-1 {:.3}{}",
                 cell.arch,
                 cell.source_opt,
                 cell.target_opt,
                 cell.hits,
                 cell.attempts,
                 cell.rate(),
+                cell.top_rate(),
                 if same_build { "  (same build)" } else { "" }
             );
             let bucket = if same_build { &mut same } else { &mut cross };
