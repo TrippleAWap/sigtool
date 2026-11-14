@@ -1,11 +1,10 @@
-//! Scan-cost profile for the native scanner (the counterpart of
-//! `profile_scan.py --no-live`).
+//! Scan-cost profile for the native scanner.
 //!
 //! For every x64 corpus binary it generates the signature set for that binary,
 //! then times one full scanner pass (page hashing, index build, recovery) and
-//! one incremental pass (everything unchanged). The workload, the budget, and
-//! the reported counters match `profile_scan.py`, so the two implementations
-//! can be compared on the same corpus.
+//! one incremental pass (everything unchanged). The workload and budget are the
+//! ones the removed Python `profile_scan.py` used, so numbers recorded in
+//! `PLAN.md` section 12 stay comparable.
 //!
 //! ```text
 //! cargo run --release --example profile_scan

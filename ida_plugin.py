@@ -1,154 +1,151 @@
-"""IDA plugin front-end (UI glue only; AGENTS.md rule 2).
+"""IDA plugin front-end for sigtool: UI glue over the native ``sigtool-native`` CLI.
 
-Everything that touches bytes, features, matching, or serialisation lives in
-``core/`` and ``sources/``; this file resolves the current IDB into an
-:class:`sources.ida.IdaSource`, calls :func:`core.generate.generate` /
-:func:`core.merge.merge` / :func:`core.match.scan`, and formats dialogs.
+The plugin never extracts features itself (AGENTS.md rule 2). It hands the
+IDB's input file and a module-relative address to ``sigtool-native`` and shows
+what comes back, so a signature made here is byte-identical to one made with
+``sigtool-native gen --file IMAGE --rva RVA``. Addresses cross the boundary as
+RVAs (``ea - imagebase``), which keeps rebased databases correct.
 
-Install (IDA 8.4+ / 9.x, Python 3.10+):
+Install (IDA 8.4+ / 9.x, Python 3.10+, no extra packages):
 
-    pip install -e <sigtool checkout>   # into IDA's Python environment
-    # then copy this file into the IDA user plugins directory (%IDAUSR%/plugins)
-    # or point IDA's PYTHONPATH at the checkout
+    cargo build --release --manifest-path native/Cargo.toml
+    # put native/target/release/sigtool-native on PATH, or set SIGTOOL_NATIVE
+    # to its full path, then copy this file into %IDAUSR%/plugins
 
 Actions land under Edit > Plugins and on the right-click menus of the
 disassembly and Functions views:
 
-* ``sigtool: generate here`` — sign the function under the cursor, show the
-  quality report (including any recovery/IDA bounds disagreement), save the
-  YAML, and optionally merge another sample (an IDB, an image file, or a live
-  Windows PID) into a multi-arch signature.
-* ``sigtool: locate in this IDB`` — scan the current database with a saved
-  signature and jump to the best match.
+* ``sigtool: generate here``: sign the function under the cursor, show the
+  quality report, save the YAML, and optionally merge further samples (other
+  image files at an address or RVA) into a multi-arch signature.
+* ``sigtool: locate in this IDB``: scan the input file with a saved signature
+  and jump to the best match.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
 import ida_funcs
 import ida_idaapi
 import ida_kernwin
-import ida_lines
-
-from core.errors import SelfTestError, SigToolError, UnsupportedArchError
-from core.generate import GenerationResult, generate
-from core.match import scan
-from core.merge import MergeSample, merge
-from core.sigfile import Signature
-from sources.file import FileSource
-from sources.ida import IdaSource
+import ida_nalt
 
 PLUGIN_COMMENT = "Architecture-independent function signatures"
 PLUGIN_HELP = "Generate, merge, and locate sigtool signatures without leaving IDA"
-PLUGIN_WANTED_HOTKEY = ""
 
 GEN_ACTION = "sigtool:generate"
 GEN_LABEL = "sigtool: generate signature here"
 LOCATE_ACTION = "sigtool:locate"
 LOCATE_LABEL = "sigtool: locate signature in this IDB"
-POPUP_PATHS = ("Disassembly", "Functions")
+# Generation decodes one function; locating sweeps the image. Both are bounded
+# so a pathological input cannot hang the IDA UI thread forever.
+TIMEOUT_SECONDS = 300
 
 
-def _source() -> IdaSource:
-    return IdaSource.from_ida()
+class SigtoolError(Exception):
+    """A failed ``sigtool-native`` run, with its stderr as the message."""
 
 
-def _current_address() -> int:
-    return int(ida_kernwin.get_screen_ea())
+def _native() -> str:
+    configured = os.environ.get("SIGTOOL_NATIVE")
+    if configured:
+        return configured
+    found = shutil.which("sigtool-native")
+    if found:
+        return found
+    sibling = Path(__file__).with_name(
+        "sigtool-native.exe" if os.name == "nt" else "sigtool-native"
+    )
+    if sibling.exists():
+        return str(sibling)
+    raise SigtoolError("sigtool-native not found: put it on PATH or set SIGTOOL_NATIVE")
 
 
-def _function_bounds(addr: int) -> tuple[int, int] | None:
-    function = ida_funcs.get_func(addr)
-    if function is None:
-        return None
-    return (int(function.start_ea), int(function.end_ea))
+def _run(*args: str) -> str:
+    result = subprocess.run(
+        [_native(), *args], capture_output=True, text=True, timeout=TIMEOUT_SECONDS
+    )
+    if result.returncode != 0:
+        raise SigtoolError(result.stderr.strip() or f"exit code {result.returncode}")
+    return result.stderr
 
 
-def _report_text(source: IdaSource, result: GenerationResult, addr: int) -> str:
-    """The dialog body: quality report plus the bounds-disagreement note."""
-    signature = result.signature
-    report = result.report
-    lines = [
-        f"signature {signature.name}  ({signature.signature_id})",
-        f"arch {source.arch.value}  verdict {report.verdict}  confidence {signature.confidence}",
-        f"features {len(signature.features)} (required {report.required_features}, "
-        f"optional {report.optional_features})  anchors {report.anchor_count}",
-        f"self-test 0x{result.match.address:x} score {result.match.score:.3f}",
-    ]
-    disagreement = source.bounds_disagreement(addr, result.match.address, result.match.end)
-    if disagreement is not None:
-        lines.append(f"note: {disagreement}")
-    lines.extend(f"note: {note}" for note in report.notes)
-    return "\n".join(lines)
+def _input_file() -> str:
+    path = ida_nalt.get_input_file_path()
+    if not path or not os.path.exists(path):
+        path = ida_kernwin.ask_file(False, "*", "Input file of this IDB (not found on disk)")
+    if not path:
+        raise SigtoolError("the IDB's input file is needed to read the function bytes")
+    return str(path)
+
+
+def _rva(ea: int) -> int:
+    return ea - int(ida_nalt.get_imagebase())
+
+
+def _function_start(ea: int) -> int:
+    function = ida_funcs.get_func(ea)
+    return int(function.start_ea) if function is not None else ea
 
 
 def _save_yaml(text: str, suggested: str) -> str | None:
     path = ida_kernwin.ask_file(True, "*.yaml", "Save signature as", suggested)
     if not path:
         return None
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
+    Path(path).write_text(text, encoding="utf-8")
     return str(path)
 
 
-def _sample_from_file() -> MergeSample | None:
-    path = ida_kernwin.ask_file(False, "*.elf;*.dll;*.exe;*.so;*.sys", "Sample image file")
+def _ask_sample() -> str | None:
+    """One more merge sample as ``FILE:ADDR`` or ``FILE:+RVA``."""
+    path = ida_kernwin.ask_file(False, "*.elf;*.so;*.dll;*.exe;*.sys;*", "Sample image file")
     if not path:
         return None
-    addr_text = ida_kernwin.ask_str("0x1000", 0, "Sample address (hex)")
-    if not addr_text:
+    where = ida_kernwin.ask_str("+0x1000", 0, "Sample address (0x...) or RVA (+0x...)")
+    if not where:
         return None
-    addr = int(addr_text, 16)
-    return MergeSample(FileSource.from_path(path), addr)
-
-
-def _sample_from_process() -> MergeSample | None:
-    pid_text = ida_kernwin.ask_str("0", 0, "Live process id (Windows, read-only)")
-    if not pid_text:
-        return None
-    from sources.proc_win import WindowsProcessSource
-
-    source = WindowsProcessSource.open(int(pid_text))
-    addr_text = ida_kernwin.ask_str("0x1000", 0, "Sample address (hex)")
-    if not addr_text:
-        source.close()
-        return None
-    return MergeSample(source, int(addr_text, 16))
+    return f"{path}:{where.strip()}"
 
 
 class GenerateHandler(ida_kernwin.action_handler_t):
     """Sign the function under the cursor, then optionally merge more samples."""
 
-    samples: list[MergeSample]
-
     def activate(self, ctx) -> int:
         try:
-            self._run()
-        except UnsupportedArchError as error:
-            ida_kernwin.warning(f"sigtool: unsupported target: {error}")
-        except SelfTestError as error:
-            ida_kernwin.warning(f"sigtool: refused to emit a signature: {error}")
-        except SigToolError as error:
+            self._generate()
+        except (SigtoolError, subprocess.TimeoutExpired) as error:
             ida_kernwin.warning(f"sigtool: {error}")
         return 1
 
     def update(self, _ctx) -> int:
         return ida_kernwin.AST_ENABLE_ALWAYS
 
-    def _run(self) -> None:
-        source = _source()
-        addr = _current_address()
-        result = generate(source, addr)
-        ida_kernwin.info(_report_text(source, result, addr))
-        path = _save_yaml(result.to_yaml(), f"{result.signature.name}.yaml")
+    def _generate(self) -> None:
+        image = _input_file()
+        rva = _rva(_function_start(int(ida_kernwin.get_screen_ea())))
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "signature.yaml"
+            report = _run(
+                "gen", "--file", image, "--rva", hex(rva), "--tool", "IDA", "--output", str(output)
+            )
+            text = output.read_text(encoding="utf-8")
+        ida_kernwin.info(report.strip())
+        name = Path(image).stem + f"+{rva:#x}"
+        path = _save_yaml(text, f"{name}.yaml")
         if path:
             ida_kernwin.msg(f"sigtool: wrote {path}\n")
 
         if ida_kernwin.ask_yn(False, "Merge another sample into this signature?") != 1:
             return
-        samples = [self._sample_for_current(source, result)]
+        samples = [f"{image}:+{rva:#x}"]
         while True:
-            mode = ida_kernwin.ask_yn(False, "Add the sample from an image file? (No: live PID)")
-            sample = _sample_from_file() if mode == 1 else _sample_from_process()
+            sample = _ask_sample()
             if sample is None:
                 break
             samples.append(sample)
@@ -157,66 +154,75 @@ class GenerateHandler(ida_kernwin.action_handler_t):
         if len(samples) < 2:
             ida_kernwin.warning("sigtool: merging needs a second sample")
             return
-        merged = merge(samples, name=result.signature.name)
-        merged_path = _save_yaml(merged.to_yaml(), f"{merged.signature.name}.merged.yaml")
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "merged.yaml"
+            arguments = ["merge", "--output", str(output)]
+            for sample in samples:
+                arguments += ["--sample", sample]
+            report = _run(*arguments)
+            text = output.read_text(encoding="utf-8")
+        ida_kernwin.info(report.strip())
+        merged_path = _save_yaml(text, f"{name}.merged.yaml")
         if merged_path:
             ida_kernwin.msg(f"sigtool: wrote merged signature {merged_path}\n")
 
-    @staticmethod
-    def _sample_for_current(source: IdaSource, result: GenerationResult) -> MergeSample:
-        opt = ida_kernwin.ask_str("", 0, "Provenance opt level (e.g. O2, empty for none)")
-        return MergeSample(source, result.match.address, opt=opt or None, tool="IDA")
-
 
 class LocateHandler(ida_kernwin.action_handler_t):
-    """Scan this IDB with a saved signature and jump to the best match."""
+    """Scan this IDB's input file with a saved signature and jump to the best match."""
 
     def activate(self, ctx) -> int:
         try:
-            self._run()
-        except UnsupportedArchError as error:
-            ida_kernwin.warning(f"sigtool: unsupported target: {error}")
-        except SigToolError as error:
+            self._locate()
+        except (SigtoolError, subprocess.TimeoutExpired) as error:
             ida_kernwin.warning(f"sigtool: {error}")
         return 1
 
     def update(self, _ctx) -> int:
         return ida_kernwin.AST_ENABLE_ALWAYS
 
-    def _run(self) -> None:
-        signature_path = ida_kernwin.ask_file(False, "*.yaml;*.yml", "Signature file")
-        if not signature_path:
+    def _locate(self) -> None:
+        signature = ida_kernwin.ask_file(False, "*.yaml;*.yml", "Signature file")
+        if not signature:
             return
-        with open(signature_path, encoding="utf-8") as handle:
-            signature = Signature.from_yaml(handle.read())
-        source = _source()
-        matches = scan(source, signature)
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "matches.json"
+            _run(
+                "locate",
+                "--signature",
+                signature,
+                "--file",
+                _input_file(),
+                "--json",
+                str(output),
+                "--yes",
+            )
+            result = json.loads(output.read_text(encoding="utf-8"))
+        matches = result.get("matches", [])
         if not matches:
-            ida_kernwin.warning(f"sigtool: no match for {signature.name!r} in this IDB")
+            ida_kernwin.warning(f"sigtool: no match for {result.get('signature')!r} in this IDB")
             return
-        lines = [f"{signature.name}: {len(matches)} match(es)"]
+        base = int(ida_nalt.get_imagebase())
+        lines = [f"{result.get('signature')}: {len(matches)} match(es)"]
         for index, match in enumerate(matches, start=1):
-            label = source.label_for_address(match.address) or "unlabelled"
-            lines.append(f"{index}. 0x{match.address:x} score {match.score:.3f} {label}")
+            ea = base + int(match["rva"], 16)
+            label = match.get("label") or "unlabelled"
+            lines.append(f"{index}. {ea:#x} score {match['score']:.3f} {label}")
         ida_kernwin.info("\n".join(lines))
-        ida_kernwin.jumpto(matches[0].address)
+        ida_kernwin.jumpto(base + int(matches[0]["rva"], 16))
 
 
 class PopupHooks(ida_kernwin.UI_Hooks):
     """Attach the actions to the disassembly and Functions right-click menus."""
 
     def populating_widget_popup(self, form, popup, *_args) -> None:
-        widget_type = ida_kernwin.get_widget_type(form)
-        if widget_type not in (
-            ida_idaapi.BWN_DISASM,
-            ida_idaapi.BWN_FUNCS,
-            ida_idaapi.BWN_PSEUDOCODE,
+        if ida_kernwin.get_widget_type(form) not in (
+            ida_kernwin.BWN_DISASM,
+            ida_kernwin.BWN_FUNCS,
+            ida_kernwin.BWN_PSEUDOCODE,
         ):
             return
         for action in (GEN_ACTION, LOCATE_ACTION):
-            ida_kernwin.attach_action_to_popup(
-                form, popup, action, "sigtool/", ida_kernwin.SETMENU_APP
-            )
+            ida_kernwin.attach_action_to_popup(form, popup, action, "sigtool/")
 
 
 class SigtoolPlugin(ida_idaapi.plugin_t):
@@ -236,21 +242,17 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
         ida_kernwin.register_action(
             ida_kernwin.action_desc_t(LOCATE_ACTION, LOCATE_LABEL, LocateHandler(), "Ctrl-Shift-L")
         )
-        ida_kernwin.attach_action_to_menu(
-            f"Edit/Plugins/{GEN_LABEL}", GEN_ACTION, ida_kernwin.SETMENU_APP
-        )
-        ida_kernwin.attach_action_to_menu(
-            "Edit/Plugins/" + LOCATE_LABEL, LOCATE_ACTION, ida_kernwin.SETMENU_APP
-        )
+        for label, action in ((GEN_LABEL, GEN_ACTION), (LOCATE_LABEL, LOCATE_ACTION)):
+            ida_kernwin.attach_action_to_menu(
+                f"Edit/Plugins/{label}", action, ida_kernwin.SETMENU_APP
+            )
         self._hooks = PopupHooks()
         self._hooks.hook()
         return ida_idaapi.PLUGIN_KEEP
 
     def run(self, _arg):
         ida_kernwin.info(
-            "sigtool actions:\n"
-            f"  {GEN_LABEL} ({ida_lines.tag_remove('Ctrl-Shift-G')})\n"
-            f"  {LOCATE_LABEL} ({ida_lines.tag_remove('Ctrl-Shift-L')})"
+            f"sigtool actions:\n  {GEN_LABEL} (Ctrl-Shift-G)\n  {LOCATE_LABEL} (Ctrl-Shift-L)"
         )
 
     def term(self):

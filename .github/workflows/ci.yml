@@ -9,83 +9,14 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # The toy-corpus baseline is measured on this compiler; other versions move
+  # small cells by more than the bench tolerance.
+  LLVM_VERSION: "22"
+
 jobs:
   linux:
-    name: linux (lint, types, corpus, bench)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-
-      - name: Install clang and lld
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y clang lld
-
-      - name: Format
-        run: python -m ruff format --check .
-
-      - name: Lint
-        run: python -m ruff check .
-
-      - name: Type check
-        run: python -m mypy core sources
-
-      - name: Build corpus
-        run: python corpus/build.py
-
-      - name: Tests
-        run: python -m pytest
-
-      - name: Corpus regression
-        run: python bench.py --baseline tests/baseline/bench.json --json corpus/report.json
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: corpus-report
-          path: corpus/report.json
-          if-no-files-found: warn
-
-  windows:
-    name: windows (live process)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-
-      - name: Format
-        run: python -m ruff format --check .
-
-      - name: Lint
-        run: python -m ruff check .
-
-      - name: Type check
-        run: python -m mypy core sources
-
-      - name: Tests (includes live PID mode)
-        run: python -m pytest
-
-  native:
-    name: native (rust, corpus gate)
+    name: linux (fmt, clippy, tests, corpus gate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,17 +28,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Install dependencies
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "$LLVM_VERSION"
+          echo "/usr/lib/llvm-$LLVM_VERSION/bin" >> "$GITHUB_PATH"
 
-      - name: Install clang and lld
+      - name: Lint build scripts and the IDA plugin
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y clang lld
+          python -m pip install ruff
+          python -m ruff format --check corpus tests/vectors ida_plugin.py
+          python -m ruff check corpus tests/vectors ida_plugin.py
 
       - name: Build corpus
         run: python corpus/build.py
@@ -122,8 +54,20 @@ jobs:
 
       - name: Tests
         working-directory: native
-        run: cargo test
+        run: cargo test --release
 
       - name: Corpus bench
         working-directory: native
         run: cargo run --release -- bench --baseline ../tests/baseline/native-bench.json
+
+  windows:
+    name: windows (tests, live process)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Tests (includes live PID mode)
+        working-directory: native
+        run: cargo test --release

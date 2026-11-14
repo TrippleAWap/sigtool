@@ -1,23 +1,6 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "sigtool"
-version = "0.1.0"
-description = "Architecture-independent function signatures for runtime matching"
-requires-python = ">=3.10"
-dependencies = ["capstone>=5.0,<6", "pyyaml>=6.0"]
-
-[project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "types-PyYAML>=6.0"]
-
-[project.scripts]
-sigtool = "cli:main"
-
-[tool.setuptools]
-packages = ["core", "sources"]
-py-modules = ["cli"]
+# sigtool is the Rust crate under native/. The Python left in the repo is
+# tooling (corpus builders, the golden-vector generator) and the IDA plugin,
+# which shells out to sigtool-native; this file only configures their linter.
 
 [tool.ruff]
 line-length = 100
@@ -25,33 +8,3 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-
-[tool.mypy]
-strict = true
-files = ["core", "sources"]
-python_version = "3.10"
-
-[[tool.mypy.overrides]]
-# Capstone ships no py.typed marker; its objects are treated as Any at the boundary.
-module = ["capstone", "capstone.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-# The IDA SDK only exists inside an IDA installation; the facade is the only
-# place that touches it, and tests inject a fake api instead.
-module = [
-    "ida_bytes",
-    "ida_entry",
-    "ida_funcs",
-    "ida_ida",
-    "ida_kernwin",
-    "ida_nalt",
-    "ida_segment",
-    "idautils",
-]
-ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-addopts = "-q"
