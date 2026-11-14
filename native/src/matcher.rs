@@ -19,6 +19,7 @@ use crate::errors::SelfTestError;
 use crate::features::{extract, Feature, FeatureKind};
 use crate::normalize::{Kind, Normalizer};
 use crate::recover::{recover, RecoveryLimits};
+use crate::score::score_features;
 use crate::sigfile::Signature;
 use crate::source::{ByteSource, Region};
 
@@ -72,6 +73,8 @@ pub struct Match {
     pub address: u64,
     pub end: u64,
     pub score: f64,
+    /// Weighted Jaccard of signature and candidate features; ranks matches.
+    pub similarity: f64,
     pub matched: Vec<String>,
 }
 
@@ -379,6 +382,7 @@ pub struct Candidate {
     pub start: u64,
     pub end: u64,
     pub features: Vec<Feature>,
+    pub weighted: Vec<(String, f64)>,
 }
 
 impl Candidate {
@@ -389,10 +393,12 @@ impl Candidate {
         hints: bool,
     ) -> Option<Candidate> {
         let recovered = recover(source, start, limits, hints).ok()?;
+        let features = extract(source, &recovered);
         Some(Candidate {
             start: recovered.start(),
             end: recovered.end(),
-            features: extract(source, &recovered),
+            weighted: weigh(&features),
+            features,
         })
     }
 }
@@ -472,15 +478,20 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
                 address: candidate.start,
                 end: candidate.end,
                 score: result.score,
+                similarity: similarity(signature, &candidate.weighted),
                 matched: result.matched,
             });
         }
     }
+    // Rank by similarity first: `score` saturates at 1.0 for every candidate
+    // holding the required features, so in a real library dozens of related
+    // functions tie on it. Similarity also charges the candidate's own extra
+    // features, which separates the function from its look-alikes.
     matches.sort_by(|left, right| {
         right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .similarity
+            .total_cmp(&left.similarity)
+            .then(right.score.total_cmp(&left.score))
             .then(left.address.cmp(&right.address))
     });
     dedupe(matches).into_iter().take(MAX_MATCHES).collect()
@@ -725,12 +736,52 @@ pub fn self_test<S: ByteSource + ?Sized>(
             signature.name
         )));
     }
+    let weighted = weigh(&extract(source, &recovered));
     Ok(Match {
         address: recovered.start(),
         end: recovered.end(),
         score: result.score,
+        similarity: similarity(signature, &weighted),
         matched: result.matched,
     })
+}
+
+/// Candidate features with the weights generation would give them.
+fn weigh(features: &[Feature]) -> Vec<(String, f64)> {
+    score_features(features, None)
+        .into_iter()
+        .map(|item| (item.key(), item.weight))
+        .collect()
+}
+
+/// Weighted Jaccard between a signature and a candidate.
+///
+/// `sum(signature weight of shared keys) / (sum(signature weights) +
+/// sum(candidate weights of keys the signature lacks))`. The true function
+/// shares the signature's portable evidence and adds little of its own; a
+/// larger function that merely contains the same strings or constants pays for
+/// everything else it holds.
+pub fn similarity(signature: &Signature, candidate: &[(String, f64)]) -> f64 {
+    let wanted: HashMap<String, f64> = signature
+        .features
+        .iter()
+        .map(|feature| (feature.key(), feature.weight))
+        .collect();
+    let total: f64 = wanted.values().sum();
+    let mut shared = 0.0;
+    let mut extra = 0.0;
+    for (key, weight) in candidate {
+        match wanted.get(key) {
+            Some(signature_weight) => shared += signature_weight,
+            None => extra += weight,
+        }
+    }
+    let denominator = total + extra;
+    if denominator <= 0.0 {
+        0.0
+    } else {
+        round_to(shared / denominator, SCORE_DECIMALS)
+    }
 }
 
 // -- Tier 0 ------------------------------------------------------------------
@@ -988,6 +1039,17 @@ fn candidate_starts<S: ByteSource + ?Sized>(
     if let Some(index) = index {
         for data_addr in &data_hits {
             for reference in index.referencers(*data_addr) {
+                // Same shortcut as code hits: a symbol that covers the
+                // referencing instruction is its function. Without it every
+                // string reference cost a backward decode sweep, which made
+                // hinted scans of real libraries ~5x slower than hint-free.
+                if let Some((start, _)) = use_hints
+                    .then(|| source.hint_function(*reference))
+                    .flatten()
+                {
+                    hint_starts.insert(start);
+                    continue;
+                }
                 let starts = match &code {
                     Some(code) => code.swept_starts(source, *reference),
                     None => swept_starts_from(source, *reference),
