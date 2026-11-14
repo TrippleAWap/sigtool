@@ -473,7 +473,14 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         if section.kind != ELF_SHT_RELA && section.kind != ELF_SHT_REL {
             continue;
         }
-        let rel_struct_size = if is64 { 24usize } else { 12usize };
+        // `Elf32_Rel` is 8 bytes (ARM32 uses REL, not RELA); the addend that
+        // RELA adds is never read here.
+        let rel_struct_size = match (is64, section.kind == ELF_SHT_RELA) {
+            (true, true) => 24usize,
+            (true, false) => 16,
+            (false, true) => 12,
+            (false, false) => 8,
+        };
         let entry_size = if section.entsize != 0 {
             section.entsize as usize
         } else {
