@@ -445,7 +445,7 @@ fn arm64_region(region: &Region, found: &mut Evidence) {
         found.region_starts.push(region.start);
     }
     let mut after_terminator = false;
-    for (index, chunk) in region.data.chunks_exact(4).enumerate() {
+    for (index, chunk) in region.data.as_chunks::<4>().0.iter().enumerate() {
         let address = region.start + index as u64 * 4;
         let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         // `nop`, zero fill (`udf #0`).
@@ -867,7 +867,9 @@ mod tests {
                 region(".data", 0x20_0000, data.clone(), false),
             ];
             let pointers: Vec<u64> = data
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|w| u64::from(u32::from_le_bytes([w[0], w[1], w[2], w[3]])))
                 .collect();
             for arch in [Arch::Arm32, Arch::Thumb, Arch::X64, Arch::Arm64] {

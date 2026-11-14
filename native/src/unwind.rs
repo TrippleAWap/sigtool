@@ -65,7 +65,7 @@ pub fn finish(mut entries: Vec<UnwindEntry>, regions: &[Region]) -> Vec<UnwindEn
 /// the last entry's end is unknown.
 fn arm_exidx(region: &Region) -> Vec<UnwindEntry> {
     let mut starts = Vec::new();
-    for (index, chunk) in region.data.chunks_exact(8).enumerate() {
+    for (index, chunk) in region.data.as_chunks::<8>().0.iter().enumerate() {
         if index >= MAX_UNWIND_ENTRIES {
             break;
         }
@@ -317,7 +317,7 @@ fn eh_frame(region: &Region, pointer_size: usize) -> Vec<UnwindEntry> {
 pub fn pdata(data: &[u8], image_base: u64, arm64: bool) -> Vec<UnwindEntry> {
     let mut entries = Vec::new();
     if arm64 {
-        for chunk in data.chunks_exact(8).take(MAX_UNWIND_ENTRIES) {
+        for chunk in data.as_chunks::<8>().0.iter().take(MAX_UNWIND_ENTRIES) {
             let begin = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             let unwind = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
             if begin == 0 {
@@ -332,7 +332,7 @@ pub fn pdata(data: &[u8], image_base: u64, arm64: bool) -> Vec<UnwindEntry> {
             entries.push((start, end));
         }
     } else {
-        for chunk in data.chunks_exact(12).take(MAX_UNWIND_ENTRIES) {
+        for chunk in data.as_chunks::<12>().0.iter().take(MAX_UNWIND_ENTRIES) {
             let begin = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             let end = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
             if begin == 0 || end <= begin {

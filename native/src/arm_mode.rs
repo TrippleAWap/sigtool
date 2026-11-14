@@ -191,7 +191,7 @@ impl ModeMap {
 fn mostly_arm(bytes: &[u8], limit: usize) -> bool {
     let mut total = 0usize;
     let mut always = 0usize;
-    for word in bytes.chunks_exact(4).take(limit) {
+    for word in bytes.as_chunks::<4>().0.iter().take(limit) {
         total += 1;
         if word[3] >> 4 == 0xE {
             always += 1;
@@ -211,7 +211,7 @@ fn arm_calls(bytes: &[u8], base: u64, record: &mut impl FnMut(u64, bool)) {
     let Some(aligned) = bytes.get(skip..) else {
         return;
     };
-    for (index, word) in aligned.chunks_exact(4).enumerate() {
+    for (index, word) in aligned.as_chunks::<4>().0.iter().enumerate() {
         let word = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
         let pc = (base + skip as u64 + index as u64 * 4).wrapping_add(8);
         let offset = sign_extend(word & 0x00ff_ffff, 24) << 2;
