@@ -219,6 +219,46 @@ impl ByteSource for FileSource {
     }
 }
 
+/// Lowest `PT_LOAD` virtual address, if the image has program headers.
+fn elf_load_base(data: &[u8], is64: bool) -> Option<u64> {
+    let (phoff, phentsize, phnum) = if is64 {
+        (
+            u64_at(data, 0x20).ok()?,
+            u16_at(data, 0x36).ok()?,
+            u16_at(data, 0x38).ok()?,
+        )
+    } else {
+        (
+            u64::from(u32_at(data, 0x1C).ok()?),
+            u16_at(data, 0x2A).ok()?,
+            u16_at(data, 0x2C).ok()?,
+        )
+    };
+    let minimum = if is64 { 0x38 } else { 0x20 };
+    if phoff == 0 || (phentsize as usize) < minimum {
+        return None;
+    }
+    let mut base: Option<u64> = None;
+    for index in 0..phnum as usize {
+        let offset = usize::try_from(phoff)
+            .ok()?
+            .checked_add(index * phentsize as usize)?;
+        let Ok(kind) = u32_at(data, offset) else {
+            break;
+        };
+        if kind != 1 {
+            continue;
+        }
+        let vaddr = if is64 {
+            u64_at(data, offset + 0x10).ok()?
+        } else {
+            u64::from(u32_at(data, offset + 0x08).ok()?)
+        };
+        base = Some(base.map_or(vaddr, |current| current.min(vaddr)));
+    }
+    base
+}
+
 struct ParsedImage {
     regions: Vec<Region>,
     module: Module,
@@ -324,6 +364,12 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
             "ELF image has no usable section table".into(),
         ));
     }
+
+    // The image base is the lowest PT_LOAD address, so `module+rva` agrees
+    // with readelf and disassemblers (the ELF header page is part of the
+    // image even though no section covers it). Relocatable objects have no
+    // program headers and fall back to the lowest placed section.
+    let load_base = elf_load_base(data, is64);
 
     let mut sections: Vec<Section> = Vec::with_capacity(e_shnum as usize);
     for index in 0..e_shnum as usize {
@@ -598,7 +644,11 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         }
     }
 
-    let module_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
+    let section_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
+    let module_start = match load_base {
+        Some(base) if e_type != ELF_ET_REL => base.min(section_start),
+        _ => section_start,
+    };
     let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
     let module = Module {
         name: module_stem(name),
@@ -838,7 +888,9 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         }
     }
 
-    let module_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
+    // A PE RVA is relative to ImageBase, which the headers occupy.
+    let section_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
+    let module_start = image_base.min(section_start);
     let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
     let module = Module {
         name: module_stem(name),
