@@ -35,6 +35,16 @@ pub const MERGED: &str = "merged";
 /// Architectures merged into one cross-arch signature per function and opt.
 const MERGE_ARCHES: [&str; 2] = ["x64", "arm64"];
 
+/// `clang-O2` -> `O2`; a bare `O2` (single-compiler corpus) is its own level.
+fn level(opt: &str) -> &str {
+    opt.rsplit_once('-').map_or(opt, |(_, level)| level)
+}
+
+/// Same optimization level, built by a different compiler.
+fn other_compiler(cell: &RecallCell) -> bool {
+    cell.source_opt != cell.target_opt && level(&cell.source_opt) == level(&cell.target_opt)
+}
+
 /// Selects the recall cells of one target group.
 type CellFilter<'a> = &'a dyn Fn(&RecallCell) -> bool;
 
@@ -428,9 +438,9 @@ pub fn run_with(
         let found = matches.iter().any(|m| m.address == expected);
         // Matches are sorted best first; a tie for first is ambiguous.
         let top = matches.first().is_some_and(|m| m.address == expected)
-            && matches
-                .get(1)
-                .is_none_or(|next| next.score < matches[0].score);
+            && matches.get(1).is_none_or(|next| {
+                (next.similarity, next.score) < (matches[0].similarity, matches[0].score)
+            });
         (found, top)
     });
     let mut cells: BTreeMap<CellKey, (usize, usize, usize)> = BTreeMap::new();
@@ -692,9 +702,21 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
                 &|c| c.discovery == discovery && filter(c) && c.source_opt == c.target_opt,
                 *same_goal,
             );
+            // Present only on corpora built by several compilers.
+            if report.recall.iter().any(other_compiler) {
+                rate(
+                    &format!("{group}, other compiler same level, {discovery}"),
+                    &|c| c.discovery == discovery && filter(c) && other_compiler(c),
+                    *cross_goal,
+                );
+            }
             rate(
                 &format!("{group}, cross opt, {discovery}"),
-                &|c| c.discovery == discovery && filter(c) && c.source_opt != c.target_opt,
+                &|c| {
+                    c.discovery == discovery
+                        && filter(c)
+                        && level(&c.source_opt) != level(&c.target_opt)
+                },
                 *cross_goal,
             );
         }
