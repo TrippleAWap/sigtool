@@ -14,14 +14,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::elf::FileSource;
 use crate::generate::generate;
-use crate::matcher::{scan, MAX_CANDIDATE_STARTS};
+use crate::matcher::{scan_in, Match, ScanContext};
 use crate::merge::{merge, MergeSample};
 use crate::sigfile::Signature;
 use crate::spec::SPEC_VERSION;
@@ -127,6 +127,17 @@ struct Target {
     opt: String,
     source: FileSource,
     functions: BTreeMap<String, u64>,
+    /// Whole-image indexes, built on first use and shared by every scan.
+    context: OnceLock<ScanContext>,
+}
+
+impl Target {
+    fn scan(&self, signature: &Signature, hints: bool) -> Vec<Match> {
+        let context = self
+            .context
+            .get_or_init(|| ScanContext::build(&self.source));
+        scan_in(&self.source, signature, context, hints)
+    }
 }
 
 fn ratio(numerator: usize, denominator: usize) -> f64 {
@@ -161,6 +172,7 @@ fn load_targets(
     corpus: &Path,
     entries: &[Value],
     arches: &BTreeSet<String>,
+    max_functions: usize,
 ) -> Result<Vec<Target>, String> {
     let mut targets = Vec::new();
     for entry in entries {
@@ -187,12 +199,14 @@ fn load_targets(
                     .collect()
             })
             .unwrap_or_default();
+        let functions = limit_functions(functions, max_functions);
         targets.push(Target {
             arch,
             source_file,
             opt,
             source,
             functions,
+            context: OnceLock::new(),
         });
     }
     targets
@@ -228,16 +242,37 @@ fn parallel<T: Send, F: Fn(usize) -> T + Sync>(count: usize, job: F) -> Vec<T> {
         .collect()
 }
 
-fn scan_addresses(source: &FileSource, signature: &Signature, hints: bool) -> Vec<u64> {
-    scan(source, signature, None, MAX_CANDIDATE_STARTS, hints, None)
+/// Keep the first `limit` functions by CRC-32 of the name (0 keeps all). The
+/// choice depends only on names, so every build of a library keeps the same set.
+fn limit_functions(functions: BTreeMap<String, u64>, limit: usize) -> BTreeMap<String, u64> {
+    if limit == 0 || functions.len() <= limit {
+        return functions;
+    }
+    let mut ranked: Vec<(u32, String, u64)> = functions
         .into_iter()
-        .map(|matched| matched.address)
+        .map(|(name, start)| (crc32fast::hash(name.as_bytes()), name, start))
+        .collect();
+    ranked.sort();
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, name, start)| (name, start))
         .collect()
 }
 
 /// Measure the corpus under `corpus` (the directory holding `ground_truth.json`).
 /// `arches` limits the run; empty means every architecture present.
 pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
+    run_with(corpus, arches, 0)
+}
+
+/// [`run`] keeping at most `max_functions` ground-truth functions per binary.
+pub fn run_with(
+    corpus: &Path,
+    arches: &[String],
+    max_functions: usize,
+) -> Result<BenchReport, String> {
+    let clock = std::time::Instant::now();
     let ground_truth_path = corpus.join("ground_truth.json");
     let text = std::fs::read_to_string(&ground_truth_path).map_err(|error| {
         format!(
@@ -252,16 +287,19 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
         corpus,
         document["binaries"].as_array().unwrap_or(&empty),
         &arches,
+        max_functions,
     )?;
     let negatives = load_targets(
         corpus,
         document["negative"].as_array().unwrap_or(&empty),
         &arches,
+        max_functions,
     )?;
     if targets.is_empty() {
         return Err(format!("no corpus binaries under {}", corpus.display()));
     }
 
+    phase(&clock, "load");
     // -- single-arch samples ------------------------------------------------
     let jobs: Vec<(usize, String, u64)> = targets
         .iter()
@@ -298,6 +336,7 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
     let refused = generated.iter().filter(|sample| sample.is_none()).count();
     let samples: Vec<Sample> = generated.into_iter().flatten().collect();
 
+    phase(&clock, "samples");
     // -- merged samples -----------------------------------------------------
     let mut merge_jobs: Vec<(String, String, String, usize, u64, usize, u64)> = Vec::new();
     let find = |arch: &str, file: &str, opt: &str| {
@@ -363,6 +402,7 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
             .or_default() += 1;
     }
 
+    phase(&clock, "merge");
     // -- recall -------------------------------------------------------------
     // (sample index, target index, hints): one scan each.
     let mut recall_jobs: Vec<(usize, usize, bool)> = Vec::new();
@@ -384,14 +424,7 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
         let sample = all[s];
         let target = &targets[t];
         let expected = target.functions[&sample.name];
-        let matches = scan(
-            &target.source,
-            &sample.signature,
-            None,
-            MAX_CANDIDATE_STARTS,
-            hints,
-            None,
-        );
+        let matches = target.scan(&sample.signature, hints);
         let found = matches.iter().any(|m| m.address == expected);
         // Matches are sorted best first; a tie for first is ambiguous.
         let top = matches.first().is_some_and(|m| m.address == expected)
@@ -441,13 +474,9 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
         )
         .collect();
 
+    phase(&clock, "recall");
     // -- false positives ----------------------------------------------------
     // Corpus FP: other source files of the same arch (any arch for merged).
-    let strong: Vec<&Sample> = all
-        .iter()
-        .copied()
-        .filter(|s| s.verdict == "strong")
-        .collect();
     let corpus_targets = |sample: &Sample| -> Vec<&Target> {
         targets
             .iter()
@@ -463,11 +492,17 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
             .filter(|t| sample.arch == MERGED || t.arch == sample.arch)
             .collect()
     };
-    let false_positives = false_positive_cells(&strong, corpus_targets);
-    let negative_false_positives = false_positive_cells(&strong, negative_targets);
-    let any_false_positives = false_positive_cells(&all, corpus_targets);
-    let any_negative_false_positives = false_positive_cells(&all, negative_targets);
+    // Scan every signature once per target set; the strong cells are the
+    // strong subset of the same counts.
+    let corpus_counts = false_positive_counts(&all, corpus_targets);
+    let negative_counts = false_positive_counts(&all, negative_targets);
+    let is_strong: Vec<bool> = all.iter().map(|s| s.verdict == "strong").collect();
+    let false_positives = false_positive_cells(&all, &corpus_counts, Some(&is_strong));
+    let negative_false_positives = false_positive_cells(&all, &negative_counts, Some(&is_strong));
+    let any_false_positives = false_positive_cells(&all, &corpus_counts, None);
+    let any_negative_false_positives = false_positive_cells(&all, &negative_counts, None);
 
+    phase(&clock, "false positives");
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
         signatures: all.len(),
@@ -482,25 +517,37 @@ pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
     })
 }
 
-fn false_positive_cells<'t, F>(strong: &[&Sample], targets_for: F) -> Vec<FalsePositiveCell>
+/// Accepted matches per sample summed over the targets it must not match.
+fn false_positive_counts<'t, F>(samples: &[&Sample], targets_for: F) -> Vec<usize>
 where
     F: Fn(&Sample) -> Vec<&'t Target> + Sync,
 {
-    let jobs: Vec<(usize, &'t Target)> = strong
+    let jobs: Vec<(usize, &'t Target)> = samples
         .iter()
         .enumerate()
         .flat_map(|(index, sample)| targets_for(sample).into_iter().map(move |t| (index, t)))
         .collect();
     let hits = parallel(jobs.len(), |job| {
         let (index, target) = jobs[job];
-        scan_addresses(&target.source, &strong[index].signature, true).len()
+        target.scan(&samples[index].signature, true).len()
     });
-    let mut per_sample = vec![0usize; strong.len()];
+    let mut per_sample = vec![0usize; samples.len()];
     for ((index, _), count) in jobs.iter().zip(hits) {
         per_sample[*index] += count;
     }
+    per_sample
+}
+
+fn false_positive_cells(
+    samples: &[&Sample],
+    counts: &[usize],
+    only: Option<&[bool]>,
+) -> Vec<FalsePositiveCell> {
     let mut cells: BTreeMap<String, FalsePositiveCell> = BTreeMap::new();
-    for (sample, count) in strong.iter().zip(per_sample) {
+    for (index, (sample, count)) in samples.iter().zip(counts).enumerate() {
+        if only.is_some_and(|keep| !keep[index]) {
+            continue;
+        }
         let cell = cells
             .entry(sample.arch.clone())
             .or_insert_with(|| FalsePositiveCell {
@@ -511,7 +558,7 @@ where
             });
         cell.signatures += 1;
         cell.hits += count;
-        if count > 0 {
+        if *count > 0 {
             cell.signatures_with_hits += 1;
         }
     }
@@ -768,6 +815,13 @@ pub fn render(report: &BenchReport) -> String {
         );
     }
     text
+}
+
+/// Phase timing on stderr with `SIGTOOL_BENCH_PROGRESS` set.
+fn phase(clock: &std::time::Instant, done: &str) {
+    if std::env::var_os("SIGTOOL_BENCH_PROGRESS").is_some() {
+        eprintln!("bench: {done} done at {:.1?}", clock.elapsed());
+    }
 }
 
 /// Default corpus location relative to the repository root.

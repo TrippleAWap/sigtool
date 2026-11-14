@@ -684,8 +684,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 10,
-      "top_hits": 10,
+      "hits": 12,
+      "top_hits": 12,
       "attempts": 19
     },
     {
@@ -1224,8 +1224,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 0,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -1233,8 +1233,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -1278,8 +1278,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 0,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -1287,8 +1287,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -1494,8 +1494,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 14
     },
     {
@@ -1512,8 +1512,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 0,
-      "top_hits": 0,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 14
     },
     {
@@ -1530,8 +1530,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 0,
-      "top_hits": 0,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 14
     },
     {
@@ -1818,8 +1818,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 14
     },
     {
@@ -1836,8 +1836,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 14
     },
     {
@@ -1854,8 +1854,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 14
     },
     {
@@ -1872,8 +1872,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 15
     },
     {
@@ -1881,8 +1881,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 1,
       "attempts": 15
     },
     {
@@ -1926,8 +1926,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 1,
+      "top_hits": 1,
       "attempts": 14
     },
     {
@@ -1935,8 +1935,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 1,
       "attempts": 14
     },
     {
@@ -2628,8 +2628,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 14,
-      "top_hits": 14,
+      "hits": 15,
+      "top_hits": 15,
       "attempts": 19
     },
     {
@@ -2646,8 +2646,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -2664,8 +2664,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -2961,8 +2961,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 19
     },
     {
@@ -2979,8 +2979,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 0,
+      "top_hits": 0,
       "attempts": 16
     },
     {
@@ -2997,8 +2997,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 0,
+      "top_hits": 0,
       "attempts": 16
     },
     {

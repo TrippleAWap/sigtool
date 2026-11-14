@@ -193,6 +193,9 @@ struct BenchArgs {
     /// Write the metrics as a new baseline (review the diff)
     #[arg(long = "save-baseline", value_name = "FILE")]
     save_baseline: Option<PathBuf>,
+    /// Keep at most N ground-truth functions per binary (0 = all)
+    #[arg(long = "max-functions", default_value_t = 0)]
+    max_functions: usize,
     /// Allowed recall drop / false-positive increase
     #[arg(long, default_value_t = sigtool_native::bench::DEFAULT_TOLERANCE)]
     tolerance: f64,
@@ -828,7 +831,8 @@ fn round6(value: f64) -> f64 {
 
 fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
     use sigtool_native::bench;
-    let report = bench::run(&args.corpus, &args.arch).map_err(CliError::input)?;
+    let report =
+        bench::run_with(&args.corpus, &args.arch, args.max_functions).map_err(CliError::input)?;
     print!("{}", bench::render(&report));
     let write = |path: &Path, report: &bench::BenchReport| -> Result<(), CliError> {
         let text =
