@@ -137,10 +137,15 @@ pub fn recover<S: ByteSource + ?Sized>(
     }
     let bounds = limits.unwrap_or_default();
 
+    // Without symbols, an unwind-table entry that starts exactly here is
+    // still an authoritative extent: .eh_frame and .pdata record the
+    // function's length, and they survive stripping.
     let hint = if hints {
         source.hint_function(addr)
     } else {
-        None
+        source
+            .unwind_function(addr)
+            .filter(|(start, end)| *start == addr && *end > addr)
     };
     let hinted = hint.is_some_and(|(start, end)| start <= addr && addr < end);
     let function_end = match hint {
@@ -161,7 +166,13 @@ pub fn recover<S: ByteSource + ?Sized>(
         if hinted {
             return false;
         }
-        target != addr && source.name_for_address(target).is_some()
+        // Another unwind entry is another function, symbol or not.
+        target != addr
+            && (source.name_for_address(target).is_some()
+                || source
+                    .unwind_entries()
+                    .binary_search_by_key(&target, |(start, _)| *start)
+                    .is_ok())
     };
 
     let normalizer = Normalizer::new(source);

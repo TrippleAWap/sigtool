@@ -1096,6 +1096,20 @@ fn candidate_starts<S: ByteSource + ?Sized>(
         // improvement (measured in `PLAN.md` section 12).
         hint_starts.extend(code.call_targets.iter().copied());
     }
+    // Unwind entries are exact function starts that survive stripping. The
+    // entry enclosing a landmark is the function that holds it, so it is
+    // tried before anything a backward sweep can only guess.
+    if !use_hints {
+        hint_starts.extend(source.unwind_entries().iter().map(|(start, _)| *start));
+    }
+    let mut enclosing: HashSet<u64> = HashSet::new();
+    let unwind_enclosing = |address: u64| -> Option<u64> {
+        if use_hints {
+            None
+        } else {
+            source.unwind_function(address).map(|(start, _)| start)
+        }
+    };
     // Known starts are only a shortcut when they cover the hit; otherwise the
     // matcher still has to find the enclosing function from the bytes.
     for address in &code_hits {
@@ -1109,6 +1123,10 @@ fn candidate_starts<S: ByteSource + ?Sized>(
                 hint_starts.insert(start);
             }
             None => {
+                if let Some(start) = unwind_enclosing(*address) {
+                    enclosing.insert(start);
+                    continue;
+                }
                 let starts = match &code {
                     Some(code) => code.swept_starts(source, *address),
                     None => swept_starts_from(source, *address),
@@ -1120,6 +1138,10 @@ fn candidate_starts<S: ByteSource + ?Sized>(
     // A const landmark is the instruction that materialises the value; the
     // enclosing function starts at or before it, like any other anchor.
     for reference in const_landmarks {
+        if let Some(start) = unwind_enclosing(reference) {
+            enclosing.insert(start);
+            continue;
+        }
         let starts = match &code {
             Some(code) => code.swept_starts(source, reference),
             None => swept_starts_from(source, reference),
@@ -1140,6 +1162,10 @@ fn candidate_starts<S: ByteSource + ?Sized>(
                     hint_starts.insert(start);
                     continue;
                 }
+                if let Some(start) = unwind_enclosing(*reference) {
+                    enclosing.insert(start);
+                    continue;
+                }
                 let starts = match &code {
                     Some(code) => code.swept_starts(source, *reference),
                     None => swept_starts_from(source, *reference),
@@ -1148,13 +1174,18 @@ fn candidate_starts<S: ByteSource + ?Sized>(
             }
         }
     }
-    if hint_starts.is_empty() && swept_starts.is_empty() {
+    if hint_starts.is_empty() && swept_starts.is_empty() && enclosing.is_empty() {
         return Vec::new();
     }
-    rank(hint_starts, swept_starts, &landmarks)
-        .into_iter()
-        .take(max_candidates)
-        .collect()
+    let mut ordered: Vec<u64> = enclosing.iter().copied().collect();
+    ordered.sort_unstable();
+    ordered.extend(
+        rank(hint_starts, swept_starts, &landmarks)
+            .into_iter()
+            .filter(|start| !enclosing.contains(start)),
+    );
+    ordered.truncate(max_candidates);
+    ordered
 }
 
 /// Code facts gathered in one resynchronizing linear pass over executable areas.
