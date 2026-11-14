@@ -13,7 +13,7 @@
 //!   it when the weighted score and `min_distinct` both pass.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::errors::SelfTestError;
 use crate::features::{extract, Feature, FeatureKind};
@@ -341,6 +341,75 @@ pub struct ScanContext {
     pub references: ReferenceIndex,
     pub code: CodeIndex,
     pub features: FeatureCache,
+    /// Per-image feature frequencies, `[hint-free, hinted]`, built on first use.
+    frequencies: [OnceLock<Option<Frequencies>>; 2],
+}
+
+/// How many of an image's functions carry each feature key.
+#[derive(Debug)]
+pub struct Frequencies {
+    pub functions: usize,
+    pub document_frequency: HashMap<String, u32>,
+}
+
+/// Images with fewer known functions give no usable frequency estimate.
+pub const MIN_FREQUENCY_FUNCTIONS: usize = 32;
+
+/// A match is rejected when more than this many of the image's functions
+/// would be expected to carry all of its matched features by chance.
+pub const MAX_CHANCE_MATCHES: f64 = 1.0;
+
+impl Frequencies {
+    fn build<S: ByteSource + ?Sized>(
+        source: &S,
+        cache: &FeatureCache,
+        hints: bool,
+    ) -> Option<Frequencies> {
+        let starts: Vec<u64> = if hints {
+            source.function_starts()
+        } else {
+            source
+                .unwind_entries()
+                .iter()
+                .map(|(start, _)| *start)
+                .collect()
+        };
+        if starts.len() < MIN_FREQUENCY_FUNCTIONS {
+            return None;
+        }
+        let mut document_frequency: HashMap<String, u32> = HashMap::new();
+        let mut functions = 0usize;
+        for start in starts {
+            let Some(candidate) = cache.get_or_recover(source, start, hints) else {
+                continue;
+            };
+            functions += 1;
+            for key in &candidate.keys {
+                *document_frequency.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+        (functions >= MIN_FREQUENCY_FUNCTIONS).then_some(Frequencies {
+            functions,
+            document_frequency,
+        })
+    }
+
+    /// Expected number of the image's functions that contain every key in
+    /// `matched`, treating features as independent: `N * prod(df / N)`.
+    pub fn chance_matches(&self, matched: &[String]) -> f64 {
+        let total = self.functions as f64;
+        let mut expected = total;
+        for key in matched {
+            let count = self
+                .document_frequency
+                .get(key)
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            expected *= f64::from(count) / total;
+        }
+        expected
+    }
 }
 
 impl ScanContext {
@@ -355,6 +424,7 @@ impl ScanContext {
             references,
             code: CodeIndex::build(source),
             features: FeatureCache::default(),
+            frequencies: [OnceLock::new(), OnceLock::new()],
         }
     }
 }
@@ -369,7 +439,7 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     hints: bool,
 ) -> Vec<Match> {
     let hits = anchor_hits(source, signature);
-    scan_candidates_with(
+    let matches = scan_candidates_with(
         source,
         signature,
         &hits,
@@ -380,7 +450,19 @@ pub fn scan_in<S: ByteSource + ?Sized>(
         Some(&context.code),
         Some(&context.features),
         None,
-    )
+    );
+    // Image-relative specificity: a match made only of features that many of
+    // this image's functions carry (common imports, boilerplate constants,
+    // frequent shape buckets) is coincidence, not identification.
+    let frequencies = context.frequencies[usize::from(hints)]
+        .get_or_init(|| Frequencies::build(source, &context.features, hints));
+    match frequencies {
+        Some(frequencies) => matches
+            .into_iter()
+            .filter(|found| frequencies.chance_matches(&found.matched) <= MAX_CHANCE_MATCHES)
+            .collect(),
+        None => matches,
+    }
 }
 
 /// The candidate starts [`scan_in`] would try, in order. Diagnostic: it
