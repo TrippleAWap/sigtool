@@ -138,6 +138,24 @@ pub trait ByteSource {
     }
 
     /// ARM32 family: whether `addr` decodes as Thumb (default: ARM mode).
+    /// Function entries from the image's unwind tables (`.eh_frame`,
+    /// `.ARM.exidx`, `.pdata`), sorted by start. These survive stripping and
+    /// are not symbol hints, so hint-free discovery may use them.
+    fn unwind_entries(&self) -> &[(u64, u64)] {
+        &[]
+    }
+
+    /// The unwind entry whose function contains `addr`: the greatest start at
+    /// or before it, when the entry's end (if known) is past `addr`.
+    fn unwind_function(&self, addr: u64) -> Option<(u64, u64)> {
+        let entries = self.unwind_entries();
+        let index = entries
+            .partition_point(|(start, _)| *start <= addr)
+            .checked_sub(1)?;
+        let (start, end) = entries[index];
+        (end == 0 || addr < end).then_some((start, end))
+    }
+
     fn is_thumb(&self, _addr: u64) -> bool {
         self.arch() == Arch::Thumb
     }

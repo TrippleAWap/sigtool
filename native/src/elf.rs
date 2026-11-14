@@ -49,6 +49,7 @@ pub struct FileSource {
     bounds: Vec<(u64, u64)>,
     bounds_starts: Vec<u64>,
     thumb_starts: Vec<u64>,
+    unwind: Vec<(u64, u64)>,
 }
 
 impl FileSource {
@@ -84,7 +85,7 @@ impl FileSource {
     }
 
     fn from_pe(data: &[u8], name: &str, arch: Arch) -> Result<FileSource, SourceFormatError> {
-        let parsed = parse_pe(data, name)?;
+        let parsed = parse_pe(data, name, arch)?;
         Ok(FileSource::build(arch, parsed))
     }
 
@@ -97,6 +98,7 @@ impl FileSource {
         let mut thumb_starts = parsed.thumb_starts;
         thumb_starts.sort_unstable();
         thumb_starts.dedup();
+        let unwind = crate::unwind::finish(parsed.unwind, &regions);
         FileSource {
             arch,
             regions,
@@ -104,6 +106,7 @@ impl FileSource {
             bounds,
             bounds_starts,
             thumb_starts,
+            unwind,
         }
     }
 }
@@ -127,6 +130,10 @@ impl ByteSource for FileSource {
 
     fn function_starts(&self) -> Vec<u64> {
         self.bounds.iter().map(|(start, _)| *start).collect()
+    }
+
+    fn unwind_entries(&self) -> &[(u64, u64)] {
+        &self.unwind
     }
 
     fn hint_function(&self, addr: u64) -> Option<(u64, u64)> {
@@ -169,6 +176,7 @@ struct ParsedImage {
     module: Module,
     bounds: Vec<(u64, u64)>,
     thumb_starts: Vec<u64>,
+    unwind: Vec<(u64, u64)>,
 }
 
 // -- little-endian readers ----------------------------------------------------
@@ -483,11 +491,13 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         functions,
         imports,
     };
+    let unwind = crate::unwind::elf_entries(&regions, if is64 { 8 } else { 4 });
     Ok(ParsedImage {
         regions,
         module,
         bounds,
         thumb_starts,
+        unwind,
     })
 }
 
@@ -528,7 +538,7 @@ fn symbol_name(
 
 // -- PE -----------------------------------------------------------------------
 
-fn parse_pe(data: &[u8], name: &str) -> Result<ParsedImage, SourceFormatError> {
+fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFormatError> {
     if data.len() < 0x40 {
         return Err(SourceFormatError("truncated DOS header".into()));
     }
@@ -661,6 +671,23 @@ fn parse_pe(data: &[u8], name: &str) -> Result<ParsedImage, SourceFormatError> {
         }
     }
 
+    // Exception directory (index 3): RUNTIME_FUNCTION entries.
+    let mut unwind = Vec::new();
+    if number_of_dirs > 3 {
+        let pdata_rva = u32_at(data, dirs_offset + 24)? as u64;
+        let pdata_size = u32_at(data, dirs_offset + 28)? as usize;
+        if pdata_rva != 0 && pdata_size != 0 {
+            if let Some(offset) = rva_to_offset(pdata_rva) {
+                let end = offset.saturating_add(pdata_size).min(data.len());
+                unwind = crate::unwind::pdata(
+                    &data[offset.min(end)..end],
+                    image_base,
+                    arch == Arch::Arm64,
+                );
+            }
+        }
+    }
+
     let module_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
     let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
     let module = Module {
@@ -678,6 +705,7 @@ fn parse_pe(data: &[u8], name: &str) -> Result<ParsedImage, SourceFormatError> {
         module,
         bounds: Vec::new(),
         thumb_starts: Vec::new(),
+        unwind,
     })
 }
 

@@ -26,4 +26,5 @@ pub mod score;
 pub mod sigfile;
 pub mod source;
 pub mod spec;
+pub mod unwind;
 pub mod validate;
