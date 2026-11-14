@@ -115,6 +115,28 @@ fn is_simd(operand: &Operand) -> bool {
 }
 
 /// Immediate value and shift for the operand forms an immediate can take.
+/// General-purpose registers an instruction names, read or written.
+fn mentioned_registers(ops: &[Operand; 4]) -> Vec<u16> {
+    let mut registers = Vec::new();
+    for operand in ops {
+        match operand {
+            Operand::Register(_, number)
+            | Operand::RegisterOrSP(_, number)
+            | Operand::RegShift(_, _, _, number)
+            | Operand::RegPreIndex(number, _, _)
+            | Operand::RegPostIndex(number, _) => registers.push(*number),
+            Operand::RegisterPair(_, number) => {
+                registers.extend([*number, number.wrapping_add(1)]);
+            }
+            Operand::RegRegOffset(base, index, _, _, _) | Operand::RegPostIndexReg(base, index) => {
+                registers.extend([*base, *index]);
+            }
+            _ => {}
+        }
+    }
+    registers
+}
+
 fn imm_shift(operand: &Operand) -> Option<(u64, u32)> {
     match operand {
         Operand::Immediate(value) => Some((u64::from(*value), 0)),
@@ -260,6 +282,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             }
             let op = if call { OpClass::Call } else { OpClass::Branch };
             return Insn {
+                consts: state.take_consts(),
                 kind: if call { Kind::Call } else { Kind::Jump },
                 callee: if call {
                     self.callee_name(target, depth)
@@ -271,7 +294,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             };
         }
 
-        let pending = state.take_consts();
+        let mut pending = state.take_consts_in(&mentioned_registers(ops));
         let mut refs: Vec<DataRef> = Vec::new();
 
         // adrp + add/sub: one resolved address, never a constant.
@@ -364,6 +387,11 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             kind = Kind::Trap;
         }
 
+        if kind != Kind::Normal {
+            // Control transfers end the window in which a partial chain can
+            // still be completed; calls also clobber the argument registers.
+            pending.extend(state.take_consts());
+        }
         let mut consts = pending;
         if kind == Kind::Normal {
             consts.extend(arm64_immediate_consts(raw, mnemonic, touches_stack_pointer));
@@ -396,16 +424,22 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         let mask = if width == 8 { MASK64 } else { MASK32 };
         let (immediate, shift) = ops[1..].iter().find_map(imm_shift)?;
 
+        let mut replaced = Vec::new();
         let value = if matches!(&raw.opcode, Opcode::MOVK) {
             let base = state
                 .take(destination.number)
                 .filter(|pending| !pending.is_page)
                 .map_or(0, |pending| pending.value);
             base | ((immediate & 0xFFFF) << shift)
-        } else if matches!(&raw.opcode, Opcode::MOVN) || mnemonic == "movn" {
-            !(immediate << shift)
         } else {
-            immediate << shift
+            // A new chain starts; a value still pending in the register was
+            // complete and is evidence, not something to overwrite silently.
+            replaced = state.take_consts_in(&[destination.number]);
+            if matches!(&raw.opcode, Opcode::MOVN) || mnemonic == "movn" {
+                !(immediate << shift)
+            } else {
+                immediate << shift
+            }
         };
 
         state.insert(
@@ -416,7 +450,10 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 width,
             },
         );
-        Some(Insn::normal(addr, 4, OpClass::Move))
+        Some(Insn {
+            consts: replaced,
+            ..Insn::normal(addr, 4, OpClass::Move)
+        })
     }
 
     pub(crate) fn read_pointer32(&self, addr: u64) -> Option<u64> {

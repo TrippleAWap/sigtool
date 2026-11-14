@@ -51,7 +51,11 @@ const ARM32_CONDITIONAL_JUMPS: &[&str] = &["cbz", "cbnz"];
 enum ArmOp {
     Reg(RegId),
     Imm(i64),
-    Mem { base: RegId, disp: i64 },
+    Mem {
+        base: RegId,
+        index: RegId,
+        disp: i64,
+    },
 }
 
 fn reg_key(reg: RegId) -> u16 {
@@ -140,6 +144,7 @@ fn arm_operands(cs: &Capstone, detail: &capstone::InsnDetail<'_>) -> (Vec<ArmOp>
             ArmOperandType::Imm(value) => ops.push(ArmOp::Imm(i64::from(value))),
             ArmOperandType::Mem(mem) => ops.push(ArmOp::Mem {
                 base: mem.base(),
+                index: mem.index(),
                 disp: i64::from(mem.disp()),
             }),
             _ => {}
@@ -153,6 +158,22 @@ fn arm_target(ops: &[ArmOp]) -> Option<u64> {
         ArmOp::Imm(value) => Some(*value as u64),
         _ => None,
     })
+}
+
+/// Registers an instruction names, read or written, as `ArmState` keys.
+fn mentioned_registers(ops: &[ArmOp]) -> Vec<u16> {
+    let mut registers = Vec::new();
+    for operand in ops {
+        match operand {
+            ArmOp::Reg(reg) => registers.push(reg_key(*reg)),
+            ArmOp::Mem { base, index, .. } => {
+                registers.push(reg_key(*base));
+                registers.push(reg_key(*index));
+            }
+            ArmOp::Imm(_) => {}
+        }
+    }
+    registers
 }
 
 fn touches_stack_pointer(ops: &[ArmOp]) -> bool {
@@ -381,6 +402,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 (ops.first(), ops.get(1))
             {
                 let value = (!(immediate as u64 & MASK32)) & MASK32;
+                let replaced = state.take_consts_in(&[reg_key(destination)]);
                 state.insert(
                     reg_key(destination),
                     PendingValue {
@@ -389,7 +411,10 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                         width: 4,
                     },
                 );
-                return Insn::normal(addr, size, OpClass::Move);
+                return Insn {
+                    consts: replaced,
+                    ..Insn::normal(addr, size, OpClass::Move)
+                };
             }
         }
 
@@ -406,8 +431,19 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             }
         }
 
-        let pending = state.take_consts();
         let mut refs: Vec<DataRef> = Vec::new();
+        // PIC code pools a PC-relative offset and then adds the PC to it; the
+        // pooled offset must reach the add as an address, not flush first as
+        // a constant (that leaked a build-specific offset and lost the string).
+        let pc_arithmetic = mnemonic != "adr"
+            && ["add", "sub", "rsb"]
+                .iter()
+                .any(|prefix| mnemonic.starts_with(prefix));
+        if pc_arithmetic {
+            self.arm32_pc_add(ops, &mnemonic, addr, thumb, state, &mut refs);
+        }
+
+        let mut pending = state.take_consts_in(&mentioned_registers(ops));
         let mut callee: Option<String> = None;
         let mut target: Option<u64> = None;
         let mut kind = Kind::Normal;
@@ -422,7 +458,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             }
         } else {
             pool_end = self.arm32_literal_load(ops, &mnemonic, addr, thumb, state, &mut refs);
-            if pool_end == 0 {
+            if pool_end == 0 && !pc_arithmetic {
                 self.arm32_pc_add(ops, &mnemonic, addr, thumb, state, &mut refs);
             }
             if mnemonic == "pop"
@@ -482,6 +518,11 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             }
         }
 
+        if kind != Kind::Normal {
+            // Control transfers end the window in which a partial value can
+            // still be completed; calls also clobber the argument registers.
+            pending.extend(state.take_consts());
+        }
         let mut consts = pending;
         if kind == Kind::Normal {
             consts.extend(arm32_immediate_consts(ops));
@@ -527,6 +568,9 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         } else {
             (immediate as u64) & 0xFFFF
         };
+        // `movw` starts a new value; one still pending in the register was
+        // complete and is evidence, not something to overwrite silently.
+        let replaced = state.take_consts_in(&[reg_key(destination)]);
         state.insert(
             reg_key(destination),
             PendingValue {
@@ -535,7 +579,10 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 width: 4,
             },
         );
-        Some(Insn::normal(addr, size, OpClass::Move))
+        Some(Insn {
+            consts: replaced,
+            ..Insn::normal(addr, size, OpClass::Move)
+        })
     }
 
     /// Resolve `ldr rd, [pc, #imm]` against the function's literal pool.
@@ -557,7 +604,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             return 0;
         }
         for (index, operand) in ops.iter().enumerate() {
-            let ArmOp::Mem { base, disp } = operand else {
+            let ArmOp::Mem { base, disp, .. } = operand else {
                 continue;
             };
             if *base != PC {
@@ -619,7 +666,9 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             ArmOp::Imm(value) => Some(*value as u64),
             _ => None,
         });
-        for operand in ops.iter().skip(1) {
+        // The Thumb two-operand form `add rd, pc` reads the offset from `rd`.
+        let sources = if ops.len() == 2 { 0 } else { 1 };
+        for operand in ops.iter().skip(sources) {
             let ArmOp::Reg(register) = operand else {
                 continue;
             };
@@ -632,10 +681,14 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             if held.is_page {
                 continue;
             }
+            // Only literal loads and `adr` see the word-aligned PC; a Thumb
+            // register add reads it unaligned, so the PIC `add rd, pc` would
+            // otherwise land two bytes early whenever it sits at addr % 4 == 2.
+            let register_base = if thumb { addr + 4 } else { base };
             let resolved = if subtracting {
-                base.wrapping_sub(held.value)
+                register_base.wrapping_sub(held.value)
             } else {
-                base.wrapping_add(held.value)
+                register_base.wrapping_add(held.value)
             } & MASK32;
             refs.push(DataRef {
                 addr: resolved,

@@ -64,10 +64,6 @@
      "value": "loops:0"
     },
     {
-     "kind": "const",
-     "value": "0xfffeff0a"
-    },
-    {
      "kind": "ops",
      "value": "arith:1"
     },
@@ -86,6 +82,10 @@
     {
      "kind": "ops",
      "value": "stack:1"
+    },
+    {
+     "kind": "str",
+     "value": "direct banner literal"
     }
    ],
    "loops": 0
@@ -706,10 +706,6 @@
      "value": "loops:0"
     },
     {
-     "kind": "const",
-     "value": "0xfffefd62"
-    },
-    {
      "kind": "ops",
      "value": "arith:1"
     },
@@ -728,6 +724,10 @@
     {
      "kind": "ops",
      "value": "stack:1"
+    },
+    {
+     "kind": "str",
+     "value": "w:wide banner literal"
     }
    ],
    "loops": 0

@@ -58,10 +58,6 @@
      "value": "loops:0"
     },
     {
-     "kind": "const",
-     "value": "0xfffeff44"
-    },
-    {
      "kind": "ops",
      "value": "arith:1"
     },
@@ -72,6 +68,10 @@
     {
      "kind": "ops",
      "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "direct banner literal"
     }
    ],
    "loops": 0
@@ -236,10 +236,6 @@
     {
      "kind": "const",
      "value": "0x7"
-    },
-    {
-     "kind": "const",
-     "value": "0xfffeff20"
     },
     {
      "kind": "const",
@@ -481,19 +477,11 @@
     },
     {
      "kind": "const",
-     "value": "0x79b9"
+     "value": "0x7f4a7c15"
     },
     {
      "kind": "const",
-     "value": "0x7c15"
-    },
-    {
-     "kind": "const",
-     "value": "0x7f4a0000"
-    },
-    {
-     "kind": "const",
-     "value": "0x9e370000"
+     "value": "0x9e3779b9"
     },
     {
      "kind": "ops",
@@ -628,10 +616,6 @@
      "value": "loops:0"
     },
     {
-     "kind": "const",
-     "value": "0xfffefee8"
-    },
-    {
      "kind": "ops",
      "value": "arith:1"
     },
@@ -642,6 +626,10 @@
     {
      "kind": "ops",
      "value": "ret:1"
+    },
+    {
+     "kind": "str",
+     "value": "w:wide banner literal"
     }
    ],
    "loops": 0

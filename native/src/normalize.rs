@@ -196,6 +196,25 @@ impl ArmState {
         values
     }
 
+    /// Consume the pending constants held in `registers` only.
+    ///
+    /// Compilers schedule other work between the halves of a `movw`/`movt`
+    /// pair or a `movz`/`movk` chain, so an instruction that does not name a
+    /// register must leave that register's partial value pending; flushing it
+    /// would split one constant into two unrelated fragments.
+    pub(crate) fn take_consts_in(&mut self, registers: &[u16]) -> Vec<u64> {
+        let mut values: Vec<u64> = Vec::new();
+        self.values.retain(|(register, pending)| {
+            if pending.is_page || !registers.contains(register) {
+                return true;
+            }
+            values.push(canonical_const(pending.value, pending.width));
+            false
+        });
+        values.sort_unstable();
+        values
+    }
+
     pub(crate) fn clear(&mut self) {
         self.values.clear();
     }

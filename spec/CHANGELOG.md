@@ -148,3 +148,13 @@ emits the old form, so `SPEC_VERSION` is not bumped here and the
   the 32-bit form of small negative values.
 * The hint-free code index keys constants by the same words, so a decoded
   `movabs` still lands on a signature anchored on either half.
+* A partial `movw`/`movt` or `movz`/`movk` value stays pending until an
+  instruction names its register (or a new materialization replaces it, a
+  control transfer, or the block end), instead of flushing at the next
+  unrelated instruction. clang `-O2`/`-Os` schedule other work between the
+  halves, which split `0x7f4a7c15` into `0x7c15` and `0x7f4a0000` on ARM32
+  and Thumb.
+* ARM32/Thumb PIC `add rd, pc, rm` and `add rd, pc` consume the pooled offset
+  as an address before pending constants flush, with the unaligned Thumb PC
+  for the register form. Previously the offset leaked as a build-specific
+  `const` (`0xfffeff36`) and the string it addressed was lost.

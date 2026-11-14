@@ -78,9 +78,15 @@ Rule 4 of AGENTS.md: **no absolute address may appear in a feature.**
   The referenced cell extends the function bounds, because arm32 pools sit
   inline after the last instruction and symbol sizes count them.
 * ARM32/Thumb `add rd, pc, rm` (and the Thumb two-operand `add rd, pc`) resolves
-  against a previously pooled offset, like the AArch64 `adrp`+`add` pair.
+  against a previously pooled offset, like the AArch64 `adrp`+`add` pair. The
+  register form reads the PC unaligned (Thumb `addr + 4`, ARM `addr + 8`). The
+  pooled offset is consumed as an address, never flushed as a constant.
 * ARM32 `movw`/`movt` pairs and `mvn rd, #imm` collapse into one constant each,
-  matching AArch64 `movz`/`movk` chains and `movn`.
+  matching AArch64 `movz`/`movk` chains and `movn`. A partial value stays
+  pending in its register until an instruction names that register, a new
+  `movw`/`movz`/`mov`/`movn`/`mvn` replaces it, a control transfer, or the block
+  end; an instruction that does not name the register leaves it pending, so a
+  pair the compiler scheduled apart still collapses into one constant.
 * Absolute x86 displacements and immediates are used only when they fall inside
   a mapped module, and then only as data references.
 * A constant whose value lies inside a mapped module is dropped entirely.
