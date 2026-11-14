@@ -584,3 +584,31 @@ implemented, including native `merge` and all four target architectures.
   at address-space scale, and the M6 live-process workload (98 s Python full
   pass over a 44 MiB address space) still has no native counterpart because
   there is no native PID source.
+- Function starts on stripped images are synthesized where unwind tables are
+  incomplete (`native/src/starts.rs`, merged into `FileSource::unwind_entries`;
+  table entries win, `.eh_frame` extents stay authoritative, `.ARM.exidx`
+  ends are recomputed from the merged list). Evidence kept, with its measured
+  precision against `.symtab` on the real corpus: `.dynsym` function values and
+  relative relocations into code (1.000 on ARM; 0.93 on x64/arm64, where lua's
+  computed-goto label tables point inside `luaV_execute`), `bl`/`blx` targets
+  whose implied mode agrees with the mode map (0.998-1.000), and the first
+  instruction after a terminator, alignment padding, and literal pools (pools
+  found from `ldr`/`ldrd`/`vldr [pc]`, `tbb`/`tbh` and ARM jump tables skipped)
+  when it opens with a frame-saving prologue and no conditional branch targets
+  it (0.999-1.000). Dropped: the same position without a prologue (0.19-0.99,
+  case blocks after `b`/`pop {pc}` look like leaf functions; +2% recall at
+  0.963 precision on thumb gcc) and prologue patterns alone (0.87-0.95,
+  shrink-wrapping). Start recall/precision on stripped images, before -> after:
+  arm32 clang 0.669/1.000 -> 0.996/1.000, arm32 gcc 0.001 -> 0.951/0.999, thumb
+  clang 0.657/0.999 -> 0.978/0.999, thumb gcc 0.001 -> 0.956/0.999; x64 and
+  arm64 stay at 1.000 recall and gain only crt stubs (`_init`, `frame_dummy`)
+  that have no FDE. Without any table (simulated by ignoring it), arm64 reaches
+  0.98 recall at 0.97 precision. Hint-free ARM bench (`--max-functions 4`):
+  same-arch same-opt top-1 0.246 -> 0.725, cross-arch same-opt top-1 0.058 ->
+  0.183, but hint-free any-verdict FP rises from 33/120 to 36/120 (arm32) and
+  26/120 to 31/120 (thumb): more exact candidates also give chance matches
+  more chances, which belongs to matcher acceptance. On x64 and arm64 every
+  recall cell and both hint-free FP rates are unchanged (x64 20/120, arm64
+  23/120; only total chance hits move, 476 -> 432 and 1323 -> 1355). PE and x64
+  sweeps are not implemented (`.pdata` and `.eh_frame` are complete on the
+  corpus).
