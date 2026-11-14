@@ -171,7 +171,7 @@ struct ScanArgs {
 
 #[derive(Args)]
 struct MergeArgs {
-    /// One sample: image path and function address (repeatable, at least two)
+    /// One sample: FILE:ADDR (absolute) or FILE:+RVA (from the image base); repeatable, at least two
     #[arg(long = "sample", value_name = "FILE:ADDR", required = true)]
     sample: Vec<String>,
     /// Signature name (default: the first sample's symbol)
@@ -472,7 +472,18 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
             )));
         };
         let source = load_file(Path::new(path))?;
-        let addr = parse_address(addr_text, "--sample")?;
+        // `FILE:+RVA` is relative to the image base, the form a disassembler
+        // with a rebased database can always supply.
+        let addr = match addr_text.strip_prefix('+') {
+            Some(rva_text) => {
+                let rva = parse_address(rva_text, "--sample")?;
+                let Some(module) = source.modules().first() else {
+                    return Err(CliError::input(format!("{path} has no module")));
+                };
+                module.base.wrapping_add(rva)
+            }
+            None => parse_address(addr_text, "--sample")?,
+        };
         if !source.is_mapped(addr, 1) {
             return Err(CliError::input(format!(
                 "address 0x{addr:x} is not mapped in {path}"
@@ -591,6 +602,15 @@ fn match_document(
                 "end".to_string(),
                 Value::String(format!("0x{:x}", matched.end)),
             );
+            // Front-ends that load the image at another base (a rebased IDB, a
+            // live process) map a match back through module and rva.
+            if let Some(module) = source.module_for(matched.address) {
+                entry.insert("module".to_string(), Value::String(module.name.clone()));
+                entry.insert(
+                    "rva".to_string(),
+                    Value::String(format!("0x{:x}", module.rva(matched.address))),
+                );
+            }
             entry.insert("score".to_string(), json_number(matched.score));
             entry.insert(
                 "label".to_string(),
