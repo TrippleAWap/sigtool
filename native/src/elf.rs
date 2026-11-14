@@ -57,6 +57,7 @@ pub struct FileSource {
     module: Module,
     bounds: Vec<(u64, u64)>,
     bounds_starts: Vec<u64>,
+    local_symbols: bool,
     thumb_starts: Vec<u64>,
     /// ARM32 images without `.symtab`: mode from surviving pointers and code.
     mode_map: Option<ModeMap>,
@@ -121,6 +122,7 @@ impl FileSource {
             module: parsed.module,
             bounds,
             bounds_starts,
+            local_symbols: parsed.local_symbols,
             thumb_starts,
             mode_map,
             unwind,
@@ -176,6 +178,10 @@ impl ByteSource for FileSource {
 
     fn function_starts(&self) -> Vec<u64> {
         self.bounds.iter().map(|(start, _)| *start).collect()
+    }
+
+    fn symbols_stripped(&self) -> bool {
+        !self.local_symbols
     }
 
     fn unwind_entries(&self) -> &[(u64, u64)] {
@@ -264,6 +270,8 @@ struct ParsedImage {
     regions: Vec<Region>,
     module: Module,
     bounds: Vec<(u64, u64)>,
+    /// `.symtab` names functions, so symbol hints cover local code too.
+    local_symbols: bool,
     thumb_starts: Vec<u64>,
     /// Set for a linked ARM32 image without `.symtab` function symbols: every
     /// surviving pointer to code whose low bit still encodes the mode.
@@ -695,6 +703,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         regions,
         module,
         bounds,
+        local_symbols: symtab_functions,
         thumb_starts,
         code_pointers,
         unwind,
@@ -1052,6 +1061,7 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         regions,
         module,
         bounds: Vec::new(),
+        local_symbols: false,
         thumb_starts: Vec::new(),
         code_pointers: None,
         unwind: metadata.unwind,

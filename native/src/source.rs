@@ -142,6 +142,14 @@ pub trait ByteSource {
         Vec::new()
     }
 
+    /// An image file whose symbols name only exports (`strip --strip-all`,
+    /// or a PE file): symbol hints miss every local function, so front-ends
+    /// default to hint-free discovery. Live processes answer `false`: their
+    /// `.pdata` bounds already serve as hints.
+    fn symbols_stripped(&self) -> bool {
+        false
+    }
+
     /// ARM32 family: whether `addr` decodes as Thumb (default: ARM mode).
     /// Function entries from the image's unwind tables (`.eh_frame`,
     /// `.ARM.exidx`, `.pdata`), sorted by start. These survive stripping and

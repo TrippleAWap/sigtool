@@ -209,3 +209,109 @@ fn shared_object_keeps_small_constants_and_reports_symbol_rvas() {
         "{yaml}"
     );
 }
+
+/// `locate` on a stripped image: `auto` discovery must fall back to
+/// hint-free scanning, because the few dynamic symbols left do not name the
+/// function, and hinted discovery has nothing else to start from.
+#[test]
+fn locate_finds_a_local_function_in_a_stripped_image() {
+    let has = |tool: &str| {
+        Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
+        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sigtool-strip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("local.c");
+    let image = dir.join("liblocal.so");
+    let stripped = dir.join("liblocal.stripped.so");
+    std::fs::write(
+        &source,
+        "__attribute__((noinline)) static unsigned mix(unsigned x, unsigned y) {\n\
+         \x20   unsigned h = x * 0x85ebca6bu;\n\
+         \x20   for (unsigned i = 0; i < y; i++) h = (h ^ (h >> 13)) * 0xc2b2ae35u + i;\n\
+         \x20   return h ^ 0x27d4eb2fu;\n\
+         }\n\
+         unsigned exported(unsigned x) { return mix(x, 7) + mix(x + 1, 3); }\n",
+    )
+    .unwrap();
+    let built = Command::new("clang")
+        .args([
+            "--target=x86_64-linux-gnu",
+            "-O2",
+            "-fPIC",
+            "-shared",
+            "-nostdlib",
+            "-fuse-ld=lld",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&image)
+        .status()
+        .expect("run clang");
+    assert!(built.success(), "clang failed to build the shared object");
+    let strip = Command::new("llvm-strip")
+        .arg("--strip-all")
+        .arg(&image)
+        .arg("-o")
+        .arg(&stripped)
+        .status()
+        .expect("run llvm-strip");
+    assert!(strip.success(), "llvm-strip failed");
+    let symbols = Command::new("llvm-nm")
+        .arg(&image)
+        .output()
+        .expect("run llvm-nm");
+    let symbols = String::from_utf8(symbols.stdout).expect("utf-8");
+    let address = symbols
+        .lines()
+        .find(|line| line.ends_with(" mix"))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|text| u64::from_str_radix(text, 16).ok())
+        .expect("mix in llvm-nm output");
+
+    let signature = dir.join("mix.yaml");
+    run(&[
+        "gen",
+        "--file",
+        image.to_str().unwrap(),
+        "--addr",
+        &format!("0x{address:x}"),
+        "--output",
+        signature.to_str().unwrap(),
+    ]);
+    let json = dir.join("matches.json");
+    let locate = |image: &Path| {
+        let output = Command::new(env!("CARGO_BIN_EXE_sigtool-native"))
+            .args(["locate", "--signature", signature.to_str().unwrap()])
+            .args(["--file", image.to_str().unwrap()])
+            .args(["--json", json.to_str().unwrap(), "--yes"])
+            .output()
+            .expect("run sigtool-native");
+        assert!(output.status.success(), "locate {}", image.display());
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let unstripped_mode = locate(&image);
+    let stripped_mode = locate(&stripped);
+    assert!(
+        unstripped_mode.contains("hinted discovery"),
+        "{unstripped_mode}"
+    );
+    assert!(
+        stripped_mode.contains("hint-free discovery"),
+        "{stripped_mode}"
+    );
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    for path in [&source, &image, &stripped, &signature, &json] {
+        std::fs::remove_file(path).ok();
+    }
+    std::fs::remove_dir(&dir).ok();
+    let best = document["matches"][0]["address"].as_str().unwrap_or("");
+    assert_eq!(best, format!("0x{address:x}"), "{document}");
+}

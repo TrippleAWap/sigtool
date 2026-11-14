@@ -41,7 +41,7 @@ use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate, GenerateError, GenerationResult};
-use sigtool_native::matcher::{scan, Match};
+use sigtool_native::matcher::{scan, scan_in, Match, ScanContext};
 use sigtool_native::merge::{merge, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
 use sigtool_native::scanner::{ScanHit, SignatureScanner};
@@ -143,6 +143,12 @@ struct LocateArgs {
     /// Do not prompt for confirmation of the best match
     #[arg(long)]
     yes: bool,
+    /// Discovery mode: `hinted` uses the image's symbols and function bounds;
+    /// `hint-free` uses only what survives stripping (unwind tables, dynamic
+    /// symbols, relocations, code); `auto` picks hint-free for image files
+    /// without `.symtab` function symbols (stripped ELF, PE)
+    #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
+    discovery: String,
 }
 
 #[derive(Args)]
@@ -167,6 +173,12 @@ struct ScanArgs {
     /// Write the hit list as JSON
     #[arg(long, value_name = "FILE")]
     json: Option<PathBuf>,
+    /// Discovery mode: `hinted` uses the image's symbols and function bounds;
+    /// `hint-free` uses only what survives stripping (unwind tables, dynamic
+    /// symbols, relocations, code); `auto` picks hint-free for image files
+    /// without `.symtab` function symbols (stripped ELF, PE)
+    #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
+    discovery: String,
 }
 
 #[derive(Args)]
@@ -532,7 +544,16 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     let signature = load_signature(&args.signature)?;
     let target = load_target(args.file.as_deref(), args.pid)?;
     let source = target.as_ref();
-    let matches = scan(source, &signature, None, 256, true, None);
+    let hints = use_hints(source, &args.discovery);
+    eprintln!(
+        "sigtool-native: {} discovery",
+        if hints { "hinted" } else { "hint-free" }
+    );
+    let matches = if hints {
+        scan(source, &signature, None, 256, true, None)
+    } else {
+        scan_in(source, &signature, &ScanContext::build(source), false)
+    };
 
     if let Some(path) = &args.json {
         let document = match_document(source, &signature, &matches);
@@ -650,14 +671,18 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             .collect::<Result<Vec<_>, _>>()?
     };
 
-    let mut scanner = SignatureScanner::new(source, signatures, None, None)
-        .map_err(|error| CliError::input(error.to_string()))?;
-    let report = scanner.scan_pass();
+    let hits = if use_hints(source, &args.discovery) {
+        let mut scanner = SignatureScanner::new(source, signatures, None, None)
+            .map_err(|error| CliError::input(error.to_string()))?;
+        scanner.scan_pass().hits
+    } else {
+        hint_free_hits(source, &signatures)?
+    };
 
     if let Some(path) = &args.json {
-        write_json(path, &scan_document(source, &report.hits))?;
+        write_json(path, &scan_document(source, &hits))?;
     }
-    for hit in &report.hits {
+    for hit in &hits {
         let where_ = source
             .label_for_address(hit.address)
             .unwrap_or_else(|| hit.region.clone());
@@ -666,11 +691,53 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             hit.name, hit.address, hit.score, where_
         );
     }
-    if report.hits.is_empty() {
+    if hits.is_empty() {
         eprintln!("sigtool-native: no accepted matches in the target");
         return Ok(EXIT_NOT_FOUND);
     }
     Ok(EXIT_OK)
+}
+
+/// Whether a scan uses the image's symbol hints. `auto` drops them for a
+/// stripped image: its dynamic symbols name only exports, and on the stripped
+/// real corpus hinted discovery found about half as many functions as
+/// hint-free (cross-arch top-1 0.158 vs 0.293).
+fn use_hints(source: &dyn ByteSource, discovery: &str) -> bool {
+    match discovery {
+        "hinted" => true,
+        "hint-free" => false,
+        _ => !source.symbols_stripped(),
+    }
+}
+
+/// Every signature against one shared hint-free context, best match first
+/// per signature, in signature order.
+fn hint_free_hits(
+    source: &dyn ByteSource,
+    signatures: &[Signature],
+) -> Result<Vec<ScanHit>, CliError> {
+    let context = ScanContext::build(source);
+    let mut hits = Vec::new();
+    for signature in signatures {
+        let signature_id = signature
+            .signature_id()
+            .map_err(|error| CliError::input(error.to_string()))?;
+        for matched in scan_in(source, signature, &context, false) {
+            hits.push(ScanHit {
+                signature_id: signature_id.clone(),
+                name: signature.name.clone(),
+                address: matched.address,
+                end: matched.end,
+                score: matched.score,
+                region: source
+                    .region_for(matched.address)
+                    .map(|region| region.name.clone())
+                    .unwrap_or_default(),
+                first_seen: 0,
+            });
+        }
+    }
+    Ok(hits)
 }
 
 fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, Value> {
