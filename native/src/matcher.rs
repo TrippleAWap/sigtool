@@ -1217,11 +1217,17 @@ fn candidate_starts<S: ByteSource + ?Sized>(
         hint_starts.extend(source.unwind_entries().iter().map(|(start, _)| *start));
     }
     let mut enclosing: HashSet<u64> = HashSet::new();
+    // Only an entry with a known end proves it encloses the address. The
+    // last synthesized start (no table, no next start) is open-ended, and
+    // trusting it would replace every sweep in the image with one guess.
     let unwind_enclosing = |address: u64| -> Option<u64> {
         if use_hints {
             None
         } else {
-            source.unwind_function(address).map(|(start, _)| start)
+            source
+                .unwind_function(address)
+                .filter(|(_, end)| *end != 0)
+                .map(|(start, _)| start)
         }
     };
     // Known starts are only a shortcut when they cover the hit; otherwise the

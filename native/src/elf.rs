@@ -14,6 +14,7 @@ use crate::arch::{detect, Arch};
 use crate::arm_mode::ModeMap;
 use crate::errors::{ReadError, SourceFormatError};
 use crate::source::{read_regions, ByteSource, Module, Region};
+use crate::starts;
 
 pub const ELF_PLACE_BASE: u64 = 0x1000_0000;
 
@@ -28,6 +29,11 @@ const ELF_SHF_EXECINSTR: u64 = 0x4;
 const ELF_STT_FUNC: u8 = 2;
 const ELF_ET_REL: u16 = 1;
 const R_ARM_RELATIVE: u64 = 23;
+/// Fewest synthesized starts that stand in for a missing unwind table; the
+/// same floor as `matcher::MIN_FREQUENCY_FUNCTIONS`.
+const MIN_SYNTHESIZED_STARTS: usize = crate::matcher::MIN_FREQUENCY_FUNCTIONS;
+const R_X86_64_RELATIVE: u64 = 8;
+const R_AARCH64_RELATIVE: u64 = 1027;
 
 const PE_SECTION_HEADER_SIZE: usize = 40;
 
@@ -53,7 +59,9 @@ pub struct FileSource {
     thumb_starts: Vec<u64>,
     /// ARM32 images without `.symtab`: mode from surviving pointers and code.
     mode_map: Option<ModeMap>,
+    /// Unwind-table entries merged with synthesized starts, sorted.
     unwind: Vec<(u64, u64)>,
+    synthesized: Vec<u64>,
 }
 
 impl FileSource {
@@ -106,7 +114,7 @@ impl FileSource {
         let mode_map = parsed
             .code_pointers
             .map(|pointers| ModeMap::build(&regions, &pointers));
-        FileSource {
+        let mut source = FileSource {
             arch,
             regions,
             module: parsed.module,
@@ -115,7 +123,36 @@ impl FileSource {
             thumb_starts,
             mode_map,
             unwind,
+            synthesized: Vec::new(),
+        };
+        if let Some(pointers) = parsed.start_pointers {
+            // Decoding needs the finished mode map, so this runs last.
+            let found = starts::evidence(arch, &source.regions, &pointers, &|a| source.is_thumb(a));
+            let mut synthesized = starts::synthesize(&found);
+            // With no table, a few synthesized starts (a section start, a
+            // couple of call targets) are not a function list: hint-free
+            // discovery would compare only those instead of sweeping, and the
+            // chance gate cannot judge matches over so few functions.
+            if source.unwind.is_empty() && synthesized.len() < MIN_SYNTHESIZED_STARTS {
+                synthesized.clear();
+            }
+            let merged = starts::merge(&source.unwind, &synthesized, parsed.unwind_exact_ends);
+            let table: std::collections::HashSet<u64> =
+                source.unwind.iter().map(|(start, _)| *start).collect();
+            source.synthesized = merged
+                .iter()
+                .map(|(start, _)| *start)
+                .filter(|start| !table.contains(start))
+                .collect();
+            source.unwind = merged;
         }
+        source
+    }
+
+    /// Entries in [`ByteSource::unwind_entries`] that no unwind table gave,
+    /// synthesized from code evidence (`starts`), sorted.
+    pub fn synthesized_starts(&self) -> &[u64] {
+        &self.synthesized
     }
 }
 
@@ -191,6 +228,11 @@ struct ParsedImage {
     /// surviving pointer to code whose low bit still encodes the mode.
     code_pointers: Option<Vec<u64>>,
     unwind: Vec<(u64, u64)>,
+    /// Whether table entries carry exact lengths (see `starts::merge`).
+    unwind_exact_ends: bool,
+    /// Linked ELF images: code pointers that survive stripping, the evidence
+    /// for synthesized function starts. `None` disables synthesis.
+    start_pointers: Option<Vec<u64>>,
 }
 
 // -- little-endian readers ----------------------------------------------------
@@ -364,6 +406,10 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     let mut symbols: Vec<(String, u64, u8, u16, u64)> = Vec::new();
     let mut tables: HashMap<usize, (Vec<u8>, Vec<u8>)> = HashMap::new();
     let mut symtab_functions = false;
+    // Pointers to code that survive `strip --strip-all`: exported function
+    // values (Thumb bit kept) and relative relocation targets. Evidence for
+    // synthesized function starts; `.symtab` is a hint and is not used.
+    let mut start_pointers: Vec<u64> = Vec::new();
     for (index, section) in sections.iter().enumerate() {
         if section.kind != ELF_SHT_SYMTAB && section.kind != ELF_SHT_DYNSYM {
             continue;
@@ -408,6 +454,13 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
             if section.kind == ELF_SHT_SYMTAB && st_info & 0xF == ELF_STT_FUNC && st_shndx != 0 {
                 symtab_functions = true;
             }
+            if section.kind == ELF_SHT_DYNSYM
+                && st_info & 0xF == ELF_STT_FUNC
+                && st_shndx != 0
+                && start_pointers.len() < crate::unwind::MAX_UNWIND_ENTRIES
+            {
+                start_pointers.push(st_value);
+            }
             if st_shndx != 0 && !symbol_name.is_empty() {
                 symbols.push((symbol_name, st_value, st_info, st_shndx, st_size));
             }
@@ -449,6 +502,21 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                 && r_info & 0xff == R_ARM_RELATIVE
             {
                 relative_slots.push(r_offset);
+                continue;
+            }
+            let relative = match arch {
+                Arch::X64 => R_X86_64_RELATIVE,
+                Arch::Arm64 => R_AARCH64_RELATIVE,
+                _ => u64::MAX,
+            };
+            if is64
+                && e_type != ELF_ET_REL
+                && section.kind == ELF_SHT_RELA
+                && r_info & 0xffff_ffff == relative
+            {
+                if start_pointers.len() < 2 * crate::unwind::MAX_UNWIND_ENTRIES {
+                    start_pointers.push(u64_at(&raw, offset + 16)?);
+                }
                 continue;
             }
             let symbol_index = if is64 { r_info >> 32 } else { r_info >> 8 };
@@ -521,6 +589,19 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         imports,
     };
     let unwind = crate::unwind::elf_entries(&regions, if is64 { 8 } else { 4 });
+    // `.ARM.exidx` ends are only the next entry's start; `.eh_frame` lengths
+    // are exact.
+    let unwind_exact_ends = !regions.iter().any(|region| region.name == ".ARM.exidx");
+    if arch == Arch::Arm32 && e_type != ELF_ET_REL {
+        start_pointers.extend(
+            relative_slots
+                .iter()
+                .take(crate::unwind::MAX_UNWIND_ENTRIES)
+                .filter_map(|slot| read_regions(&regions, *slot, 4).ok())
+                .map(|word| u64::from(u32::from_le_bytes([word[0], word[1], word[2], word[3]]))),
+        );
+    }
+    let start_pointers = (e_type != ELF_ET_REL).then_some(start_pointers);
     // Stripping removes `.symtab` (local functions and mapping symbols), so
     // the ELF symbol bit no longer covers most code. Dynamic symbols and
     // `R_ARM_RELATIVE` function pointers keep the bit; see `arm_mode`.
@@ -544,6 +625,8 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         thumb_starts,
         code_pointers,
         unwind,
+        unwind_exact_ends,
+        start_pointers,
     })
 }
 
@@ -753,6 +836,9 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         thumb_starts: Vec::new(),
         code_pointers: None,
         unwind,
+        // `.pdata` lengths are exact; PE start synthesis is not measured yet.
+        unwind_exact_ends: true,
+        start_pointers: None,
     })
 }
 
