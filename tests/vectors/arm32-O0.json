@@ -102,10 +102,6 @@
      "value": "compute"
     },
     {
-     "kind": "callee",
-     "value": "fixture+0x10270"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:5"
     },
@@ -267,10 +263,6 @@
    "end": 132148,
    "entry": 131952,
    "features": [
-    {
-     "kind": "callee",
-     "value": "fixture+0x10334"
-    },
     {
      "kind": "cfg",
      "value": "blocks:4"
@@ -442,10 +434,6 @@
    "entry": 131764,
    "features": [
     {
-     "kind": "callee",
-     "value": "fixture+0x101e0"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:4"
     },
@@ -615,10 +603,6 @@
    "end": 132468,
    "entry": 132380,
    "features": [
-    {
-     "kind": "callee",
-     "value": "fixture+0x10474"
-    },
     {
      "kind": "callee",
      "value": "recurse"

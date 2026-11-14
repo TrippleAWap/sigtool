@@ -17,6 +17,13 @@ use yaxpeax_arm::armv8::a64::InstDecoder;
 use crate::arch::Arch;
 use crate::source::ByteSource;
 use crate::spec::MAX_THUNK_HOPS;
+use crate::stubs::{arm32_stub, arm64_stub, StubExit, MAX_STUB_BYTES};
+
+/// What a branch target resolves to after following stubs.
+enum Resolved {
+    Import(String),
+    Address(u64),
+}
 
 pub const MASK64: u64 = u64::MAX;
 pub const MASK32: u64 = 0xFFFF_FFFF;
@@ -338,10 +345,16 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         self.decode_block_depth(addr, 16, depth).into_iter().next()
     }
 
+    /// Name the function a direct branch reaches, through stubs and veneers.
+    ///
+    /// Only names are returned: an unnamed target's `module+rva` label is a
+    /// layout address, which never matches another build and must not become
+    /// a feature.
     pub(crate) fn callee_name(&self, target: Option<u64>, depth: usize) -> Option<String> {
-        let target = target?;
-        let resolved = self.follow_thunk(target, depth)?;
-        self.source.label_for_address(resolved)
+        match self.follow_thunk(target?, depth) {
+            Resolved::Import(name) => Some(name),
+            Resolved::Address(address) => self.source.name_for_address(address),
+        }
     }
 
     pub(crate) fn read_pointer(&self, addr: Option<u64>) -> Option<u64> {
@@ -376,40 +389,86 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         self.callee_name(self.read_pointer(Some(slot)), depth)
     }
 
-    /// Resolve jump thunks, PLT stubs, and `ldr x16; br x16` veneers.
-    fn follow_thunk(&self, target: u64, depth: usize) -> Option<u64> {
+    /// Resolve jump thunks, PLT stubs, and veneers to an import or a target.
+    ///
+    /// Each hop checks the slot a stub jumps through for an import relocation
+    /// before reading it: with lazy binding the slot still points back into
+    /// the PLT, so reading it would only find the resolver trampoline.
+    fn follow_thunk(&self, target: u64, depth: usize) -> Resolved {
         if depth >= MAX_THUNK_HOPS {
-            return Some(target);
+            return Resolved::Address(target);
         }
         let mut current = target;
         let mut seen: Vec<u64> = Vec::new();
         for _ in 0..MAX_THUNK_HOPS {
             if seen.contains(&current) {
-                return Some(current);
+                break;
             }
             seen.push(current);
             if self.source.name_for_address(current).is_some() {
-                return Some(current);
+                break;
             }
-            let Some(first) = self.normalize_one_depth(current, depth + 1) else {
-                return Some(current);
-            };
-            if first.kind != Kind::Jump {
-                return Some(current);
-            }
-            if let Some(next) = first.target {
-                current = next;
-                continue;
-            }
-            if let Some(reference) = first.refs.first() {
-                if let Some(next) = self.read_pointer(Some(reference.addr)) {
-                    current = next;
-                    continue;
+            let next = match self.stub_exit(current, depth) {
+                Some(StubExit::Direct(next)) => next,
+                Some(StubExit::Slot(slot)) => {
+                    if let Some(name) = self.import_name(slot) {
+                        return Resolved::Import(name);
+                    }
+                    match self.read_pointer(Some(slot)) {
+                        Some(next) => next,
+                        None => break,
+                    }
                 }
-            }
-            return Some(current);
+                None => break,
+            };
+            // A pointer into Thumb code carries the interworking bit.
+            current = if self.source.arch().is_arm() {
+                next & !1
+            } else {
+                next
+            };
         }
-        Some(current)
+        Resolved::Address(current)
+    }
+
+    /// Where the stub at `addr` jumps, if `addr` holds one.
+    fn stub_exit(&self, addr: u64, depth: usize) -> Option<StubExit> {
+        match self.source.arch() {
+            Arch::Arm64 | Arch::Arm32 | Arch::Thumb => {
+                let data = self.source.read_partial(addr, MAX_STUB_BYTES);
+                let matched = if self.source.arch() == Arch::Arm64 {
+                    arm64_stub(addr, &data)
+                } else {
+                    arm32_stub(addr, &data)
+                };
+                if matched.is_some() {
+                    return matched;
+                }
+                // Any other single-branch thunk the decoder resolves.
+                let first = self.normalize_one_depth(addr, depth + 1)?;
+                (first.kind == Kind::Jump)
+                    .then_some(first.target)
+                    .flatten()
+                    .map(StubExit::Direct)
+            }
+            _ => {
+                // `endbr64` (and `bnd`-prefixed IBT PLTs) precede the jump.
+                let first = self
+                    .decode_block_depth(addr, 16, depth + 1)
+                    .into_iter()
+                    .find(|insn| insn.kind != Kind::Ignored)?;
+                if first.kind != Kind::Jump {
+                    return None;
+                }
+                if let Some(next) = first.target {
+                    return Some(StubExit::Direct(next));
+                }
+                first
+                    .refs
+                    .first()
+                    .map(|reference| StubExit::Slot(reference.addr))
+            }
+        }
     }
 
     pub(crate) fn noreturn(&self, callee: Option<&str>) -> bool {

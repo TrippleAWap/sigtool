@@ -90,10 +90,6 @@
      "value": "compute"
     },
     {
-     "kind": "callee",
-     "value": "fixture+0x119b"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:5"
     },
@@ -386,10 +382,6 @@
    "entry": 2101888,
    "features": [
     {
-     "kind": "callee",
-     "value": "fixture+0x113d"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:4"
     },
@@ -539,10 +531,6 @@
    "end": 2102320,
    "entry": 2102256,
    "features": [
-    {
-     "kind": "callee",
-     "value": "fixture+0x12cf"
-    },
     {
      "kind": "callee",
      "value": "recurse"

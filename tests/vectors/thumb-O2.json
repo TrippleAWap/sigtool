@@ -518,10 +518,6 @@
    "entry": 131872,
    "features": [
     {
-     "kind": "callee",
-     "value": "fixture+0x1027e"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:6"
     },

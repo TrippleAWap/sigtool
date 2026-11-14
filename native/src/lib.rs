@@ -28,5 +28,6 @@ pub mod sigfile;
 pub mod source;
 pub mod spec;
 pub mod starts;
+mod stubs;
 pub mod unwind;
 pub mod validate;

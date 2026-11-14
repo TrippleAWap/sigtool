@@ -104,18 +104,6 @@
      "value": "compute"
     },
     {
-     "kind": "callee",
-     "value": "fixture+0x101aa"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x101be"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x101cc"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:6"
     },
@@ -278,10 +266,6 @@
    "entry": 131784,
    "features": [
     {
-     "kind": "callee",
-     "value": "fixture+0x1022a"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:4"
     },
@@ -435,18 +419,6 @@
    "end": 131726,
    "entry": 131672,
    "features": [
-    {
-     "kind": "callee",
-     "value": "fixture+0x10174"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x1017e"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x1018c"
-    },
     {
      "kind": "cfg",
      "value": "blocks:5"
@@ -613,14 +585,6 @@
    "end": 132070,
    "entry": 132022,
    "features": [
-    {
-     "kind": "callee",
-     "value": "fixture+0x102d2"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x102ec"
-    },
     {
      "kind": "callee",
      "value": "recurse"

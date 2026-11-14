@@ -82,18 +82,6 @@
      "value": "compute"
     },
     {
-     "kind": "callee",
-     "value": "fixture+0x1018c"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x101ac"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x101c4"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:6"
     },
@@ -267,42 +255,6 @@
    "end": 2163756,
    "entry": 2163500,
    "features": [
-    {
-     "kind": "callee",
-     "value": "fixture+0x101ec"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x101fc"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x1020c"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x1021c"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x1022c"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x1023c"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x1024c"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x102bc"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x102c8"
-    },
     {
      "kind": "cfg",
      "value": "blocks:9"
@@ -498,18 +450,6 @@
    "entry": 2163300,
    "features": [
     {
-     "kind": "callee",
-     "value": "fixture+0x10120"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x10134"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x10150"
-    },
-    {
      "kind": "cfg",
      "value": "blocks:5"
     },
@@ -655,14 +595,6 @@
    "end": 2163964,
    "entry": 2163868,
    "features": [
-    {
-     "kind": "callee",
-     "value": "fixture+0x10364"
-    },
-    {
-     "kind": "callee",
-     "value": "fixture+0x10394"
-    },
     {
      "kind": "callee",
      "value": "recurse"
