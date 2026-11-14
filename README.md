@@ -31,6 +31,7 @@ sigtool-native gen --file libfoo.so --rva 0x12340          # RVA from the image 
 sigtool-native gen --pid 1234 --module kernel32 --rva 0x1000  # live Windows process, read-only
 sigtool-native merge --sample x64/libfoo.so:0x12340 --sample arm64/libfoo.so:+0x10c80 --output fn.yaml
 sigtool-native locate --signature fn.yaml --file other/libfoo.so --json matches.json
+sigtool-native locate --signature fn.yaml --file stripped.so --discovery hint-free  # default auto
 sigtool-native scan --file image.so --db signatures.db
 sigtool-native db build --signature fn.yaml --output signatures.db
 ```
@@ -81,7 +82,7 @@ library per build, targets stripped for hint-free scans:
 | merged, held-out arch, same level | 0.454 | 0.371 |
 
 False positives: strong signatures 0.072 against other corpus libraries,
-0.000 against the negative corpus; any-verdict hint-free 0.250. Hinted scans
+0.000 against the negative corpus; any-verdict hint-free 0.203. Hinted scans
 may use the target's symbols. Hint-free scans of stripped targets compare
 every unwind entry, while hinted scans start from anchor hits; that is
 probably why hint-free is ahead on same-arch searches.

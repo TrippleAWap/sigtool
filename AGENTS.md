@@ -63,7 +63,7 @@ cargo fmt --all && cargo clippy --all-targets -- -D warnings
 cargo test --release                # golden, scanner, merge, CLI addressing, toy corpus, live PID (Windows)
 cargo run --release -- gen --file IMAGE --addr A          # or --rva R (from the image base), --module M
 cargo run --release -- gen --pid P --addr A               # or --module M --rva R; live Windows process, read-only
-cargo run --release -- locate --signature S.yaml --file IMAGE --json M.json   # or --pid P
+cargo run --release -- locate --signature S.yaml --file IMAGE --json M.json   # or --pid P; --discovery auto|hinted|hint-free
 cargo run --release -- scan --file IMAGE --signature S.yaml   # or --db signatures.db, --pid P
 cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:+RVA --name N
 cargo run --release -- db build --signature S.yaml --output signatures.db

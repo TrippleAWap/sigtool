@@ -652,7 +652,7 @@ starts).
 | merged, held-out arch, same opt | 0.365 | 0.454 | 0.032 | 0.371 |
 
 False positives now: strong 0.072 (corpus) and 0.000 (negative), any-verdict
-0.196 (corpus) and 0.000 (negative), hint-free any-verdict 0.250. None of the
+0.196 (corpus) and 0.000 (negative), hint-free any-verdict 0.203. None of the
 recall targets in section 6 is met yet.
 
 **What moved the numbers, in order** (each change measured before and after on
@@ -678,8 +678,19 @@ the real corpus; details in the commit messages and `spec/CHANGELOG.md`):
    low-information (`*!name`).
 7. arm32 PIC `ldr rd, [pc, rm]` resolves to the slot instead of recording the
    next instruction word as a constant.
+8. Hint-free acceptance: a match whose matched keys include nothing that
+   identifies a function (no string, in-image callee, or constant away from
+   zero) needs 6 matched features. Hint-free FP 0.250 -> 0.203, top-1
+   unchanged. `bench --fp-report` dumps every FP hit and every hint-free
+   recall scan, so rules can be simulated offline first; a similarity floor,
+   uniqueness, margin, and a recalibrated chance gate all traded recall for
+   precision at the same rate beyond this point.
 
-**Front-ends.** `proc_win.rs` is the read-only Windows process source
+**Front-ends.** `locate` and `scan` take `--discovery auto|hinted|hint-free`;
+`auto` (the default) runs hint-free on image files without `.symtab` function
+symbols (stripped ELF, PE), where hinted discovery on the stripped real corpus
+found about half as much (cross-arch top-1 0.158 vs 0.293).
+`proc_win.rs` is the read-only Windows process source
 (`--pid` in `gen`, `locate`, `scan`; WOW64 rejected; live tests in
 `native/tests/live_proc_win.rs`). RVAs are relative to the image base (lowest
 `PT_LOAD`, PE `ImageBase`), kept in `Module::image_base` separately from the
@@ -688,8 +699,11 @@ mapped range that rule 4 uses; `merge --sample FILE:+RVA` and the `rva` in
 
 **Known limits and next steps.**
 
-- Hint-free false positives (0.250) rose with every gain in candidate
-  coverage; acceptance, not discovery, is now the limiting factor.
+- Hint-free false positives (0.203): what remains is low-information
+  matches of small functions (shape buckets plus constants like 0 and 1),
+  including byte-identical helpers in other libraries. Cutting further with
+  the current features costs recall one-for-one; it needs new evidence for
+  small functions.
 - Cross-compiler and cross-opt recall (0.2-0.35) are far below cross-build
   same-opt; inlining and different block structure dominate the misses, and
   local (static) callees cannot be resolved in stripped targets.
