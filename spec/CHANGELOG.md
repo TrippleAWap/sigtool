@@ -146,6 +146,13 @@ refused rather than matched without the evidence it lacks.
   rank first and are reported as `near:` keys. On the stripped real corpus
   this took the hint-free FP rate from 0.203 to 0.163 with every aggregate
   top-1 row equal or higher.
+* `links` (SPEC.md §7): direct callers and callees as module RVAs, and joint
+  resolution (SPEC.md §8) for signature sets from one module. Whole-module
+  sets from the x64 clang-O2 build, scanned hint-free in every other stripped
+  build of the same library, gain 8-10 points of top-1 (cross-arch other
+  compiler 0.233 -> 0.313, cross-arch cross-opt 0.188 -> 0.266); false hits
+  in unrelated libraries are unchanged except zlib (0.021 -> 0.025). A 0.1
+  similarity floor gained 1-2 more points but tripled zlib's false hits.
 
 ## v2 — portable features
 

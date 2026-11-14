@@ -21,6 +21,10 @@ pub const BUCKET_BOUNDS: [usize; 15] = [0, 1, 2, 3, 4, 6, 9, 13, 19, 28, 40, 60,
 /// corpus: the median signature has 1, the 99th percentile 26.
 pub const MAX_NEIGHBOUR_KEYS: usize = 64;
 
+/// Call-graph links a signature may carry (SPEC.md §7): 16 callers and 16
+/// callees, the same bound as the neighbour walk.
+pub const MAX_LINKS: usize = 32;
+
 pub const STR_MIN_LEN: usize = 4;
 pub const STR_MAX_LEN: usize = 120;
 

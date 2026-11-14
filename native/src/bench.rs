@@ -99,6 +99,28 @@ impl FalsePositiveCell {
     }
 }
 
+/// Joint resolution against one target build: top-1 over every function of
+/// the source module, scanned alone and then resolved together.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JointCell {
+    /// `source->target` architectures.
+    pub arch: String,
+    pub source_opt: String,
+    pub target_opt: String,
+    pub attempts: usize,
+    pub independent_top: usize,
+    pub joint_top: usize,
+}
+
+/// Signatures of one module with any accepted match in an unrelated library.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JointFalsePositiveCell {
+    pub library: String,
+    pub signatures: usize,
+    pub independent_with_hits: usize,
+    pub joint_with_hits: usize,
+}
+
 /// The compact, reviewable metrics document (also the baseline format).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchReport {
@@ -125,6 +147,11 @@ pub struct BenchReport {
     pub any_false_positives: Vec<FalsePositiveCell>,
     #[serde(default)]
     pub any_negative_false_positives: Vec<FalsePositiveCell>,
+    /// `bench --joint`: whole-module signature sets resolved jointly.
+    #[serde(default)]
+    pub joint: Vec<JointCell>,
+    #[serde(default)]
+    pub joint_false_positives: Vec<JointFalsePositiveCell>,
 }
 
 /// One generated signature and where it came from.
@@ -144,6 +171,8 @@ struct Target {
     opt: String,
     source: FileSource,
     functions: BTreeMap<String, u64>,
+    /// Every ground-truth function, before `--max-functions` trims `functions`.
+    all_functions: BTreeMap<String, u64>,
     /// Whole-image indexes, built on first use and shared by every scan.
     context: OnceLock<ScanContext>,
     /// The same image after `strip --strip-all`, when the corpus has one.
@@ -226,7 +255,7 @@ fn load_targets(
             )),
             None => None,
         };
-        let functions = entry["functions"]
+        let functions: BTreeMap<String, u64> = entry["functions"]
             .as_array()
             .map(|functions| {
                 functions
@@ -240,6 +269,7 @@ fn load_targets(
                     .collect()
             })
             .unwrap_or_default();
+        let all_functions = functions.clone();
         let functions = limit_functions(functions, max_functions);
         targets.push(Target {
             arch,
@@ -247,6 +277,7 @@ fn load_targets(
             opt,
             source,
             functions,
+            all_functions,
             context: OnceLock::new(),
             stripped,
         });
@@ -327,6 +358,8 @@ pub struct BenchOptions {
     pub skip_false_positives: bool,
     /// Write every hint-free false-positive hit here as one JSON object per line.
     pub fp_report: Option<PathBuf>,
+    /// Also measure joint resolution of whole-module signature sets.
+    pub joint: bool,
 }
 
 /// [`run`] with explicit [`BenchOptions`].
@@ -678,6 +711,14 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let any_negative_false_positives = false_positive_cells(&all, &negative_counts, None);
 
     phase(&clock, "false positives");
+    let (joint, joint_false_positives) = if options.joint {
+        measure_joint(&targets)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    if options.joint {
+        phase(&clock, "joint");
+    }
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
         hint_free_stripped: targets.iter().all(|t| t.stripped.is_some()),
@@ -691,7 +732,107 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         negative_false_positives,
         any_false_positives,
         any_negative_false_positives,
+        joint,
+        joint_false_positives,
     })
+}
+
+/// The build whose whole module is signed for `--joint`.
+const JOINT_SOURCE: (&str, &str) = ("x64", "clang-O2");
+
+/// Whether the expected function is the single best match.
+fn top_is(matches: &[Match], expected: u64) -> bool {
+    matches.first().is_some_and(|m| m.address == expected)
+        && matches
+            .get(1)
+            .is_none_or(|next| rank_key(next) < rank_key(&matches[0]))
+}
+
+/// Joint resolution over whole modules: every ground-truth function of the
+/// `JOINT_SOURCE` build is signed, then scanned hint-free in every other
+/// build of the library, alone and resolved together. The same set scanned
+/// in the other libraries' `JOINT_SOURCE` builds measures what joint
+/// resolution adds to false positives.
+fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveCell>) {
+    let mut cells = Vec::new();
+    let mut false_positives = Vec::new();
+    let sources: Vec<&Target> = targets
+        .iter()
+        .filter(|t| (t.arch.as_str(), t.opt.as_str()) == JOINT_SOURCE)
+        .collect();
+    for source in &sources {
+        let context = source
+            .context
+            .get_or_init(|| ScanContext::build(&source.source));
+        let names: Vec<(&String, &u64)> = source.all_functions.iter().collect();
+        let generated = parallel(names.len(), |job| {
+            let (name, start) = names[job];
+            generate_in(
+                &source.source,
+                *start,
+                Some(name),
+                Some(&source.opt),
+                Some("clang"),
+                None,
+                None,
+                Some(context),
+            )
+            .ok()
+            .map(|result| result.signature)
+        });
+        let signatures: Vec<Signature> = generated.into_iter().flatten().collect();
+        let scan_all = |target: &Target| -> Vec<Vec<Match>> {
+            parallel(signatures.len(), |job| target.scan(&signatures[job], false))
+        };
+        for target in targets
+            .iter()
+            .filter(|t| t.source_file == source.source_file)
+            .filter(|t| !std::ptr::eq(*t, *source))
+        {
+            let mut matches = scan_all(target);
+            let expected: Vec<Option<u64>> = signatures
+                .iter()
+                .map(|s| target.all_functions.get(&s.name).copied())
+                .collect();
+            let score = |matches: &[Vec<Match>]| {
+                matches
+                    .iter()
+                    .zip(&expected)
+                    .filter(|(found, want)| want.is_some_and(|want| top_is(found, want)))
+                    .count()
+            };
+            let independent_top = score(&matches);
+            let (image, image_context) = target.scan_source(false);
+            crate::joint::resolve(image, image_context, &signatures, &mut matches, false);
+            cells.push(JointCell {
+                arch: format!("{}->{}", source.arch, target.arch),
+                source_opt: source.opt.clone(),
+                target_opt: target.opt.clone(),
+                attempts: expected.iter().filter(|want| want.is_some()).count(),
+                independent_top,
+                joint_top: score(&matches),
+            });
+        }
+        let mut cell = JointFalsePositiveCell {
+            library: source.source_file.clone(),
+            signatures: 0,
+            independent_with_hits: 0,
+            joint_with_hits: 0,
+        };
+        for other in sources
+            .iter()
+            .filter(|t| t.source_file != source.source_file)
+        {
+            let mut matches = scan_all(other);
+            cell.signatures += signatures.len();
+            cell.independent_with_hits += matches.iter().filter(|m| !m.is_empty()).count();
+            let (image, image_context) = other.scan_source(false);
+            crate::joint::resolve(image, image_context, &signatures, &mut matches, false);
+            cell.joint_with_hits += matches.iter().filter(|m| !m.is_empty()).count();
+        }
+        false_positives.push(cell);
+    }
+    (cells, false_positives)
 }
 
 /// Accepted matches per sample summed over the targets it must not match.
@@ -910,6 +1051,49 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
             }
         }
     }
+    // Joint cells are gated only when both runs measured them (`--joint`).
+    if !current.joint.is_empty() {
+        for cell in &baseline.joint {
+            let key = (&cell.arch, &cell.source_opt, &cell.target_opt);
+            let Some(now) = current
+                .joint
+                .iter()
+                .find(|c| (&c.arch, &c.source_opt, &c.target_opt) == key)
+            else {
+                failures.push(format!("missing joint cell {key:?}"));
+                continue;
+            };
+            let (before, after) = (
+                ratio(cell.joint_top, cell.attempts),
+                ratio(now.joint_top, now.attempts),
+            );
+            if after < before - tolerance {
+                failures.push(format!(
+                    "joint top-1 {key:?}: {after:.3} < baseline {before:.3} - {tolerance:.2}"
+                ));
+            }
+        }
+        for cell in &baseline.joint_false_positives {
+            let Some(now) = current
+                .joint_false_positives
+                .iter()
+                .find(|c| c.library == cell.library)
+            else {
+                failures.push(format!("missing joint FP cell {}", cell.library));
+                continue;
+            };
+            let (before, after) = (
+                ratio(cell.joint_with_hits, cell.signatures),
+                ratio(now.joint_with_hits, now.signatures),
+            );
+            if after > before + tolerance {
+                failures.push(format!(
+                    "joint FP {}: {after:.3} > baseline {before:.3} + {tolerance:.2}",
+                    cell.library
+                ));
+            }
+        }
+    }
     failures
 }
 
@@ -1101,6 +1285,53 @@ pub fn render(report: &BenchReport) -> String {
             if met { "met" } else { "   " },
             if goal == 0.0 { "=" } else { ">=" }
         );
+    }
+    if !report.joint.is_empty() {
+        let _ = writeln!(
+            text,
+            "\njoint resolution (whole {} {} module, hint-free, top-1: alone -> joint)",
+            JOINT_SOURCE.0, JOINT_SOURCE.1
+        );
+        let mut groups: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new();
+        for cell in &report.joint {
+            let same_arch = cell
+                .arch
+                .split_once("->")
+                .is_some_and(|(from, to)| from == to);
+            let level = |opt: &str| opt.split('-').nth(1).unwrap_or(opt).to_string();
+            let group = match (
+                same_arch,
+                cell.source_opt == cell.target_opt,
+                level(&cell.source_opt) == level(&cell.target_opt),
+            ) {
+                (true, _, true) => "same arch, other compiler same level",
+                (true, _, false) => "same arch, cross opt",
+                (false, true, _) => "cross arch, same build",
+                (false, false, true) => "cross arch, other compiler same level",
+                (false, false, false) => "cross arch, cross opt",
+            };
+            let entry = groups.entry(group).or_default();
+            entry.0 += cell.attempts;
+            entry.1 += cell.independent_top;
+            entry.2 += cell.joint_top;
+        }
+        for (group, (attempts, alone, joint)) in groups {
+            let _ = writeln!(
+                text,
+                "  {group}: {:.3} -> {:.3} ({alone} -> {joint} of {attempts})",
+                ratio(alone, attempts),
+                ratio(joint, attempts)
+            );
+        }
+        for cell in &report.joint_false_positives {
+            let _ = writeln!(
+                text,
+                "  {} signatures hitting other libraries: {:.3} -> {:.3}",
+                cell.library,
+                ratio(cell.independent_with_hits, cell.signatures),
+                ratio(cell.joint_with_hits, cell.signatures)
+            );
+        }
     }
     text
 }

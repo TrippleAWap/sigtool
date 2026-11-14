@@ -437,3 +437,120 @@ fn locate_finds_a_shape_only_helper_through_its_caller() {
         "{context}"
     );
 }
+
+/// Joint resolution: `bottom` is three calls below the only function with a
+/// string, out of reach of neighbour keys (two hops), and has forty exported
+/// lookalikes. Scanned alone it is at best a `shape-only` candidate; scanned
+/// with the signatures of its callers, `top` pins `middle`, `middle` pins
+/// `lower`, and `lower` pins `bottom` through the stripped call graph, which
+/// makes the match `identified`.
+#[test]
+fn scan_resolves_a_call_chain_jointly() {
+    let has = |tool: &str| {
+        Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
+        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sigtool-joint-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("chain.c");
+    let image = dir.join("libchain.so");
+    let stripped = dir.join("libchain.stripped.so");
+    let mut code = String::from(
+        "__attribute__((noinline)) static int bottom(int x) { return x ^ 5; }\n\
+         __attribute__((noinline)) static int lower(int x) { return bottom(x) - 7; }\n\
+         __attribute__((noinline)) static int middle(int x) { return lower(x) * 3; }\n\
+         const char *top(int x) {\n\
+         \x20   return middle(x) > 9 ? \"joint resolution banner\" : \"no\";\n\
+         }\n",
+    );
+    for n in 0..40 {
+        code.push_str(&format!(
+            "int filler{n}(int x) {{ return x ^ {}; }}\n",
+            n + 6
+        ));
+    }
+    std::fs::write(&source, code).unwrap();
+    let built = Command::new("clang")
+        .args([
+            "--target=x86_64-linux-gnu",
+            "-O2",
+            "-fPIC",
+            "-shared",
+            "-nostdlib",
+            "-fuse-ld=lld",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&image)
+        .status()
+        .expect("run clang");
+    assert!(built.success(), "clang failed to build the shared object");
+    let strip = Command::new("llvm-strip")
+        .arg("--strip-all")
+        .arg(&image)
+        .arg("-o")
+        .arg(&stripped)
+        .status()
+        .expect("run llvm-strip");
+    assert!(strip.success(), "llvm-strip failed");
+    let symbols = Command::new("llvm-nm")
+        .arg(&image)
+        .output()
+        .expect("run llvm-nm");
+    let symbols = String::from_utf8(symbols.stdout).expect("utf-8");
+    let address_of = |name: &str| {
+        symbols
+            .lines()
+            .find(|line| line.ends_with(&format!(" {name}")))
+            .and_then(|line| line.split_whitespace().next())
+            .and_then(|text| u64::from_str_radix(text, 16).ok())
+            .unwrap_or_else(|| panic!("{name} in llvm-nm output"))
+    };
+    let mut signatures = Vec::new();
+    for name in ["top", "middle", "lower", "bottom"] {
+        let path = dir.join(format!("{name}.yaml"));
+        run(&[
+            "gen",
+            "--file",
+            image.to_str().unwrap(),
+            "--addr",
+            &format!("0x{:x}", address_of(name)),
+            "--output",
+            path.to_str().unwrap(),
+        ]);
+        signatures.push(path);
+    }
+    let json = dir.join("hits.json");
+    let mut scan = Command::new(env!("CARGO_BIN_EXE_sigtool-native"));
+    scan.args(["scan", "--file", stripped.to_str().unwrap()])
+        .args(["--json", json.to_str().unwrap()]);
+    for path in &signatures {
+        scan.arg("--signature").arg(path);
+    }
+    let output = scan.output().expect("run sigtool-native");
+    let document: serde_json::Value = std::fs::read_to_string(&json)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let expected = format!("0x{:x}", address_of("bottom"));
+    for path in signatures.iter().chain([&source, &image, &stripped, &json]) {
+        std::fs::remove_file(path).ok();
+    }
+    std::fs::remove_dir(&dir).ok();
+    let best = document["hits"]
+        .as_array()
+        .and_then(|hits| hits.iter().find(|hit| hit["name"] == "bottom"));
+    assert_eq!(
+        best.map(|hit| hit["address"].clone()),
+        Some(serde_json::Value::String(expected)),
+        "stderr: {}\nhits: {document}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(best.unwrap()["evidence"], "identified", "{document}");
+}

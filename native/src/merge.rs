@@ -175,6 +175,9 @@ pub fn merge_in(
         .flat_map(|result| result.signature.neighbours.iter().cloned())
         .collect();
     signature.neighbours = neighbours.into_iter().take(MAX_NEIGHBOUR_KEYS).collect();
+    // Links are RVAs in one module: they follow the first sample, like its
+    // provenance entry, and resolve against signatures from that module.
+    signature.links = results[0].signature.links.clone();
     signature
         .validate()
         .map_err(|error| MergeError(error.to_string()))?;

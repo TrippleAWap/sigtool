@@ -233,6 +233,9 @@ anchors:
 neighbours:
 - in:str:bad header
 - out2:const:0x9e3779b1
+links:
+- in:0x1840
+- out:0x11a0
 thresholds:
   match: 0.75
   min_distinct: 2
@@ -267,7 +270,17 @@ Rules:
 * `opt` and `tool` are provenance only. They never influence features, weights,
   thresholds, or identity.
 * Weights are rounded to three decimals and never reach zero (floor `0.001`).
-* `neighbours` is omitted when empty (see below).
+* `neighbours` and `links` are omitted when empty (see below).
+
+### Links
+
+`links` records the function's direct callers (`in:RVA`) and callees
+(`out:RVA`) as RVAs in the first sample's module, lowercase hex without
+leading zeros, sorted as text, at most 32. They are provenance, not evidence:
+they never affect a match on their own, and they only mean something to other
+signatures from the same module, found by `(module, rva)` of their first
+sample. A merged signature keeps its first sample's links. Joint resolution
+(§8) uses them.
 
 ### Neighbours
 
@@ -437,6 +450,28 @@ The candidate's neighbour keys are computed the same way as at generation, on
 the target. Shared keys are reported in `matched` as `near:HOP:KIND:VALUE` and
 count as identifying. Hint-free matches are ranked by the number of shared
 neighbour keys, then similarity, then score.
+
+**Joint resolution.** Signatures from one module scanned together
+(`scan` with several signatures, hint-free) are resolved through their
+`links` (`native/src/joint.rs`):
+
+1. A signature *pins* its best match when that match is identified and no
+   other match ties with it.
+2. A pinned signature whose links to other pinned signatures all disagree
+   with the target's call graph (the other signature's match is not among
+   this match's callers or callees) and none agree is released: it is a
+   confident lookalike.
+3. For each unpinned signature, every link to a pinned signature votes for
+   that pin's callers (`out:` links) or callees (`in:` links) in the target.
+   Candidates already pinned by another signature are excluded. A candidate
+   needs similarity at least 0.2 but not the full acceptance gate: across
+   compilers the required features are exactly what changed, and the call
+   graph already narrows the choice to a handful of functions. The best
+   candidate by votes, then neighbour keys, similarity, and score is pinned
+   and reported first with `joint:VOTES` in `matched`; a tie pins nothing.
+4. Step 3 repeats, at most 8 rounds, until nothing changes.
+
+Joint votes rank above every other key and count as identifying.
 
 **Self-test.** Generation runs the matcher on the same source and requires an
 accepted match at the recovered function start; a signature that cannot be

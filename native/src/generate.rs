@@ -136,6 +136,28 @@ pub fn generate_in<S: ByteSource + ?Sized>(
         let mut neighbours = context.neighbour_keys(source, recovered.start(), true);
         neighbours.sort();
         signature.neighbours = neighbours;
+        if let Some(module) = module {
+            let link = |direction: &str, target: u64| {
+                module
+                    .contains(target, 1)
+                    .then(|| format!("{direction}:0x{:x}", module.rva(target)))
+            };
+            let start = recovered.start();
+            let mut links: Vec<String> = context
+                .callees_of(source, start, true)
+                .into_iter()
+                .filter_map(|target| link("out", target))
+                .chain(
+                    context
+                        .callers_of(source, start, true)
+                        .into_iter()
+                        .filter_map(|caller| link("in", caller)),
+                )
+                .collect();
+            links.sort();
+            links.dedup();
+            signature.links = links;
+        }
         signature.validate()?;
     }
     let report = quality_report(

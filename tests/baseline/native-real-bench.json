@@ -13152,5 +13152,959 @@
       "signatures_with_hits": 0,
       "hits": 0
     }
+  ],
+  "joint": [
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 108,
+      "independent_top": 15,
+      "joint_top": 37
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 108,
+      "independent_top": 32,
+      "joint_top": 45
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 108,
+      "independent_top": 24,
+      "joint_top": 34
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 108,
+      "independent_top": 14,
+      "joint_top": 33
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 108,
+      "independent_top": 15,
+      "joint_top": 30
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 108,
+      "independent_top": 11,
+      "joint_top": 17
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 108,
+      "independent_top": 13,
+      "joint_top": 36
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 108,
+      "independent_top": 37,
+      "joint_top": 56
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 108,
+      "independent_top": 25,
+      "joint_top": 41
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 108,
+      "independent_top": 15,
+      "joint_top": 35
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 108,
+      "independent_top": 23,
+      "joint_top": 38
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 108,
+      "independent_top": 18,
+      "joint_top": 30
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 108,
+      "independent_top": 13,
+      "joint_top": 27
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 108,
+      "independent_top": 25,
+      "joint_top": 38
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 108,
+      "independent_top": 22,
+      "joint_top": 36
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 108,
+      "independent_top": 14,
+      "joint_top": 29
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 108,
+      "independent_top": 13,
+      "joint_top": 29
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 108,
+      "independent_top": 9,
+      "joint_top": 30
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 108,
+      "independent_top": 15,
+      "joint_top": 34
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 108,
+      "independent_top": 60,
+      "joint_top": 68
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 108,
+      "independent_top": 14,
+      "joint_top": 36
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 108,
+      "independent_top": 47,
+      "joint_top": 53
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 108,
+      "independent_top": 25,
+      "joint_top": 36
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 33,
+      "joint_top": 47
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 91,
+      "joint_top": 110
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 59,
+      "joint_top": 75
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 24,
+      "joint_top": 34
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 42,
+      "joint_top": 56
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 30,
+      "joint_top": 39
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 38,
+      "joint_top": 44
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 103,
+      "joint_top": 121
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 65,
+      "joint_top": 78
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 44,
+      "joint_top": 53
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 72,
+      "joint_top": 83
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 52,
+      "joint_top": 62
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 39,
+      "joint_top": 43
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 90,
+      "joint_top": 105
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 61,
+      "joint_top": 72
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 26,
+      "joint_top": 33
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 42,
+      "joint_top": 50
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 33,
+      "joint_top": 42
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 42,
+      "joint_top": 52
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 88,
+      "joint_top": 98
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 41,
+      "joint_top": 52
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 70,
+      "joint_top": 86
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 54,
+      "joint_top": 65
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 15,
+      "joint_top": 23
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 55,
+      "joint_top": 67
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 42,
+      "joint_top": 55
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 10,
+      "joint_top": 17
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 37,
+      "joint_top": 45
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 28,
+      "joint_top": 34
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 12,
+      "joint_top": 20
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 58,
+      "joint_top": 71
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 42,
+      "joint_top": 51
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 13,
+      "joint_top": 23
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 34,
+      "joint_top": 40
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 27,
+      "joint_top": 35
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 15,
+      "joint_top": 22
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 44,
+      "joint_top": 57
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 34,
+      "joint_top": 49
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 10,
+      "joint_top": 20
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 29,
+      "joint_top": 35
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 21,
+      "joint_top": 28
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 15,
+      "joint_top": 22
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 77,
+      "joint_top": 83
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 9,
+      "joint_top": 17
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 41,
+      "joint_top": 50
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 29,
+      "joint_top": 42
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 9,
+      "joint_top": 10
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 54,
+      "joint_top": 57
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 21,
+      "joint_top": 24
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 3,
+      "joint_top": 3
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 7,
+      "joint_top": 9
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 4,
+      "joint_top": 5
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 8,
+      "joint_top": 9
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 64,
+      "joint_top": 67
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 34,
+      "joint_top": 36
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 10,
+      "joint_top": 11
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 30,
+      "joint_top": 34
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 13,
+      "joint_top": 14
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 8,
+      "joint_top": 9
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 150,
+      "independent_top": 54,
+      "joint_top": 55
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 23,
+      "joint_top": 26
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 2,
+      "joint_top": 2
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 7,
+      "joint_top": 9
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 4,
+      "joint_top": 5
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 150,
+      "independent_top": 9,
+      "joint_top": 10
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 150,
+      "independent_top": 55,
+      "joint_top": 57
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 150,
+      "independent_top": 9,
+      "joint_top": 10
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 150,
+      "independent_top": 36,
+      "joint_top": 40
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 150,
+      "independent_top": 17,
+      "joint_top": 19
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 120,
+      "independent_top": 36,
+      "joint_top": 49
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 120,
+      "independent_top": 63,
+      "joint_top": 77
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 120,
+      "independent_top": 44,
+      "joint_top": 62
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 120,
+      "independent_top": 27,
+      "joint_top": 43
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 120,
+      "independent_top": 38,
+      "joint_top": 52
+    },
+    {
+      "arch": "x64->arm32",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 120,
+      "independent_top": 29,
+      "joint_top": 44
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 120,
+      "independent_top": 31,
+      "joint_top": 44
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 120,
+      "independent_top": 74,
+      "joint_top": 87
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 120,
+      "independent_top": 47,
+      "joint_top": 69
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 120,
+      "independent_top": 41,
+      "joint_top": 60
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 120,
+      "independent_top": 51,
+      "joint_top": 66
+    },
+    {
+      "arch": "x64->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 120,
+      "independent_top": 46,
+      "joint_top": 59
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 120,
+      "independent_top": 37,
+      "joint_top": 52
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "attempts": 120,
+      "independent_top": 60,
+      "joint_top": 79
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 120,
+      "independent_top": 37,
+      "joint_top": 56
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 120,
+      "independent_top": 28,
+      "joint_top": 44
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 120,
+      "independent_top": 34,
+      "joint_top": 60
+    },
+    {
+      "arch": "x64->thumb",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 120,
+      "independent_top": 25,
+      "joint_top": 44
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "attempts": 120,
+      "independent_top": 30,
+      "joint_top": 50
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "attempts": 120,
+      "independent_top": 65,
+      "joint_top": 79
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "attempts": 120,
+      "independent_top": 38,
+      "joint_top": 55
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "attempts": 120,
+      "independent_top": 50,
+      "joint_top": 67
+    },
+    {
+      "arch": "x64->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "attempts": 120,
+      "independent_top": 42,
+      "joint_top": 54
+    }
+  ],
+  "joint_false_positives": [
+    {
+      "library": "cjson",
+      "signatures": 432,
+      "independent_with_hits": 23,
+      "joint_with_hits": 23
+    },
+    {
+      "library": "lua",
+      "signatures": 600,
+      "independent_with_hits": 5,
+      "joint_with_hits": 5
+    },
+    {
+      "library": "lz4",
+      "signatures": 600,
+      "independent_with_hits": 11,
+      "joint_with_hits": 11
+    },
+    {
+      "library": "sqlite",
+      "signatures": 600,
+      "independent_with_hits": 4,
+      "joint_with_hits": 4
+    },
+    {
+      "library": "zlib",
+      "signatures": 480,
+      "independent_with_hits": 10,
+      "joint_with_hits": 12
+    }
   ]
 }

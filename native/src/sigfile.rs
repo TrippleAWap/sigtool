@@ -55,6 +55,11 @@ pub struct Signature {
     /// Identifying keys of the function's call-graph neighbours (SPEC.md §7),
     /// sorted: `in:`/`out:` for callers/callees, `in2:`/`out2:` one hop on.
     pub neighbours: Vec<String>,
+    /// The function's direct callers (`in:RVA`) and callees (`out:RVA`) in
+    /// the first sample's module, sorted (SPEC.md §7). Provenance, not
+    /// evidence: a set of signatures from one module is resolved jointly
+    /// through them.
+    pub links: Vec<String>,
     pub match_threshold: f64,
     pub min_distinct: usize,
     pub confidence: String,
@@ -79,6 +84,7 @@ impl Signature {
             features,
             anchors,
             neighbours: Vec::new(),
+            links: Vec::new(),
             match_threshold,
             min_distinct,
             confidence: confidence.into(),
@@ -172,6 +178,16 @@ impl Signature {
             }
         }
 
+        if self.links.len() > crate::spec::MAX_LINKS {
+            return Err(SignatureError("too many links".into()));
+        }
+        if self.links.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(SignatureError("links must be sorted and unique".into()));
+        }
+        if let Some(bad) = self.links.iter().find(|link| parse_link(link).is_none()) {
+            return Err(SignatureError(format!("invalid link {bad:?}")));
+        }
+
         for sample in &self.provenance {
             if sample.module.contains('/') || sample.module.contains('\\') {
                 return Err(SignatureError(
@@ -197,6 +213,7 @@ impl Signature {
             confidence: &self.confidence,
             anchors: &self.anchors,
             neighbours: &self.neighbours,
+            links: &self.links,
             thresholds: ThresholdsDocument {
                 match_threshold: self.match_threshold,
                 min_distinct: self.min_distinct,
@@ -284,12 +301,21 @@ impl Signature {
             None => Vec::new(),
         };
 
+        let links = match field(document, "links") {
+            Some(value) => as_sequence(Some(value), "links")?
+                .iter()
+                .map(|link| Ok(as_str(Some(link), "link")?.to_string()))
+                .collect::<Result<Vec<_>, SignatureError>>()?,
+            None => Vec::new(),
+        };
+
         let signature = Signature {
             spec_version: as_str(field(document, "spec_version"), "spec_version")?.to_string(),
             name: as_str(field(document, "name"), "name")?.to_string(),
             confidence: as_str(field(document, "confidence"), "confidence")?.to_string(),
             anchors,
             neighbours,
+            links,
             match_threshold: as_f64(field(thresholds, "match"), "thresholds.match")?,
             min_distinct: as_usize(field(thresholds, "min_distinct"), "thresholds.min_distinct")?,
             features,
@@ -300,6 +326,30 @@ impl Signature {
     }
 }
 
+/// `(callee, rva)` from `in:0x1A0` / `out:0x1A0`: `callee` is true for
+/// `out`, a function the signature's function calls.
+pub fn parse_link(link: &str) -> Option<(bool, u64)> {
+    let (direction, rva) = link.split_once(':')?;
+    let callee = match direction {
+        "out" => true,
+        "in" => false,
+        _ => return None,
+    };
+    let digits = rva.strip_prefix("0x")?;
+    // Canonical lowercase hex without leading zeros, so text order is unique.
+    if digits.is_empty()
+        || (digits.len() > 1 && digits.starts_with('0'))
+        || !digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    {
+        return None;
+    }
+    u64::from_str_radix(digits, 16)
+        .ok()
+        .map(|value| (callee, value))
+}
+
 #[derive(Serialize)]
 struct Document<'a> {
     spec_version: &'a str,
@@ -308,6 +358,8 @@ struct Document<'a> {
     anchors: &'a [String],
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     neighbours: &'a [String],
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    links: &'a [String],
     thresholds: ThresholdsDocument,
     features: Vec<FeatureDocument<'a>>,
     provenance: Vec<ProvenanceDocument<'a>>,

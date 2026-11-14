@@ -476,6 +476,52 @@ pub use crate::spec::MAX_NEIGHBOUR_KEYS;
 pub const MIN_NEIGHBOURS_TO_REJECT: usize = 2;
 
 impl ScanContext {
+    /// Direct callees of the function at `start` (call and tail-call
+    /// targets in the image, imports excluded), nearest first, at most
+    /// [`MAX_NEIGHBOURS`].
+    pub fn callees_of<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> Vec<u64> {
+        self.features
+            .get_or_recover(source, start, hints)
+            .map(|found| found.calls.iter().copied().take(MAX_NEIGHBOURS).collect())
+            .unwrap_or_default()
+    }
+
+    /// Functions with a direct call to `start`, by the enclosing symbol
+    /// bounds (hinted) or unwind entry, sorted, at most [`MAX_NEIGHBOURS`].
+    pub fn callers_of<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> Vec<u64> {
+        let mut found: Vec<u64> = self
+            .code
+            .callers
+            .get(&start)
+            .into_iter()
+            .flatten()
+            .filter_map(|site| {
+                let enclosing = if hints {
+                    source.hint_function(*site)
+                } else {
+                    None
+                }
+                .or_else(|| source.unwind_function(*site));
+                enclosing.map(|(caller, _)| caller)
+            })
+            .filter(|caller| *caller != start)
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        found.truncate(MAX_NEIGHBOURS);
+        found
+    }
+
     /// Identifying keys of the function at `start`'s call-graph neighbours:
     /// `out:` its direct callees, `in:` its callers, `out2:`/`in2:` one hop
     /// further. Strings and distinctive constants survive stripping and
@@ -492,35 +538,8 @@ impl ScanContext {
         let Some(candidate) = self.features.get_or_recover(source, start, hints) else {
             return keys;
         };
-        let callees = |of: u64| -> Vec<u64> {
-            self.features
-                .get_or_recover(source, of, hints)
-                .map(|found| found.calls.iter().copied().take(MAX_NEIGHBOURS).collect())
-                .unwrap_or_default()
-        };
-        let callers = |of: u64| -> Vec<u64> {
-            let mut found: Vec<u64> = self
-                .code
-                .callers
-                .get(&of)
-                .into_iter()
-                .flatten()
-                .filter_map(|site| {
-                    let enclosing = if hints {
-                        source.hint_function(*site)
-                    } else {
-                        None
-                    }
-                    .or_else(|| source.unwind_function(*site));
-                    enclosing.map(|(caller, _)| caller)
-                })
-                .filter(|caller| *caller != of)
-                .collect();
-            found.sort_unstable();
-            found.dedup();
-            found.truncate(MAX_NEIGHBOURS);
-            found
-        };
+        let callees = |of: u64| self.callees_of(source, of, hints);
+        let callers = |of: u64| self.callers_of(source, of, hints);
         let me = candidate.start;
         let out1 = callees(me);
         let in1 = callers(me);
@@ -702,10 +721,16 @@ pub fn corroboration(found: &Match) -> usize {
         .count()
 }
 
-/// How matches are ordered, best first: shared neighbour evidence, then
-/// similarity, then score. Two matches with equal keys are a tie.
-pub fn rank_key(found: &Match) -> (usize, f64, f64) {
-    (corroboration(found), found.similarity, found.score)
+/// How matches are ordered, best first: call-graph votes from joint
+/// resolution ([`crate::joint`]), shared neighbour evidence, similarity, then
+/// score. Two matches with equal keys are a tie.
+pub fn rank_key(found: &Match) -> (usize, usize, f64, f64) {
+    (
+        crate::joint::votes(found),
+        corroboration(found),
+        found.similarity,
+        found.score,
+    )
 }
 
 /// A matched key that identifies a function by itself: a string, a callee
@@ -714,6 +739,7 @@ pub fn identifying_key(key: &str) -> bool {
     match key.split_once(':') {
         Some(("str", _)) => true,
         Some(("near", _)) => true,
+        Some(("joint", _)) => true,
         Some(("callee", value)) => !low_information_callee(value),
         Some(("const", value)) => !low_information_const(value),
         _ => false,
@@ -842,7 +868,7 @@ pub struct FeatureCache {
 }
 
 impl FeatureCache {
-    fn get_or_recover<S: ByteSource + ?Sized>(
+    pub(crate) fn get_or_recover<S: ByteSource + ?Sized>(
         &self,
         source: &S,
         start: u64,

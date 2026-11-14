@@ -245,6 +245,9 @@ struct BenchArgs {
     /// Write each hint-free false-positive hit as a JSON line to this file
     #[arg(long = "fp-report")]
     fp_report: Option<PathBuf>,
+    /// Also measure joint resolution of whole-module signature sets (slow)
+    #[arg(long)]
+    joint: bool,
     /// Allowed recall drop / false-positive increase
     #[arg(long, default_value_t = sigtool_native::bench::DEFAULT_TOLERANCE)]
     tolerance: f64,
@@ -726,18 +729,24 @@ fn use_hints(source: &dyn ByteSource, discovery: &str) -> bool {
 }
 
 /// Every signature against one shared hint-free context, best match first
-/// per signature, in signature order.
+/// per signature, in signature order. Signatures from one module are then
+/// resolved jointly through their call-graph links.
 fn hint_free_hits(
     source: &dyn ByteSource,
     signatures: &[Signature],
 ) -> Result<Vec<ScanHit>, CliError> {
     let context = ScanContext::build(source);
+    let mut all: Vec<Vec<Match>> = signatures
+        .iter()
+        .map(|signature| scan_in(source, signature, &context, false))
+        .collect();
+    sigtool_native::joint::resolve(source, &context, signatures, &mut all, false);
     let mut hits = Vec::new();
-    for signature in signatures {
+    for (signature, matches) in signatures.iter().zip(all) {
         let signature_id = signature
             .signature_id()
             .map_err(|error| CliError::input(error.to_string()))?;
-        for matched in scan_in(source, signature, &context, false) {
+        for matched in matches {
             hits.push(ScanHit {
                 signature_id: signature_id.clone(),
                 name: signature.name.clone(),
@@ -1021,6 +1030,7 @@ fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
         discovery: args.discovery.clone(),
         skip_false_positives: args.no_fp,
         fp_report: args.fp_report.clone(),
+        joint: args.joint,
     };
     let report = bench::run_with(&args.corpus, &options).map_err(CliError::input)?;
     print!("{}", bench::render(&report));
