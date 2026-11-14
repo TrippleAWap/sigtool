@@ -109,7 +109,7 @@ pub fn score_features(
             ScoredFeature {
                 feature: feature.clone(),
                 weight: MIN_WEIGHT.max(round_to(weight, WEIGHT_DECIMALS)),
-                required: !OPTIONAL_KINDS.contains(&feature.kind),
+                required: feature.required && !OPTIONAL_KINDS.contains(&feature.kind),
             }
         })
         .collect();
@@ -163,6 +163,14 @@ pub fn select_anchors(scored: &[ScoredFeature], limit: usize) -> Vec<String> {
     let mut data: Vec<&ScoredFeature> = scored
         .iter()
         .filter(|item| DATA_KINDS.contains(&item.feature.kind))
+        // An optional feature may be absent from a correct match, so it
+        // cannot stand for the signature.
+        .filter(|item| item.required)
+        // A call into another library (`memcpy`, `free`) is common to
+        // unrelated functions; it must not lower the match threshold.
+        .filter(|item| {
+            !(item.feature.kind == FeatureKind::Callee && item.feature.value.contains('!'))
+        })
         .collect();
     data.sort_by(|left, right| {
         right

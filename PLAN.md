@@ -59,7 +59,7 @@ front-ends: cli.py, ida_plugin.py
 
 - `str`: string literals referenced by the function.
 - `const`: materialized constants, normalized across arch (x86 imm32, ARM movw/movt, ARM64 movz/movk collapse to one value). Pointer-like values are dropped.
-- `callee`: resolved export or import names; `module+rva` fallback.
+- `callee`: names of called functions, through PLT stubs and veneers. Imports and dynamic exports (names `strip` keeps) are required; `.symtab`-only local names are optional; unnamed targets and intra-function jumps produce no callee (spec §2.1).
 - `cfg`: block, edge, and loop counts stored as ranges.
 - `ops`: histogram over about 14 op classes, bucketed, stored as ranges.
 

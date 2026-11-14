@@ -75,8 +75,10 @@ pub fn merge(
                 .signature
                 .features
                 .iter()
-                .map(|feature| {
-                    let feature = Feature::new(feature.kind, feature.value.clone());
+                .map(|item| {
+                    // Keep the sample's own optional marks (local callees).
+                    let mut feature = Feature::new(item.kind, item.value.clone());
+                    feature.required = item.required;
                     (feature.key(), feature)
                 })
                 .collect()

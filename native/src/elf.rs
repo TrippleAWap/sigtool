@@ -403,7 +403,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     }
 
     let sym_struct_size = if is64 { 24usize } else { 16usize };
-    let mut symbols: Vec<(String, u64, u8, u16, u64)> = Vec::new();
+    let mut symbols: Vec<(String, u64, u8, u16, u64, bool)> = Vec::new();
     let mut tables: HashMap<usize, (Vec<u8>, Vec<u8>)> = HashMap::new();
     let mut symtab_functions = false;
     // Pointers to code that survive `strip --strip-all`: exported function
@@ -462,7 +462,14 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                 start_pointers.push(st_value);
             }
             if st_shndx != 0 && !symbol_name.is_empty() {
-                symbols.push((symbol_name, st_value, st_info, st_shndx, st_size));
+                symbols.push((
+                    symbol_name,
+                    st_value,
+                    st_info,
+                    st_shndx,
+                    st_size,
+                    section.kind == ELF_SHT_DYNSYM,
+                ));
             }
         }
     }
@@ -552,7 +559,11 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     let mut bounds: Vec<(u64, u64)> = Vec::new();
     let mut thumb_starts: Vec<u64> = Vec::new();
     let mut code_pointers: Vec<u64> = Vec::new();
-    for (symbol_name, value, info, shndx, size) in symbols {
+    // Exports are the names a stripped copy keeps: `.dynsym` when the image
+    // has one (`strip` removes `.symtab`), else the global `.symtab` symbols
+    // of an object file.
+    let has_dynsym = symbols.iter().any(|symbol| symbol.5);
+    for (symbol_name, value, info, shndx, size, dynamic) in symbols {
         let Some(base) = places.get(&(shndx as usize)) else {
             continue;
         };
@@ -579,7 +590,10 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
             }
         }
         let binding = info >> 4;
-        if (binding == 1 || binding == 2) && export_seen.insert(symbol_name.clone(), ()).is_none() {
+        if (binding == 1 || binding == 2)
+            && (dynamic || !has_dynsym)
+            && export_seen.insert(symbol_name.clone(), ()).is_none()
+        {
             exports.push((symbol_name, address));
         }
     }

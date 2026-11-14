@@ -5,7 +5,7 @@
 //! bytes produce identical records, and ASLR-shifted copies produce identical
 //! records.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::normalize::{Kind, OpClass};
 use crate::recover::RecoveredFunction;
@@ -81,6 +81,7 @@ pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> 
     let mut strings: HashSet<String> = HashSet::new();
     let mut consts: HashSet<u64> = HashSet::new();
     let mut callees: HashSet<String> = HashSet::new();
+    let (start, end) = (func.start(), func.end());
     let mut ops: HashMap<OpClass, usize> = HashMap::new();
 
     for block in &func.blocks {
@@ -102,7 +103,15 @@ pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> 
                 }
             }
             if let Some(callee) = &insn.callee {
-                callees.insert(callee.clone());
+                // A jump that stays inside the function is control flow, not a
+                // call: its target is a layout address in our own body.
+                let internal = insn.kind == Kind::Jump
+                    && insn
+                        .target
+                        .is_some_and(|target| start <= target && target < end);
+                if !internal {
+                    callees.insert(callee.clone());
+                }
             }
         }
     }
@@ -124,13 +133,27 @@ pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> 
             .map(|value| Feature::new(FeatureKind::Const, format!("0x{value:x}"))),
     );
 
-    let mut callee_values: Vec<String> = callees.into_iter().collect();
-    callee_values.sort();
-    features.extend(
-        callee_values
-            .into_iter()
-            .map(|value| Feature::new(FeatureKind::Callee, value)),
-    );
+    // Portability is a property of the resolved name (an import keeps its
+    // `__aeabi_memcpy` spelling), so decide it before canonicalising.
+    let mut callee_values: BTreeMap<String, bool> = BTreeMap::new();
+    for raw in callees {
+        if let Some(value) = canonical_callee(&raw) {
+            let portable = is_portable_name(source, &raw);
+            let value = if is_external_import(source, &raw) && !value.contains('!') {
+                format!("{EXTERNAL_PREFIX}{value}")
+            } else {
+                value.to_string()
+            };
+            *callee_values.entry(value).or_insert(false) |= portable;
+        }
+    }
+    // A local callee's name is gone on a stripped target, so it may add
+    // evidence but must never be demanded (or anchor the signature).
+    for (value, portable) in callee_values {
+        let mut feature = Feature::new(FeatureKind::Callee, value);
+        feature.required = portable;
+        features.push(feature);
+    }
 
     features.push(Feature::new(
         FeatureKind::Cfg,
@@ -159,6 +182,76 @@ pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> 
 
     features.sort();
     features
+}
+
+/// libgcc / compiler-rt helper suffixes (`__udivsi3`, `__aeabi` aside): the
+/// operand modes of an arithmetic operation the target lowers to a call.
+const RUNTIME_HELPER_SUFFIXES: [&str; 22] = [
+    "si3", "di3", "ti3", "si4", "di4", "ti4", "sf2", "df2", "tf2", "sf3", "df3", "tf3", "sisf",
+    "sidf", "disf", "didf", "sfsi", "dfsi", "sfdi", "dfdi", "sitf", "ditf",
+];
+
+/// The cross-architecture form of a callee name, or `None` to drop it.
+///
+/// ARM32 lowers integer division, 64-bit shifts, and soft-float arithmetic to
+/// EABI/libgcc helper calls where x86-64 and AArch64 emit one instruction, so
+/// those calls are arithmetic, not callees. The EABI memory helpers are the
+/// same operation as the libc call other targets make (`__aeabi_memclr` is
+/// `memset` with zero).
+pub fn canonical_callee(name: &str) -> Option<&str> {
+    if let Some(helper) = name.strip_prefix("__aeabi_") {
+        return if helper.starts_with("memcpy") {
+            Some("memcpy")
+        } else if helper.starts_with("memmove") {
+            Some("memmove")
+        } else if helper.starts_with("memset") || helper.starts_with("memclr") {
+            Some("memset")
+        } else {
+            None
+        };
+    }
+    if name.starts_with("__")
+        && name.len() <= 16
+        && RUNTIME_HELPER_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Marks a call into another image (ELF: the defining library is not
+/// recorded), in the spec's `module!import` form with an unknown module.
+pub const EXTERNAL_PREFIX: &str = "*!";
+
+/// True for an import the image does not define itself.
+///
+/// A shared object calls its own exported functions through the PLT too
+/// (symbol interposition), so an import relocation alone does not mean
+/// "another library": only a name with no definition here is external. Calls
+/// to `memcpy`, `malloc`, or `free` occur in unrelated code everywhere, so the
+/// matcher treats external callees as low-information evidence.
+pub fn is_external_import<S: ByteSource + ?Sized>(source: &S, name: &str) -> bool {
+    let imported = source
+        .modules()
+        .iter()
+        .any(|module| module.imports.values().any(|import| import == name));
+    imported
+        && !source
+            .modules()
+            .iter()
+            .any(|module| module.exports.iter().any(|(export, _)| export == name))
+}
+
+/// A callee name that survives stripping: an import (resolved through a
+/// relocated slot) or a symbol the image exports dynamically. Names that only
+/// `.symtab` provides vanish from a stripped target.
+pub fn is_portable_name<S: ByteSource + ?Sized>(source: &S, name: &str) -> bool {
+    source.modules().iter().any(|module| {
+        module.imports.values().any(|import| import == name)
+            || module.exports.iter().any(|(export, _)| export == name)
+    })
 }
 
 /// Absolute addresses inside a mapped module must never become features.
@@ -293,6 +386,92 @@ fn latin1(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::Arch;
+    use crate::recover::recover;
+    use crate::source::{MemorySource, Module, Region};
+
+    /// `f` calls a local helper, an exported function, and an import through
+    /// a lazily bound PLT stub, then loops back onto its own (named) entry.
+    fn call_fixture() -> MemorySource {
+        let mut body = vec![
+            0xE8, 0x3B, 0x00, 0x00, 0x00, // 0x1000: call 0x1040 (helper)
+            0xE8, 0x46, 0x00, 0x00, 0x00, // 0x1005: call 0x1050 (api)
+            0xE8, 0x51, 0x00, 0x00, 0x00, // 0x100a: call 0x1060 (puts@plt)
+            0x85, 0xC0, // 0x100f: test eax, eax
+            0x74, 0x02, // 0x1011: je 0x1015
+            0xEB, 0xEB, // 0x1013: jmp 0x1000
+            0xC3, // 0x1015: ret
+        ];
+        body.resize(0x40, 0xCC);
+        body.push(0xC3); // 0x1040: helper
+        body.resize(0x50, 0xCC);
+        body.push(0xC3); // 0x1050: api
+        body.resize(0x60, 0xCC);
+        // 0x1060: jmp [rip+0xf9a] (slot 0x2000); push 0
+        body.extend_from_slice(&[0xFF, 0x25, 0x9A, 0x0F, 0x00, 0x00, 0x68, 0, 0, 0, 0]);
+        let text = Region::new("text", 0x1000, body, true, false);
+        // Lazy binding: the slot points back into the stub, not at `puts`.
+        let got = Region::new("got", 0x2000, 0x1066u64.to_le_bytes().to_vec(), false, true);
+        let functions = HashMap::from([
+            (0x1000, "f".to_string()),
+            (0x1040, "helper".to_string()),
+            (0x1050, "api".to_string()),
+        ]);
+        let module = Module {
+            name: "fixture".to_string(),
+            base: 0x1000,
+            size: 0x1008,
+            path: None,
+            exports: vec![("f".to_string(), 0x1000), ("api".to_string(), 0x1050)],
+            functions,
+            imports: HashMap::from([(0x2000, "puts".to_string())]),
+        };
+        MemorySource::new(
+            Arch::X64,
+            vec![text, got],
+            vec![module],
+            vec![(0x1000, 0x1016)],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn runtime_helpers_are_arithmetic_and_eabi_memory_calls_are_libc() {
+        assert_eq!(canonical_callee("__aeabi_memcpy8"), Some("memcpy"));
+        assert_eq!(canonical_callee("__aeabi_memclr4"), Some("memset"));
+        assert_eq!(canonical_callee("__aeabi_uidivmod"), None);
+        assert_eq!(canonical_callee("__aeabi_dadd"), None);
+        assert_eq!(canonical_callee("__udivdi3"), None);
+        assert_eq!(canonical_callee("__divti3"), None);
+        assert_eq!(
+            canonical_callee("__stack_chk_fail"),
+            Some("__stack_chk_fail")
+        );
+        assert_eq!(canonical_callee("luaH_next"), Some("luaH_next"));
+    }
+
+    #[test]
+    fn callees_are_calls_with_portable_names_required() {
+        let source = call_fixture();
+        let func = recover(&source, 0x1000, None, true).expect("recover");
+        let callees: Vec<(String, bool)> = extract(&source, &func)
+            .into_iter()
+            .filter(|feature| feature.kind == FeatureKind::Callee)
+            .map(|feature| (feature.value, feature.required))
+            .collect();
+        // The jump back to `f` is a loop, not a callee; `puts` resolves
+        // through its relocated slot although the slot holds a stub address;
+        // and is external (`*!`); `helper` has only a `.symtab` name, so it
+        // is optional.
+        assert_eq!(
+            callees,
+            vec![
+                ("*!puts".to_string(), true),
+                ("api".to_string(), true),
+                ("helper".to_string(), false),
+            ]
+        );
+    }
 
     fn words(value: u64) -> Vec<u64> {
         const_words(value).collect()

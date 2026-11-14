@@ -158,3 +158,36 @@ emits the old form, so `SPEC_VERSION` is not bumped here and the
   as an address before pending constants flush, with the unaligned Thumb PC
   for the register form. Previously the offset leaked as a build-specific
   `const` (`0xfffeff36`) and the string it addressed was lost.
+
+## Unreleased — portable callees
+
+Changes `callee` feature semantics (SPEC.md §2.1). `SPEC_VERSION` is not
+bumped here so that one bump can cover this and the concurrent constant
+canonicalization change; signatures written before this change carry callees
+that the new extractor never emits.
+
+* Only calls and jumps that leave the function produce callees; a jump into
+  the function's own body is control flow.
+* Only names are callees. The `module+0x<rva>` fallback is gone: it is a layout
+  address and matched nothing outside its own build.
+* Import stubs resolve to the import they load, checking the slot's relocation
+  before reading it (a lazily bound slot points back into the PLT): x86-64
+  `jmp [rip+slot]` after `endbr64`, AArch64 PLT entries and veneers (with
+  `bti`), ARM PLT entries (short and long, with a Thumb `bx pc` prefix) and
+  veneers. Before this, every PLT call on every architecture became a
+  `module+rva` label, and ARM32 imports were never read at all (8-byte
+  `Elf32_Rel` entries were rejected as too short).
+* Callees named only by `.symtab` (local functions) are optional and never
+  anchors; imports and dynamic exports stay required. ELF exports are the
+  `.dynsym` definitions, the names `strip` keeps.
+* ARM EABI / libgcc arithmetic helpers are dropped; EABI memory helpers are
+  renamed to the libc call.
+* A matched callee name (required or optional) satisfies shape corroboration
+  (SPEC.md §8), as a required callee always did.
+* Calls into other images are written `*!name` (ELF) or `module!name` (PE)
+  and are low-information: never anchors, not identifying for shape
+  corroboration. Resolving PLT calls made `memcpy`/`free` match across
+  unrelated libraries; with this rule the real-corpus strong FP rate is 0.094
+  (0.081 before the callee changes, 0.374 without the rule).
+* Golden vectors: 57 callee records removed, all `fixture+0x<rva>` labels
+  (intra-function jumps); no named callee changed.

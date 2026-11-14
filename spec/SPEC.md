@@ -15,7 +15,7 @@ both signing and scanning, so the two can never drift apart.
 |---|---|---|
 | `str` | text, or `w:` + text for UTF-16LE, or `long:` + digest | String literal referenced by the function |
 | `const` | `0x` + lowercase hex | Materialised constant, pointer values removed |
-| `callee` | symbol name, `module!import`, or `module+0x<rva>` | Resolved call target |
+| `callee` | symbol name or `module!import` (§2.1) | Named target of a call or tail call |
 | `cfg` | `blocks:<b>`, `edges:<b>`, `loops:<b>` | Coarse control-flow shape |
 | `ops` | `<op-class>:<b>` | Bucketed histogram over 14 instruction classes |
 
@@ -92,6 +92,53 @@ Rule 4 of AGENTS.md: **no absolute address may appear in a feature.**
 * A constant whose value lies inside a mapped module is dropped entirely.
 
 Data references are anchors for Tier 0 (§6) and are never stored as values.
+
+### 2.1 Callees
+
+A `callee` is the *name* of what a call, or a jump that leaves the function,
+reaches. Names are the only callee form: an unnamed target's address (or a
+`module+rva` label) differs per build, so it is never a feature.
+
+* **Calls and tail calls only.** A direct jump whose target lies inside the
+  recovered function is control flow, not a callee, even when the target
+  carries a name (a loop back onto the entry).
+* **Stubs resolve to the import they load.** A branch into an import stub
+  follows the stub to the pointer slot it jumps through; a slot carrying an
+  import relocation (`R_*_JUMP_SLOT`, `R_*_GLOB_DAT`, a PE IAT entry) names the
+  callee, before the slot is read, because a lazily bound slot points back
+  into the PLT. Recognised stubs: x86-64 `jmp [rip+slot]` (after `endbr64`);
+  AArch64 `adrp x16; ldr x17, [x16, #o]; [add x16;] br x17` (after `bti`);
+  ARM `add ip, pc, #A; add ip, ip, #B; [add ip, ip, #C;] ldr pc, [ip, #D]!`,
+  lld's long `ldr ip, L; add ip, ip, pc; ldr pc, [ip]`, optionally behind a
+  Thumb `bx pc; nop`. Veneers resolve to their target: AArch64 `adrp x16; add
+  x16; br x16` and `ldr x16, =T; br x16`, ARM `ldr pc, [pc, #-4]` and `movw
+  ip; movt ip; bx ip`. Only the veneer scratch registers (`x16`/`x17`, `ip`)
+  are accepted. A slot without a relocation is read and followed, at most
+  `MAX_THUNK_HOPS` (4) times.
+* **Runtime helpers are arithmetic.** ARM EABI and libgcc/compiler-rt helpers
+  that stand in for one instruction on other targets (`__aeabi_uidivmod`,
+  `__aeabi_d*`, `__udivsi3`, `__divti3`, ...: a `__` name of at most 16
+  characters ending in a libgcc mode suffix such as `si3`, `di3`, `df2`) are
+  not callees. The EABI memory helpers are the libc call they implement:
+  `__aeabi_memcpy*` is `memcpy`, `__aeabi_memmove*` is `memmove`, and
+  `__aeabi_memset*` / `__aeabi_memclr*` are `memset`.
+* **Calls into other images are low-information.** An import the image does
+  not define itself (no `.dynsym` definition; every PE import) is written in
+  the `module!import` form; ELF does not record the providing library, so the
+  module is `*` (`*!memcpy`). A shared object's call to its own export
+  through the PLT keeps the plain name. A callee value containing `!` is never
+  an anchor and, like a small constant, does not make a signature
+  high-information or corroborate a match (§8): `memcpy` and `free` are
+  called by unrelated code everywhere.
+* **Portable names are required, local names optional.** A name is portable
+  when it survives `strip`: an import, or a symbol the image exports (ELF:
+  defined in `.dynsym`; an `ET_REL` object without `.dynsym` uses its global
+  `.symtab` symbols). A callee known only from `.symtab` (a `static` or hidden
+  function) is emitted with `required: false`: it adds evidence when the
+  target still has symbols and costs nothing when it is stripped. Optional
+  callees are never anchors (§7) and do not make a signature high-information,
+  but a candidate that matches one is corroborated (§8). Portability is decided on the resolved name,
+  before the helper rename above.
 
 Relocatable ELF objects (`ET_REL`) have no applied relocations, so a reference
 across sections is encoded as a zero displacement and resolves to nothing. Sign
@@ -226,7 +273,7 @@ unless a reference corpus is supplied (`core.score.build_idf`).
 | kind | base | anchors | required |
 | --- | --- | --- | --- |
 | `str` | 1.0 | yes | yes |
-| `callee` | 0.9 | yes | yes |
+| `callee` | 0.9 | yes (portable only) | portable only (§2.1) |
 | `const` | 0.7 | yes | yes |
 | `cfg` | 0.25 | no | no |
 | `ops` | 0.15 | no | no |
@@ -242,7 +289,8 @@ must never carry a signature on its own.
 
 ### Anchors and thresholds
 
-Anchors are the heaviest data features (`str`, `const`, `callee`), at most four.
+Anchors are the heaviest required data features (`str`, `const`, `callee`), at
+most four; an optional feature is never an anchor.
 They are the Tier 0 prefilter, so the required weight and the threshold both
 depend on how many exist:
 
@@ -322,14 +370,16 @@ generation and never decodes with its own tables.
   `score >= thresholds.match`, `matched_required >= min_distinct`, and, for a
   low-information signature, shape corroboration.
 * **Shape corroboration.** A signature is low-information when none of its
-  required features is a `str`, a `callee`, or a `const` whose magnitude (either
-  sign, as a 32-bit word per §3) is at least `0x100`. Constants such as loop steps, field offsets, and
+  required features is a `str`, a `callee` without `!`, or a `const` whose magnitude
+  (either sign, as a 32-bit word per §3) is at least `0x100`. Constants such as loop steps, field offsets, and
   `-8` stack alignment occur in most functions, and on the corpus every false
   positive came from such a signature. Its candidate must also agree with at
   least 0.8 of the signature's shape dimensions. A dimension is a shape key
   without its bucket (`cfg:blocks`, `ops:arith`, ...); it agrees when any of the
   signature's buckets for it matched, so a merged signature carrying one bucket
-  per sample architecture still corroborates on each of them.
+  per sample architecture still corroborates on each of them. A candidate that
+  matched any `callee` feature without `!`, required or optional, needs no shape
+  agreement: a matched name identifies the function (§2.1).
 
 Score definition, rounded to six decimals:
 

@@ -205,6 +205,15 @@ pub fn low_information_const(value: &str) -> bool {
     }
 }
 
+/// A call into another image (`module!import`, `*!` when the module is
+/// unknown): `memcpy` or `free` is called by unrelated code everywhere, so like
+/// a small constant it supports a match but identifies nothing. Measured on
+/// the real corpus, counting them as identifying raised the strong
+/// cross-library FP rate from 0.081 to 0.374.
+pub fn low_information_callee(value: &str) -> bool {
+    value.contains('!')
+}
+
 /// True when no required feature identifies the function by itself: every
 /// required feature is a small constant, or there are none (shape-only
 /// signatures of tiny functions). The corpus bench showed that every false
@@ -214,7 +223,8 @@ pub fn needs_shape_corroboration(signature: &Signature) -> bool {
     !signature.features.iter().any(|feature| {
         feature.required
             && match feature.kind {
-                FeatureKind::Str | FeatureKind::Callee => true,
+                FeatureKind::Str => true,
+                FeatureKind::Callee => !low_information_callee(&feature.value),
                 FeatureKind::Const => !low_information_const(&feature.value),
                 _ => false,
             }
@@ -263,9 +273,17 @@ pub fn accepts(signature: &Signature, result: &MatchScore) -> bool {
         .iter()
         .filter(|feature| feature.required)
         .count();
+    // A matched callee name identifies the function even when it is optional
+    // (a local callee only `.symtab` names): it corroborates like a required
+    // one. On a stripped target it cannot match, and the shape gate applies.
+    let named = result.matched.iter().any(|key| {
+        key.strip_prefix("callee:")
+            .is_some_and(|value| !low_information_callee(value))
+    });
     result.score >= signature.match_threshold
         && result.matched_required >= signature.min_distinct.min(required_count)
         && (!needs_shape_corroboration(signature)
+            || named
             || shape_agreement(signature, &result.matched) >= MIN_SHAPE_AGREEMENT)
 }
 
