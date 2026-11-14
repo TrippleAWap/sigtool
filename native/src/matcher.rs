@@ -437,6 +437,28 @@ impl Frequencies {
 }
 
 impl ScanContext {
+    /// Hint-free `(functions, log10 of each matched key's frequency)`, when
+    /// frequencies were built. Diagnostic for the bench report.
+    pub fn key_frequencies(&self, matched: &[String]) -> Option<(usize, Vec<f64>)> {
+        let frequencies = self.frequencies[0].get()?.as_ref()?;
+        let total = frequencies.functions as f64;
+        Some((
+            frequencies.functions,
+            matched
+                .iter()
+                .map(|key| {
+                    let count = frequencies
+                        .document_frequency
+                        .get(key)
+                        .copied()
+                        .unwrap_or(1)
+                        .max(1);
+                    (f64::from(count) / total).log10()
+                })
+                .collect(),
+        ))
+    }
+
     pub fn build<S: ByteSource + ?Sized>(source: &S) -> ScanContext {
         let mut references = ReferenceIndex::default();
         for region in source.regions() {
@@ -489,10 +511,38 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     match frequencies {
         Some(frequencies) => matches
             .into_iter()
-            .filter(|found| specific(frequencies, found))
+            .filter(|found| specific(frequencies, found) && enough_evidence(found))
             .collect(),
         None => matches,
     }
+}
+
+/// A matched key that identifies a function by itself: a string, a callee
+/// inside the image, or a constant away from zero.
+fn identifying_key(key: &str) -> bool {
+    match key.split_once(':') {
+        Some(("str", _)) => true,
+        Some(("callee", value)) => !low_information_callee(value),
+        Some(("const", value)) => !low_information_const(value),
+        _ => false,
+    }
+}
+
+/// Matched features a hint-free match needs when none of them identifies the
+/// function. Measured on the stripped real corpus (`bench --fp-report`):
+/// every false positive but two matched only low-information keys, and those
+/// with fewer than 6 (three CFG buckets, a couple of op classes, constant 0)
+/// were all coincidences: 6 cut the hint-free FP rate 0.250 -> 0.203 without
+/// moving any top-1 cell; each further step trades recall for precision at
+/// the same rate as a similarity floor or a recalibrated chance gate. Like
+/// the chance gate it applies only to images large enough for frequencies:
+/// in a few dozen functions coincidences are rare, and the toy corpus's tiny
+/// functions have fewer than 6 features to match.
+pub const MIN_LOW_INFORMATION_MATCHED: usize = 6;
+
+fn enough_evidence(found: &Match) -> bool {
+    found.matched.len() >= MIN_LOW_INFORMATION_MATCHED
+        || found.matched.iter().any(|key| identifying_key(key))
 }
 
 /// Minimum similarity for any accepted match. Measured on stripped x64 and

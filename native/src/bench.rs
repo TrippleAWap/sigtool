@@ -516,8 +516,50 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             && matches.get(1).is_none_or(|next| {
                 (next.similarity, next.score) < (matches[0].similarity, matches[0].score)
             });
-        (found, top)
+        let kept = if options.fp_report.is_some() && !hints {
+            matches
+        } else {
+            Vec::new()
+        };
+        (found, top, kept)
     });
+    if let Some(path) = &options.fp_report {
+        let mut out = String::new();
+        for ((s, t, hints), (_, _, matches)) in recall_jobs.iter().zip(&recall_hits) {
+            if *hints {
+                continue;
+            }
+            let sample = all[*s];
+            let target = &targets[*t];
+            let expected = target.functions[&sample.name];
+            let found: Vec<Value> = matches
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "true": m.address == expected,
+                        "score": m.score,
+                        "similarity": m.similarity,
+                        "logp": target.scan_source(false).1.key_frequencies(&m.matched),
+                        "matched": m.matched,
+                    })
+                })
+                .collect();
+            let line = serde_json::json!({
+                "sample": sample.name,
+                "arch": sample.arch,
+                "source": sample.source_file,
+                "opt": sample.opt,
+                "verdict": sample.verdict,
+                "target": format!("{}/{}/{}", target.arch, target.opt, target.source_file),
+                "matches": found,
+            });
+            out.push_str(&line.to_string());
+            out.push('\n');
+        }
+        let mut recall_path = path.as_os_str().to_owned();
+        recall_path.push(".recall");
+        std::fs::write(&recall_path, out).map_err(|error| format!("{error}"))?;
+    }
     let mut cells: BTreeMap<CellKey, (usize, usize, usize)> = BTreeMap::new();
     for ((s, t, hints), hit) in recall_jobs.iter().zip(&recall_hits) {
         let sample = all[*s];
@@ -728,6 +770,7 @@ fn write_fp_report(
                 "size": found.end.saturating_sub(found.address),
                 "score": found.score,
                 "similarity": found.similarity,
+                "logp": target.scan_source(false).1.key_frequencies(&found.matched),
                 "matched": found.matched,
                 "label": label,
             });
