@@ -453,16 +453,33 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     );
     // Image-relative specificity: a match made only of features that many of
     // this image's functions carry (common imports, boilerplate constants,
-    // frequent shape buckets) is coincidence, not identification.
+    // frequent shape buckets) is coincidence, not identification. Applied to
+    // hint-free scans only, where it was measured: a stripped image's whole
+    // function list is compared, so coincidences are frequent there. Images
+    // too small for frequencies keep every accepted match.
+    if hints {
+        return matches;
+    }
     let frequencies = context.frequencies[usize::from(hints)]
         .get_or_init(|| Frequencies::build(source, &context.features, hints));
     match frequencies {
         Some(frequencies) => matches
             .into_iter()
-            .filter(|found| frequencies.chance_matches(&found.matched) <= MAX_CHANCE_MATCHES)
+            .filter(|found| specific(frequencies, found))
             .collect(),
         None => matches,
     }
+}
+
+/// Minimum similarity for any accepted match. Measured on stripped x64 and
+/// arm64: 0.2 keeps every single-arch and cross-arch top-1 cell and cuts
+/// merged hint-free false positives 0.242 -> 0.141; 0.3 starts losing true
+/// cross-compiler matches, whose similarity is genuinely low.
+pub const MIN_SIMILARITY: f64 = 0.2;
+
+fn specific(frequencies: &Frequencies, found: &Match) -> bool {
+    found.similarity >= MIN_SIMILARITY
+        && frequencies.chance_matches(&found.matched) <= MAX_CHANCE_MATCHES
 }
 
 /// The candidate starts [`scan_in`] would try, in order. Diagnostic: it
