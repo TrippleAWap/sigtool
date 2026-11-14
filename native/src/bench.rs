@@ -21,8 +21,8 @@ use serde_json::Value;
 
 use crate::elf::FileSource;
 use crate::generate::generate_in;
-use crate::matcher::{scan_in, Match, ScanContext};
-use crate::merge::{merge, MergeSample};
+use crate::matcher::{rank_key, scan_in, Match, ScanContext};
+use crate::merge::{merge_in, MergeSample};
 use crate::sigfile::Signature;
 use crate::spec::SPEC_VERSION;
 
@@ -461,14 +461,27 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 tool: Some("clang"),
             },
         ];
-        merge(&pair, Some(name), None).ok().map(|result| Sample {
-            arch: MERGED.to_string(),
-            source_file: file.clone(),
-            opt: opt.clone(),
-            name: name.clone(),
-            verdict: result.report.verdict.clone(),
-            signature: result.signature,
-        })
+        let contexts: Vec<Option<&ScanContext>> = [*a, *b]
+            .iter()
+            .map(|index| {
+                let target = &targets[*index];
+                Some(
+                    target
+                        .context
+                        .get_or_init(|| ScanContext::build(&target.source)),
+                )
+            })
+            .collect();
+        merge_in(&pair, &contexts, Some(name), None)
+            .ok()
+            .map(|result| Sample {
+                arch: MERGED.to_string(),
+                source_file: file.clone(),
+                opt: opt.clone(),
+                name: name.clone(),
+                verdict: result.report.verdict.clone(),
+                signature: result.signature,
+            })
     });
     let merged_refused = merged_results.iter().filter(|s| s.is_none()).count();
     let merged: Vec<Sample> = merged_results.into_iter().flatten().collect();
@@ -513,9 +526,9 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         let found = matches.iter().any(|m| m.address == expected);
         // Matches are sorted best first; a tie for first is ambiguous.
         let top = matches.first().is_some_and(|m| m.address == expected)
-            && matches.get(1).is_none_or(|next| {
-                (next.similarity, next.score) < (matches[0].similarity, matches[0].score)
-            });
+            && matches
+                .get(1)
+                .is_none_or(|next| rank_key(next) < rank_key(&matches[0]));
         let kept = if options.fp_report.is_some() && !hints {
             matches
         } else {
@@ -550,6 +563,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 "source": sample.source_file,
                 "opt": sample.opt,
                 "verdict": sample.verdict,
+                "neighbours": sample.signature.neighbours,
                 "target": format!("{}/{}/{}", target.arch, target.opt, target.source_file),
                 "matches": found,
             });
@@ -773,6 +787,7 @@ fn write_fp_report(
                 "logp": target.scan_source(false).1.key_frequencies(&found.matched),
                 "matched": found.matched,
                 "label": label,
+                "neighbours": sample.signature.neighbours,
             });
             out.push_str(&line.to_string());
             out.push('\n');

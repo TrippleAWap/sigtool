@@ -133,7 +133,7 @@ fn tiny_source() -> MemorySource {
 }
 
 /// The YAML `core.merge.merge` produces for these two strong samples.
-const TWINS_YAML: &str = r#"spec_version: '2'
+const TWINS_YAML: &str = r#"spec_version: '3'
 name: twins
 confidence: single-arch
 anchors:

@@ -436,7 +436,134 @@ impl Frequencies {
     }
 }
 
+/// The function a direct call reaches, for the call graph: `None` for an
+/// import (`memcpy` is no neighbour), and through the PLT for a call to an
+/// export the image defines itself. `-fPIC` shared objects call their own
+/// exported functions through PLT stubs (symbol interposition), so without
+/// this an exported function has no callers. The PLT relocation and the
+/// dynamic symbol both survive stripping.
+fn call_destination<S: ByteSource + ?Sized>(
+    source: &S,
+    target: u64,
+    callee: Option<&str>,
+) -> Option<u64> {
+    let Some(name) = callee else {
+        return Some(target);
+    };
+    for module in source.modules() {
+        if let Some((_, address)) = module.exports.iter().find(|(export, _)| export == name) {
+            return Some(*address);
+        }
+    }
+    let imported = source
+        .modules()
+        .iter()
+        .any(|module| module.imports.values().any(|import| import == name));
+    (!imported).then_some(target)
+}
+
+/// Neighbours per direction whose evidence is collected, nearest addresses
+/// first: bounds the cost on hub functions called from everywhere.
+pub const MAX_NEIGHBOURS: usize = 16;
+
+pub use crate::spec::MAX_NEIGHBOUR_KEYS;
+
+/// A shape-only hint-free match is rejected when the signature has at least
+/// this many neighbour keys and the candidate's neighbours share none.
+/// Simulated on the stripped real corpus (`bench --fp-report`): 1 cuts more
+/// false positives but costs merged and cross-compiler recall; 2 cuts the
+/// FP rate 0.203 -> 0.163 with no top-1 cell lower.
+pub const MIN_NEIGHBOURS_TO_REJECT: usize = 2;
+
 impl ScanContext {
+    /// Identifying keys of the function at `start`'s call-graph neighbours:
+    /// `out:` its direct callees, `in:` its callers, `out2:`/`in2:` one hop
+    /// further. Strings and distinctive constants survive stripping and
+    /// differ little across architectures, so a small function with no
+    /// evidence of its own can borrow its neighbours'. Nearest hops first,
+    /// at most [`MAX_NEIGHBOUR_KEYS`].
+    pub fn neighbour_keys<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> Vec<String> {
+        let mut keys = Vec::new();
+        let Some(candidate) = self.features.get_or_recover(source, start, hints) else {
+            return keys;
+        };
+        let callees = |of: u64| -> Vec<u64> {
+            self.features
+                .get_or_recover(source, of, hints)
+                .map(|found| found.calls.iter().copied().take(MAX_NEIGHBOURS).collect())
+                .unwrap_or_default()
+        };
+        let callers = |of: u64| -> Vec<u64> {
+            let mut found: Vec<u64> = self
+                .code
+                .callers
+                .get(&of)
+                .into_iter()
+                .flatten()
+                .filter_map(|site| {
+                    let enclosing = if hints {
+                        source.hint_function(*site)
+                    } else {
+                        None
+                    }
+                    .or_else(|| source.unwind_function(*site));
+                    enclosing.map(|(caller, _)| caller)
+                })
+                .filter(|caller| *caller != of)
+                .collect();
+            found.sort_unstable();
+            found.dedup();
+            found.truncate(MAX_NEIGHBOURS);
+            found
+        };
+        let me = candidate.start;
+        let out1 = callees(me);
+        let in1 = callers(me);
+        let hop2 = |first: &[u64], next: &dyn Fn(u64) -> Vec<u64>| -> Vec<u64> {
+            let mut found: Vec<u64> = first
+                .iter()
+                .flat_map(|n| next(*n))
+                .filter(|n| *n != me && !first.contains(n))
+                .collect();
+            found.sort_unstable();
+            found.dedup();
+            found.truncate(4 * MAX_NEIGHBOURS);
+            found
+        };
+        let out2 = hop2(&out1, &callees);
+        let in2 = hop2(&in1, &callers);
+        let hops: [(&[u64], &[u64], &str); 2] = [(&out1, &in1, ""), (&out2, &in2, "2")];
+        for (outgoing, incoming, hop) in hops {
+            let mut found = std::collections::BTreeSet::new();
+            for (direction, neighbours) in [("out", outgoing), ("in", incoming)] {
+                for neighbour in neighbours.iter().filter(|n| **n != me) {
+                    let Some(other) = self.features.get_or_recover(source, *neighbour, hints)
+                    else {
+                        continue;
+                    };
+                    for feature in &other.features {
+                        let identifying = match feature.kind {
+                            FeatureKind::Str => true,
+                            FeatureKind::Const => !low_information_const(&feature.value),
+                            _ => false,
+                        };
+                        if identifying {
+                            found.insert(format!("{direction}{hop}:{}", feature.key()));
+                        }
+                    }
+                }
+            }
+            keys.extend(found);
+        }
+        keys.truncate(MAX_NEIGHBOUR_KEYS);
+        keys
+    }
+
     /// Hint-free `(functions, log10 of each matched key's frequency)`, when
     /// frequencies were built. Diagnostic for the bench report.
     pub fn key_frequencies(&self, matched: &[String]) -> Option<(usize, Vec<f64>)> {
@@ -508,13 +635,70 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     }
     let frequencies = context.frequencies[usize::from(hints)]
         .get_or_init(|| Frequencies::build(source, &context.features, hints));
-    match frequencies {
-        Some(frequencies) => matches
-            .into_iter()
-            .filter(|found| specific(frequencies, found) && enough_evidence(found))
-            .collect(),
-        None => matches,
-    }
+    let Some(frequencies) = frequencies else {
+        return matches;
+    };
+    let signature_neighbours: HashSet<&str> =
+        signature.neighbours.iter().map(String::as_str).collect();
+    let mut kept: Vec<Match> = matches
+        .into_iter()
+        .filter(|found| specific(frequencies, found))
+        .filter_map(|mut found| {
+            let own_evidence = identified(&found);
+            let shared: Vec<String> = if signature_neighbours.is_empty() {
+                Vec::new()
+            } else {
+                context
+                    .neighbour_keys(source, found.address, hints)
+                    .into_iter()
+                    .filter(|key| signature_neighbours.contains(key.as_str()))
+                    .map(|key| format!("{NEIGHBOUR_PREFIX}{key}"))
+                    .collect()
+            };
+            // A function whose neighbours carry evidence is expected to keep
+            // some of it: a shape-only lookalike elsewhere shares none.
+            if !own_evidence
+                && shared.is_empty()
+                && signature.neighbours.len() >= MIN_NEIGHBOURS_TO_REJECT
+            {
+                return None;
+            }
+            if !shared.is_empty() {
+                found.matched.extend(shared);
+                found.matched.sort();
+            } else if !enough_evidence(&found) {
+                return None;
+            }
+            Some(found)
+        })
+        .collect();
+    // Shared neighbour evidence ranks first: among lookalikes with similar
+    // shape, the one wired to the same strings and constants is the function.
+    kept.sort_by(|left, right| {
+        rank_key(right)
+            .partial_cmp(&rank_key(left))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(left.address.cmp(&right.address))
+    });
+    kept
+}
+
+/// Prefix of a matched neighbour key in [`Match::matched`].
+pub const NEIGHBOUR_PREFIX: &str = "near:";
+
+/// Neighbour keys a match shares with its signature.
+pub fn corroboration(found: &Match) -> usize {
+    found
+        .matched
+        .iter()
+        .filter(|key| key.starts_with(NEIGHBOUR_PREFIX))
+        .count()
+}
+
+/// How matches are ordered, best first: shared neighbour evidence, then
+/// similarity, then score. Two matches with equal keys are a tie.
+pub fn rank_key(found: &Match) -> (usize, f64, f64) {
+    (corroboration(found), found.similarity, found.score)
 }
 
 /// A matched key that identifies a function by itself: a string, a callee
@@ -522,6 +706,7 @@ pub fn scan_in<S: ByteSource + ?Sized>(
 pub fn identifying_key(key: &str) -> bool {
     match key.split_once(':') {
         Some(("str", _)) => true,
+        Some(("near", _)) => true,
         Some(("callee", value)) => !low_information_callee(value),
         Some(("const", value)) => !low_information_const(value),
         _ => false,
@@ -594,6 +779,9 @@ pub struct Candidate {
     pub features: Vec<Feature>,
     pub keys: HashSet<String>,
     pub weighted: Vec<(String, f64)>,
+    /// Direct call and tail-call targets inside the image, sorted: the
+    /// function's callees, whose own evidence can corroborate it.
+    pub calls: Vec<u64>,
 }
 
 impl Candidate {
@@ -605,12 +793,27 @@ impl Candidate {
     ) -> Option<Candidate> {
         let recovered = recover(source, start, limits, hints).ok()?;
         let features = extract(source, &recovered);
+        let (body_start, body_end) = (recovered.start(), recovered.end());
+        let mut calls: Vec<u64> = recovered
+            .blocks
+            .iter()
+            .flat_map(|block| block.insns.iter())
+            .filter(|insn| matches!(insn.kind, Kind::Call | Kind::NoreturnCall | Kind::Jump))
+            .filter_map(|insn| {
+                let target = call_destination(source, insn.target?, insn.callee.as_deref())?;
+                let outside = target < body_start || target >= body_end;
+                (outside && source.is_executable(target)).then_some(target)
+            })
+            .collect();
+        calls.sort_unstable();
+        calls.dedup();
         Some(Candidate {
-            start: recovered.start(),
-            end: recovered.end(),
+            start: body_start,
+            end: body_end,
             weighted: weigh(&features),
             keys: features.iter().map(Feature::key).collect(),
             features,
+            calls,
         })
     }
 }
@@ -1409,6 +1612,8 @@ fn candidate_starts<S: ByteSource + ?Sized>(
 pub struct CodeIndex {
     boundaries: HashMap<u64, Vec<u64>>,
     call_targets: HashSet<u64>,
+    /// Direct call target to the call sites that reach it.
+    callers: HashMap<u64, Vec<u64>>,
     const_refs: HashMap<u64, Vec<u64>>,
 }
 
@@ -1444,6 +1649,11 @@ impl CodeIndex {
                         if let Some(target) = insn.target {
                             if source.is_executable(target) {
                                 index.call_targets.insert(target);
+                            }
+                            if let Some(callee) =
+                                call_destination(source, target, insn.callee.as_deref())
+                            {
+                                index.callers.entry(callee).or_default().push(insn.addr);
                             }
                         }
                     }

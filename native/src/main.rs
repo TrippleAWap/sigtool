@@ -40,9 +40,9 @@ use serde_json::Value;
 use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
-use sigtool_native::generate::{generate, GenerateError, GenerationResult};
+use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
 use sigtool_native::matcher::{identified, scan, scan_in, Match, ScanContext};
-use sigtool_native::merge::{merge, MergeSample};
+use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
 use sigtool_native::scanner::{ScanHit, SignatureScanner};
 use sigtool_native::sigfile::Signature;
@@ -310,7 +310,10 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         args.rva.as_deref(),
         args.module.as_deref(),
     )?;
-    let result = generate(
+    // The image's call graph gives the signature its neighbour keys. A live
+    // process is not indexed: the code index would decode every loaded DLL.
+    let context = args.file.is_some().then(|| ScanContext::build(source));
+    let result = generate_in(
         source,
         addr,
         args.name.as_deref(),
@@ -318,6 +321,7 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         args.tool.as_deref(),
         None,
         None,
+        context.as_ref(),
     )
     .map_err(classify_generate_error)?;
     let arch = source.arch().as_str().to_string();
@@ -519,7 +523,9 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
         .collect();
     // The Python front-end reports a merge refusal as an input error (exit 2):
     // the samples cannot be combined into one honest signature.
-    let result = merge(&samples, args.name.as_deref(), None)
+    let contexts: Vec<ScanContext> = sources.iter().map(ScanContext::build).collect();
+    let context_refs: Vec<Option<&ScanContext>> = contexts.iter().map(Some).collect();
+    let result = merge_in(&samples, &context_refs, args.name.as_deref(), None)
         .map_err(|error| CliError::input(format!("refusing to merge: {error}")))?;
 
     let arches: BTreeSet<&str> = sources

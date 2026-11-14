@@ -640,6 +640,6 @@
    "name": ".data"
   }
  ],
- "spec_version": "2",
+ "spec_version": "3",
  "target": "armv7-linux-gnueabihf"
 }

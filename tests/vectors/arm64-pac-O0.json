@@ -722,6 +722,6 @@
    "name": ".data"
   }
  ],
- "spec_version": "2",
+ "spec_version": "3",
  "target": "aarch64-linux-gnu"
 }

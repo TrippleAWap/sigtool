@@ -122,7 +122,7 @@ pub fn generate_in<S: ByteSource + ?Sized>(
         tool: tool.map(str::to_string),
     };
     let default_name = default_name(source, addr, &sample.module, rva);
-    let signature = Signature::new(
+    let mut signature = Signature::new(
         name.unwrap_or(&default_name),
         scored.iter().map(signature_feature).collect(),
         anchors.clone(),
@@ -131,6 +131,13 @@ pub fn generate_in<S: ByteSource + ?Sized>(
         confidence.clone(),
         vec![sample],
     )?;
+    // Neighbours need the image's call graph, which only a context has.
+    if let Some(context) = context {
+        let mut neighbours = context.neighbour_keys(source, recovered.start(), true);
+        neighbours.sort();
+        signature.neighbours = neighbours;
+        signature.validate()?;
+    }
     let report = quality_report(
         &scored,
         &anchors,

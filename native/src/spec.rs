@@ -6,7 +6,7 @@
 
 use blake2b_simd::Params;
 
-pub const SPEC_VERSION: &str = "2";
+pub const SPEC_VERSION: &str = "3";
 
 /// blake2b personalization fixes the hash domain; the Python reference uses
 /// `hashlib.blake2b(..., person=b"sigtool.v1")`.
@@ -16,6 +16,10 @@ pub const HASH_DIGEST_SIZE: usize = 16;
 /// Bucket index = number of bounds <= value - 1, so a value of 0 lands in
 /// bucket 0 and anything above the last bound lands in the last bucket.
 pub const BUCKET_BOUNDS: [usize; 15] = [0, 1, 2, 3, 4, 6, 9, 13, 19, 28, 40, 60, 90, 135, 200];
+
+/// Neighbour keys a signature may carry (SPEC.md §7). Measured on the real
+/// corpus: the median signature has 1, the 99th percentile 26.
+pub const MAX_NEIGHBOUR_KEYS: usize = 64;
 
 pub const STR_MIN_LEN: usize = 4;
 pub const STR_MAX_LEN: usize = 120;

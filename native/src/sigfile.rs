@@ -52,6 +52,9 @@ pub struct Signature {
     pub name: String,
     pub features: Vec<SignatureFeature>,
     pub anchors: Vec<String>,
+    /// Identifying keys of the function's call-graph neighbours (SPEC.md §7),
+    /// sorted: `in:`/`out:` for callers/callees, `in2:`/`out2:` one hop on.
+    pub neighbours: Vec<String>,
     pub match_threshold: f64,
     pub min_distinct: usize,
     pub confidence: String,
@@ -75,6 +78,7 @@ impl Signature {
             name: name.into(),
             features,
             anchors,
+            neighbours: Vec::new(),
             match_threshold,
             min_distinct,
             confidence: confidence.into(),
@@ -150,6 +154,24 @@ impl Signature {
             }
         }
 
+        if self.neighbours.len() > crate::spec::MAX_NEIGHBOUR_KEYS {
+            return Err(SignatureError("too many neighbour keys".into()));
+        }
+        if self.neighbours.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(SignatureError(
+                "neighbour keys must be sorted and unique".into(),
+            ));
+        }
+        for key in &self.neighbours {
+            let (hop, feature) = key.split_once(':').unwrap_or(("", ""));
+            let kind = feature.split_once(':').map(|(kind, _)| kind);
+            if !matches!(hop, "in" | "out" | "in2" | "out2")
+                || !matches!(kind, Some("str" | "const"))
+            {
+                return Err(SignatureError(format!("invalid neighbour key {key:?}")));
+            }
+        }
+
         for sample in &self.provenance {
             if sample.module.contains('/') || sample.module.contains('\\') {
                 return Err(SignatureError(
@@ -174,6 +196,7 @@ impl Signature {
             name: &self.name,
             confidence: &self.confidence,
             anchors: &self.anchors,
+            neighbours: &self.neighbours,
             thresholds: ThresholdsDocument {
                 match_threshold: self.match_threshold,
                 min_distinct: self.min_distinct,
@@ -253,11 +276,20 @@ impl Signature {
             None => Vec::new(),
         };
 
+        let neighbours = match field(document, "neighbours") {
+            Some(value) => as_sequence(Some(value), "neighbours")?
+                .iter()
+                .map(|key| Ok(as_str(Some(key), "neighbour")?.to_string()))
+                .collect::<Result<Vec<_>, SignatureError>>()?,
+            None => Vec::new(),
+        };
+
         let signature = Signature {
             spec_version: as_str(field(document, "spec_version"), "spec_version")?.to_string(),
             name: as_str(field(document, "name"), "name")?.to_string(),
             confidence: as_str(field(document, "confidence"), "confidence")?.to_string(),
             anchors,
+            neighbours,
             match_threshold: as_f64(field(thresholds, "match"), "thresholds.match")?,
             min_distinct: as_usize(field(thresholds, "min_distinct"), "thresholds.min_distinct")?,
             features,
@@ -274,6 +306,8 @@ struct Document<'a> {
     name: &'a str,
     confidence: &'a str,
     anchors: &'a [String],
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    neighbours: &'a [String],
     thresholds: ThresholdsDocument,
     features: Vec<FeatureDocument<'a>>,
     provenance: Vec<ProvenanceDocument<'a>>,
@@ -451,7 +485,7 @@ mod tests {
     #[test]
     fn canonical_yaml_matches_python_reference() {
         // Produced by the Python reference for the same signature.
-        let expected = "spec_version: '2'\nname: banner_direct\nconfidence: low\nanchors:\n- str:direct banner literal\nthresholds:\n  match: 0.85\n  min_distinct: 1\nfeatures:\n- kind: cfg\n  value: blocks:1\n  weight: 0.25\n  required: false\n- kind: str\n  value: direct banner literal\n  weight: 1.262\n  required: true\nprovenance:\n- arch: x64\n  module: fixture\n  rva: '0x1110'\n";
+        let expected = "spec_version: '3'\nname: banner_direct\nconfidence: low\nanchors:\n- str:direct banner literal\nthresholds:\n  match: 0.85\n  min_distinct: 1\nfeatures:\n- kind: cfg\n  value: blocks:1\n  weight: 0.25\n  required: false\n- kind: str\n  value: direct banner literal\n  weight: 1.262\n  required: true\nprovenance:\n- arch: x64\n  module: fixture\n  rva: '0x1110'\n";
         assert_eq!(sample().to_yaml().expect("yaml"), expected);
     }
 

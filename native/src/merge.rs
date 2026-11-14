@@ -18,8 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::errors::MergeError;
 use crate::features::Feature;
-use crate::generate::{generate, GenerationResult};
-use crate::matcher::{self_test, MAX_CANDIDATE_STARTS};
+use crate::generate::{generate_in, GenerationResult};
+use crate::matcher::{self_test, ScanContext, MAX_CANDIDATE_STARTS, MAX_NEIGHBOUR_KEYS};
 use crate::recover::RecoveryLimits;
 use crate::score::{
     choose_thresholds, confidence_for, score_features, select_anchors, signature_feature,
@@ -46,13 +46,26 @@ pub fn merge(
     name: Option<&str>,
     limits: Option<RecoveryLimits>,
 ) -> Result<GenerationResult, MergeError> {
+    merge_in(samples, &[], name, limits)
+}
+
+/// [`merge`] with each sample's image [`ScanContext`] (by position; missing
+/// entries mean none). The contexts supply the call graph, so the merged
+/// signature carries the union of the samples' neighbour keys.
+pub fn merge_in(
+    samples: &[MergeSample<'_>],
+    contexts: &[Option<&ScanContext>],
+    name: Option<&str>,
+    limits: Option<RecoveryLimits>,
+) -> Result<GenerationResult, MergeError> {
     if samples.len() < 2 {
         return Err(MergeError("merging needs at least two samples".into()));
     }
     let results: Vec<GenerationResult> = samples
         .iter()
-        .map(|sample| {
-            generate(
+        .enumerate()
+        .map(|(index, sample)| {
+            generate_in(
                 sample.source,
                 sample.addr,
                 None,
@@ -60,6 +73,7 @@ pub fn merge(
                 sample.tool,
                 None,
                 limits,
+                contexts.get(index).copied().flatten(),
             )
             .map_err(|error| MergeError(format!("sample generation failed: {error}")))
         })
@@ -141,7 +155,7 @@ pub fn merge(
         .all(|result| result.report.verdict == "small");
     let confidence = confidence_for(multi_arch, is_small, anchors.len());
     let error_name = name.clone();
-    let signature = Signature::new(
+    let mut signature = Signature::new(
         name,
         scored.iter().map(signature_feature).collect(),
         anchors.clone(),
@@ -154,6 +168,16 @@ pub fn merge(
             .collect(),
     )
     .map_err(|error| MergeError(error.to_string()))?;
+    // Any sample's neighbours may be what a target keeps: an architecture
+    // that inlines a callee loses its evidence, another keeps it.
+    let neighbours: BTreeSet<String> = results
+        .iter()
+        .flat_map(|result| result.signature.neighbours.iter().cloned())
+        .collect();
+    signature.neighbours = neighbours.into_iter().take(MAX_NEIGHBOUR_KEYS).collect();
+    signature
+        .validate()
+        .map_err(|error| MergeError(error.to_string()))?;
 
     let mut matched = None;
     for (sample, result) in samples.iter().zip(results.iter()) {

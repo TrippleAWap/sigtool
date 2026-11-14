@@ -320,3 +320,117 @@ fn locate_finds_a_local_function_in_a_stripped_image() {
         "{document}"
     );
 }
+
+/// A helper too small to identify itself (a few shape features, no data) is
+/// found in a stripped image through its caller's string: the signature
+/// carries the caller's evidence as a neighbour key, and `locate` reports it
+/// as a `near:` match. Forty exported lookalikes give the image the function
+/// count the hint-free gates need.
+#[test]
+fn locate_finds_a_shape_only_helper_through_its_caller() {
+    let has = |tool: &str| {
+        Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
+        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sigtool-near-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("near.c");
+    let image = dir.join("libnear.so");
+    let stripped = dir.join("libnear.stripped.so");
+    let mut code = String::from(
+        "__attribute__((noinline)) static int helper(int x) { return x + 1; }\n\
+         const char *describe(int x) {\n\
+         \x20   return helper(x) > 3 ? \"neighbour evidence banner\" : \"short\";\n\
+         }\n",
+    );
+    for n in 0..40 {
+        code.push_str(&format!(
+            "int filler{n}(int x) {{ return x * {} + {n}; }}\n",
+            n + 3
+        ));
+    }
+    std::fs::write(&source, code).unwrap();
+    let built = Command::new("clang")
+        .args([
+            "--target=x86_64-linux-gnu",
+            "-O2",
+            "-fPIC",
+            "-shared",
+            "-nostdlib",
+            "-fuse-ld=lld",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&image)
+        .status()
+        .expect("run clang");
+    assert!(built.success(), "clang failed to build the shared object");
+    let strip = Command::new("llvm-strip")
+        .arg("--strip-all")
+        .arg(&image)
+        .arg("-o")
+        .arg(&stripped)
+        .status()
+        .expect("run llvm-strip");
+    assert!(strip.success(), "llvm-strip failed");
+    let symbols = Command::new("llvm-nm")
+        .arg(&image)
+        .output()
+        .expect("run llvm-nm");
+    let symbols = String::from_utf8(symbols.stdout).expect("utf-8");
+    let address = symbols
+        .lines()
+        .find(|line| line.ends_with(" helper"))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|text| u64::from_str_radix(text, 16).ok())
+        .expect("helper in llvm-nm output");
+
+    let signature = dir.join("helper.yaml");
+    run(&[
+        "gen",
+        "--file",
+        image.to_str().unwrap(),
+        "--addr",
+        &format!("0x{address:x}"),
+        "--output",
+        signature.to_str().unwrap(),
+    ]);
+    let yaml = std::fs::read_to_string(&signature).unwrap();
+    let json = dir.join("matches.json");
+    run(&[
+        "locate",
+        "--signature",
+        signature.to_str().unwrap(),
+        "--file",
+        stripped.to_str().unwrap(),
+        "--json",
+        json.to_str().unwrap(),
+        "--yes",
+    ]);
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    for path in [&source, &image, &stripped, &signature, &json] {
+        std::fs::remove_file(path).ok();
+    }
+    std::fs::remove_dir(&dir).ok();
+    assert!(
+        yaml.contains("- in:str:neighbour evidence banner"),
+        "{yaml}"
+    );
+    let best = &document["matches"][0];
+    assert_eq!(best["address"], format!("0x{address:x}"), "{document}");
+    assert_eq!(best["evidence"], "identified", "{document}");
+    let matched = best["matched"].as_array().unwrap();
+    assert!(
+        matched
+            .iter()
+            .any(|key| key == "near:in:str:neighbour evidence banner"),
+        "{document}"
+    );
+}

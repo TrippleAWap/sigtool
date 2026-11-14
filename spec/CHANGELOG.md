@@ -131,6 +131,22 @@ document are unchanged, so `SPEC_VERSION` stays `1`.
 * The `strong` verdict counts only required data features, so a merged
   signature is no longer strong on features one sample lacks.
 
+## v3 — neighbour evidence
+
+`SPEC_VERSION` is `3`. Feature records are unchanged; the signature document
+gains `neighbours`, and hint-free acceptance changes, so a v2 document is
+refused rather than matched without the evidence it lacks.
+
+* `neighbours` (SPEC.md §7): identifying `str` and `const` keys of the
+  function's callers and callees, up to two hops. Calls through a PLT stub to
+  an export the image defines itself reach that export.
+* Hint-free acceptance (SPEC.md §8): shape-only matches need 6 matched
+  features unless they share a neighbour key; a shape-only match sharing no
+  neighbour key is rejected when the signature has at least 2; shared keys
+  rank first and are reported as `near:` keys. On the stripped real corpus
+  this took the hint-free FP rate from 0.203 to 0.163 with every aggregate
+  top-1 row equal or higher.
+
 ## v2 — portable features
 
 `SPEC_VERSION` is `2`. Constant words and portable callees change feature

@@ -1,4 +1,4 @@
-# Signature spec v1
+# Signature spec v3
 
 Status: draft for M1 (extraction). Generation, scoring, and matching fields are
 specified in outline and completed in M2/M3.
@@ -224,12 +224,15 @@ canonical YAML text is the signature's identity: its BLAKE2b-16 digest is the
 `signature_id`, so the byte form must stay stable.
 
 ```yaml
-spec_version: '2'
+spec_version: '3'
 name: parse_record
 confidence: single-arch
 anchors:
 - str:record magic mismatch
 - const:0x52454344
+neighbours:
+- in:str:bad header
+- out2:const:0x9e3779b1
 thresholds:
   match: 0.75
   min_distinct: 2
@@ -264,6 +267,30 @@ Rules:
 * `opt` and `tool` are provenance only. They never influence features, weights,
   thresholds, or identity.
 * Weights are rounded to three decimals and never reach zero (floor `0.001`).
+* `neighbours` is omitted when empty (see below).
+
+### Neighbours
+
+A small function often has no identifying feature of its own, but its
+callers and callees do. `neighbours` lists identifying keys of the function's
+call-graph neighbours, as `HOP:KIND:VALUE`:
+
+* `HOP` is `out` (a direct callee), `in` (a direct caller), or `out2`/`in2`
+  (one hop further in the same direction).
+* `KIND:VALUE` is a `str` feature or a `const` feature that is not
+  low-information (§8), exactly as the neighbour's own feature key.
+* Calls are direct calls and tail calls that leave the function. Imports are
+  not neighbours. A call through a PLT stub to an export the image defines
+  itself (`-fPIC` shared objects call their own exports that way) reaches the
+  export's definition. Callers come from a whole-image pass over direct call
+  sites; a call site's function is its symbol bounds (hinted) or unwind entry.
+* At most 16 neighbours per direction and hop 1, 64 per direction at hop 2,
+  are read, nearest address first; at most 64 keys are kept, hop 1 first,
+  then sorted. Merged signatures keep the sorted union of their samples'
+  keys, truncated to 64.
+* Neighbour keys are never features: they do not enter score, similarity,
+  anchors, or shape corroboration. Only image sources that build a whole-image
+  index produce them; a signature from a live process has none.
 
 ### Weights
 
@@ -393,6 +420,22 @@ instead of being rejected outright (subset matching). Matches are sorted by
 descending score then address, and overlapping spans collapse to the best
 match, so one function is reported once even when a sweep can recover its body
 from an interior address.
+
+**Hint-free acceptance.** On an image with frequency estimates (at least 32
+unwind-table functions), a hint-free match must also pass:
+
+* the chance gate (at most 1.0 expected chance matches) and similarity at
+  least 0.2;
+* *shape-only* matches, those whose matched keys hold no identifying key (a
+  `str`, a `callee` without `!`, or a `const` at least `0x100` from zero), need
+  at least 6 matched features, unless they share a neighbour key;
+* a shape-only match that shares none of the signature's neighbour keys is
+  rejected when the signature has at least 2 of them.
+
+The candidate's neighbour keys are computed the same way as at generation, on
+the target. Shared keys are reported in `matched` as `near:HOP:KIND:VALUE` and
+count as identifying. Hint-free matches are ranked by the number of shared
+neighbour keys, then similarity, then score.
 
 **Self-test.** Generation runs the matcher on the same source and requires an
 accepted match at the recovered function start; a signature that cannot be
