@@ -696,5 +696,5 @@ mapped range that rule 4 uses; `merge --sample FILE:+RVA` and the `rva` in
 - Not covered: Thumb-2 lld thunks, AArch64 `-fno-plt` calls, gcc `.part.N` and
   `.cold` splits, functions after noreturn calls without a prologue (~4-5% of
   gcc ARM starts), PE images without `.pdata`, and a Linux process source.
-- The toy-corpus baseline depends on the compiler version (CI pins LLVM 22);
+- The toy-corpus baseline depends on the compiler version (CI pins LLVM 22.1.5);
   the real corpus is not in CI because it needs the GCC cross image.

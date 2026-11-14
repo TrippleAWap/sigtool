@@ -7,7 +7,7 @@ committed.
 ## Toy corpus (`build/`, CI gate)
 
 ```bash
-python corpus/build.py      # needs clang, ld.lld, llvm-readelf (LLVM 22 for the baseline)
+python corpus/build.py      # needs clang, ld.lld, llvm-readelf (LLVM 22.1.5 for the baseline)
 cd native && cargo run --release -- bench --baseline ../tests/baseline/native-bench.json
 ```
 
@@ -22,7 +22,7 @@ cd native && cargo run --release -- bench --baseline ../tests/baseline/native-be
   unrelated to `corpus/src/`, built at `-O2` into `build/negative/` and listed
   under the `negative` key. The bench scans strong signatures against it and
   gates the false-positive rate.
-* The baseline depends on the compiler version; CI pins LLVM 22.
+* The baseline depends on the compiler version; CI pins LLVM 22.1.5; 22.1.8 already moves one-function cells.
 
 ## Real corpus (`build-real/`)
 

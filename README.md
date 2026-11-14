@@ -58,7 +58,7 @@ one made with the CLI.
 ## Measure
 
 ```bash
-python corpus/build.py                     # toy corpus (CI gate), LLVM 22
+python corpus/build.py                     # toy corpus (CI gate), LLVM 22.1.5
 cd native && cargo run --release -- bench --baseline ../tests/baseline/native-bench.json
 
 docker build -t sigtool-gcc-cross corpus/docker
