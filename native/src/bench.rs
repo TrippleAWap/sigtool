@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::elf::FileSource;
-use crate::generate::generate;
+use crate::generate::generate_in;
 use crate::matcher::{scan_in, Match, ScanContext};
 use crate::merge::{merge, MergeSample};
 use crate::sigfile::Signature;
@@ -103,6 +103,9 @@ impl FalsePositiveCell {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchReport {
     pub spec_version: String,
+    /// True when every hint-free scan ran on a `strip --strip-all` copy.
+    #[serde(default)]
+    pub hint_free_stripped: bool,
     pub signatures: usize,
     pub refused: usize,
     pub merged_refused: usize,
@@ -139,14 +142,30 @@ struct Target {
     functions: BTreeMap<String, u64>,
     /// Whole-image indexes, built on first use and shared by every scan.
     context: OnceLock<ScanContext>,
+    /// The same image after `strip --strip-all`, when the corpus has one.
+    stripped: Option<(FileSource, OnceLock<ScanContext>)>,
 }
 
 impl Target {
+    /// Hint-free scans run on the stripped copy when there is one: ignoring
+    /// hints on the unstripped file still leaks `.symtab` names into callee
+    /// features and Thumb-mode detection.
     fn scan(&self, signature: &Signature, hints: bool) -> Vec<Match> {
-        let context = self
-            .context
-            .get_or_init(|| ScanContext::build(&self.source));
-        scan_in(&self.source, signature, context, hints)
+        let (source, context) = self.scan_source(hints);
+        scan_in(source, signature, context, hints)
+    }
+
+    fn scan_source(&self, hints: bool) -> (&FileSource, &ScanContext) {
+        match (&self.stripped, hints) {
+            (Some((source, context)), false) => {
+                (source, context.get_or_init(|| ScanContext::build(source)))
+            }
+            _ => (
+                &self.source,
+                self.context
+                    .get_or_init(|| ScanContext::build(&self.source)),
+            ),
+        }
     }
 }
 
@@ -195,6 +214,14 @@ fn load_targets(
         }
         let source =
             FileSource::from_path(corpus.join(path)).map_err(|error| format!("{path}: {error}"))?;
+        let stripped = match entry["stripped"].as_str() {
+            Some(stripped) => Some((
+                FileSource::from_path(corpus.join(stripped))
+                    .map_err(|error| format!("{stripped}: {error}"))?,
+                OnceLock::new(),
+            )),
+            None => None,
+        };
         let functions = entry["functions"]
             .as_array()
             .map(|functions| {
@@ -217,6 +244,7 @@ fn load_targets(
             source,
             functions,
             context: OnceLock::new(),
+            stripped,
         });
     }
     targets
@@ -324,7 +352,10 @@ pub fn run_with(
     let generated = parallel(jobs.len(), |job| {
         let (index, name, start) = &jobs[job];
         let target = &targets[*index];
-        generate(
+        let context = target
+            .context
+            .get_or_init(|| ScanContext::build(&target.source));
+        generate_in(
             &target.source,
             *start,
             None,
@@ -332,6 +363,7 @@ pub fn run_with(
             Some("clang"),
             None,
             None,
+            Some(context),
         )
         .ok()
         .map(|result| Sample {
@@ -515,6 +547,7 @@ pub fn run_with(
     phase(&clock, "false positives");
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
+        hint_free_stripped: targets.iter().all(|t| t.stripped.is_some()),
         signatures: all.len(),
         refused,
         merged_refused,
@@ -765,7 +798,12 @@ pub fn render(report: &BenchReport) -> String {
         let _ = writeln!(text, "  {arch}: {}", line.join(" "));
     }
     for discovery in [HINTED, HINT_FREE] {
-        let _ = writeln!(text, "\nrecall ({discovery})");
+        let note = match (discovery, report.hint_free_stripped) {
+            (HINT_FREE, true) => " on strip --strip-all targets",
+            (HINT_FREE, false) => " (WARNING: targets not stripped; .symtab names leak)",
+            _ => "",
+        };
+        let _ = writeln!(text, "\nrecall ({discovery}{note})");
         let (mut same, mut cross) = ((0, 0), (0, 0));
         for cell in report.recall.iter().filter(|c| c.discovery == discovery) {
             let same_build = cell.source_opt == cell.target_opt;
