@@ -25,6 +25,8 @@ use crate::source::{ByteSource, Region};
 
 pub const MAX_HITS_PER_ANCHOR: usize = 16;
 pub const MAX_CANDIDATE_STARTS: usize = 256;
+/// Hint-free candidate cap when the image has unwind entries (rule 8 bound).
+pub const MAX_UNWIND_CANDIDATES: usize = 1 << 16;
 pub const MAX_MATCHES: usize = 32;
 pub const BACKWARD_SWEEP_BYTES: u64 = 512;
 pub const SCORE_DECIMALS: usize = 6;
@@ -136,6 +138,11 @@ fn split_anchor(anchor: &str) -> (Option<FeatureKind>, &str) {
 /// below the threshold instead of being rejected outright.
 pub fn compare(signature: &Signature, features: &[Feature]) -> MatchScore {
     let present: HashSet<String> = features.iter().map(Feature::key).collect();
+    compare_keys(signature, &present)
+}
+
+/// [`compare`] against a candidate's precomputed key set.
+pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchScore {
     let matched: Vec<&crate::sigfile::SignatureFeature> = signature
         .features
         .iter()
@@ -403,6 +410,7 @@ pub struct Candidate {
     pub start: u64,
     pub end: u64,
     pub features: Vec<Feature>,
+    pub keys: HashSet<String>,
     pub weighted: Vec<(String, f64)>,
 }
 
@@ -419,6 +427,7 @@ impl Candidate {
             start: recovered.start(),
             end: recovered.end(),
             weighted: weigh(&features),
+            keys: features.iter().map(Feature::key).collect(),
             features,
         })
     }
@@ -493,7 +502,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
         let Some(candidate) = candidate else {
             continue;
         };
-        let result = compare(signature, &candidate.features);
+        let result = compare_keys(signature, &candidate.keys);
         if accepts(signature, &result) {
             matches.push(Match {
                 address: candidate.start,
@@ -1184,7 +1193,16 @@ fn candidate_starts<S: ByteSource + ?Sized>(
             .into_iter()
             .filter(|start| !enclosing.contains(start)),
     );
-    ordered.truncate(max_candidates);
+    // With an unwind table the candidate set is the image's real function
+    // list, so every entry is worth comparing: recovered candidates are
+    // cached per image and comparison is a set lookup per signature feature.
+    // Without one, the cap keeps backward-sweep guesses bounded.
+    let cap = if use_hints {
+        max_candidates
+    } else {
+        max_candidates.max(source.unwind_entries().len().min(MAX_UNWIND_CANDIDATES))
+    };
+    ordered.truncate(cap);
     ordered
 }
 
