@@ -87,7 +87,8 @@ may use the target's symbols. Hint-free scans of stripped targets compare
 every unwind entry, while hinted scans start from anchor hits; that is
 probably why hint-free is ahead on same-arch searches.
 
-See `PLAN.md` section 13 for how these were reached and what limits them.
+See `docs/history/PLAN-v0.5.md` section 13 for how these were reached, and `PLAN.md` for the
+v1.0 goals and the milestones toward them.
 
 ## Layout
 

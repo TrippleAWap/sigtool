@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Instructions for AI coding agents working on **sigtool**: architecture-independent function signatures, generated from an image file, a live process, or an IDA function, and matched at runtime. The product is the Rust crate under `native/` (library plus the `sigtool-native` CLI). Read `PLAN.md` for scope, decisions, and measured status, and `spec/SPEC.md` for the signature format.
+Instructions for AI coding agents working on **sigtool**: architecture-independent function signatures, generated from an image file, a live process, or an IDA function, and matched at runtime. The product is the Rust crate under `native/` (library plus the `sigtool-native` CLI). Read `PLAN.md` for the mission, v1.0 goals, project rules, and milestones, and `spec/SPEC.md` for the signature format. `docs/history/PLAN-v0.5.md` has the earlier milestones and how each number was reached.
 
 The goal everything is measured against: **find a function across architectures, compilers, and optimization levels, including in stripped binaries without symbol hints (hint-free mode).** Rules, weights, and normalizations may change when the corpus numbers say so; the spec version and changelog record each change.
 
@@ -69,8 +69,10 @@ cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:+RVA --name N
 cargo run --release -- db build --signature S.yaml --output signatures.db
 cargo run --release -- bench --baseline ../tests/baseline/native-bench.json       # toy corpus gate
 cargo run --release -- bench --save-baseline ../tests/baseline/native-bench.json  # intentional improvement
-cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 \
-    --baseline ../tests/baseline/native-real-bench.json   # real corpus (stripped targets, both modes)
+cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --joint \
+    --baseline ../tests/baseline/native-real-bench.json   # real corpus (stripped targets, both modes, joint sets)
+cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --discovery hint-free \
+    --fp-report fp.jsonl                                  # log FP hits and recall scans for offline simulation
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --discovery hint-free \
     --arch x64 --arch arm64 --no-fp                         # quick hint-free slice
 cargo run --release --example profile_scan                  # scan cost
@@ -94,7 +96,7 @@ SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the e
 
 ## Workflow for agents
 
-1. Check `PLAN.md` section 12 for current status and open work.
+1. Check `PLAN.md` §6 (milestones) and §8 (status) for open work, and follow the rules in `PLAN.md` §4: measure on the real corpus, simulate before building, never tune on the held-out corpus, precision before recall.
 2. Make small, reviewable changes: one normalization rule, one source, or one matcher rule per change where possible.
 3. Before declaring a task done, in `native/`: `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`, `cargo test --release`, and the toy bench gate. If the task touches features, normalization, discovery, or matching, also run the real corpus and report recall and false-positive deltas per discovery mode.
 4. Update `PLAN.md`, `spec/`, and this file when a decision or convention changes.

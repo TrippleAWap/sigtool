@@ -17,7 +17,7 @@
 //!
 //! A bogus start inside a function becomes a false scan candidate and cuts
 //! the function it lands in short, so each rule is kept only where it
-//! measured precise on the real corpus (see `PLAN.md` section 12).
+//! measured precise on the real corpus (see `docs/history/PLAN-v0.5.md` section 12).
 //!
 //! The image is untrusted (AGENTS.md rule 8): sweeps are linear and capped in
 //! bytes, inline tables are capped in entries, and every read is
@@ -151,8 +151,8 @@ pub fn evidence(
 
 /// The synthesized starts this module stands behind, from `evidence`.
 ///
-/// Measured on the real corpus against `.symtab` (all FUNC symbols, PLAN.md
-/// section 12): pointers and mode-checked calls are 0.998-1.000 precise; an
+/// Measured on the real corpus against `.symtab` (all FUNC symbols,
+/// `docs/history/PLAN-v0.5.md` section 12): pointers and mode-checked calls are 0.998-1.000 precise; an
 /// after-terminator start that opens with a frame-saving prologue and is not
 /// the target of a conditional branch is 0.999-1.000 precise. Without the
 /// prologue the same position is 0.19-0.99 precise depending on compiler (case

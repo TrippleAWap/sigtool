@@ -4,7 +4,7 @@
 //! then times one full scanner pass (page hashing, index build, recovery) and
 //! one incremental pass (everything unchanged). The workload and budget are the
 //! ones the removed Python `profile_scan.py` used, so numbers recorded in
-//! `PLAN.md` section 12 stay comparable.
+//! `docs/history/PLAN-v0.5.md` section 12 stay comparable.
 //!
 //! ```text
 //! cargo run --release --example profile_scan

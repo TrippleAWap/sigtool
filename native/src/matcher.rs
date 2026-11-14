@@ -1520,7 +1520,7 @@ fn candidate_starts<S: ByteSource + ?Sized>(
         // entry, while a backward sweep only guesses one from an interior
         // landmark. The reference has no such source in hint-free mode, so its
         // string-only signatures find nothing; this is a deliberate native
-        // improvement (measured in `PLAN.md` section 12).
+        // improvement (measured in `docs/history/PLAN-v0.5.md` section 12).
         hint_starts.extend(code.call_targets.iter().copied());
     }
     // Unwind entries are exact function starts that survive stripping. The

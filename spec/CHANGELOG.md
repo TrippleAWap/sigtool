@@ -2,7 +2,7 @@
 
 ## v1 — M1 extraction
 
-Initial spec, implementing PLAN.md section 4 for x86-64 and AArch64.
+Initial spec, implementing docs/history/PLAN-v0.5.md section 4 for x86-64 and AArch64.
 
 * Feature kinds `str`, `const`, `callee`, `cfg`, `ops` with canonical text forms.
 * 14 instruction classes with ABI-independent `stack` and `vector` buckets.

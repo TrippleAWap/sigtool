@@ -117,7 +117,7 @@ impl std::error::Error for ProcessError {}
 /// Map a PE machine type to a supported [`Arch`].
 ///
 /// 32-bit machines are rejected explicitly, so a WOW64 target is never decoded
-/// as x64 (PLAN.md section 4).
+/// as x64 (AGENTS.md rule 9).
 pub fn arch_for_machine(machine: u16) -> Result<Arch, ProcessError> {
     match machine {
         IMAGE_FILE_MACHINE_AMD64 => Ok(Arch::X64),
@@ -127,7 +127,7 @@ pub fn arch_for_machine(machine: u16) -> Result<Arch, ProcessError> {
         | IMAGE_FILE_MACHINE_THUMB
         | IMAGE_FILE_MACHINE_ARMNT => Err(ProcessError::Unsupported(format!(
             "32-bit process machine 0x{machine:x} is not supported; WOW64 and 32-bit \
-             targets are rejected (PLAN.md section 4)"
+             targets are rejected (AGENTS.md rule 9)"
         ))),
         other => Err(ProcessError::Unsupported(format!(
             "unsupported process machine 0x{other:x}"
@@ -352,7 +352,7 @@ fn reject_wow64(process: &os::Process) -> Result<Option<u16>, ProcessError> {
     // has to catch a 32-bit guest on this 64-bit host.
     if process.is_wow64() == Some(true) {
         return Err(ProcessError::Unsupported(
-            "32-bit (WOW64) processes are not supported (PLAN.md section 4)".into(),
+            "32-bit (WOW64) processes are not supported (AGENTS.md rule 9)".into(),
         ));
     }
     Ok(None)
