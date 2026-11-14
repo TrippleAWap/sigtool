@@ -1097,7 +1097,7 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
     failures
 }
 
-/// PLAN.md section 6 targets, evaluated on a report. Informational: the gate
+/// PLAN.md §2 (G1, G3) v1.0 goals, evaluated on a report. Informational: the gate
 /// is [`compare`]; this says how far the tool is from "done".
 pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
     let mut out = Vec::new();
@@ -1126,14 +1126,15 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
                 .iter()
                 .any(|arch| c.arch == format!("{MERGED}->{arch}"))
     };
-    let groups: [(&str, CellFilter<'_>, f64, f64); 4] = [
-        ("same arch", &same_arch, 0.90, 0.70),
-        ("cross arch, one sample", &cross_arch, 0.90, 0.70),
-        ("merged", &merged, 0.90, 0.70),
-        ("merged, held-out arch", &held_out, 0.90, 0.70),
+    // (same build, other compiler, other level) goals per group.
+    let groups: [(&str, CellFilter<'_>, [f64; 3]); 4] = [
+        ("same arch", &same_arch, [0.95, 0.55, 0.45]),
+        ("cross arch, one sample", &cross_arch, [0.60, 0.45, 0.35]),
+        ("merged", &merged, [0.80, 0.55, 0.45]),
+        ("merged, held-out arch", &held_out, [0.70, 0.50, 0.40]),
     ];
     for discovery in [HINTED, HINT_FREE] {
-        for (group, filter, same_goal, cross_goal) in &groups {
+        for (group, filter, [same_goal, compiler_goal, level_goal]) in &groups {
             rate(
                 &format!("{group}, same opt, {discovery}"),
                 &|c| c.discovery == discovery && filter(c) && c.source_opt == c.target_opt,
@@ -1144,7 +1145,7 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
                 rate(
                     &format!("{group}, other compiler same level, {discovery}"),
                     &|c| c.discovery == discovery && filter(c) && other_compiler(c),
-                    *cross_goal,
+                    *compiler_goal,
                 );
             }
             rate(
@@ -1154,40 +1155,40 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
                         && filter(c)
                         && level(&c.source_opt) != level(&c.target_opt)
                 },
-                *cross_goal,
+                *level_goal,
             );
         }
     }
-    for (label, cells) in [
-        ("strong FP rate (corpus)", &report.false_positives),
+    // False-positive ceilings (G3). The any-verdict hinted rates have no
+    // v1.0 goal of their own; they are shown against the hint-free ceiling.
+    for (label, cells, ceiling) in [
+        ("strong FP rate (corpus)", &report.false_positives, 0.01),
         (
             "strong FP rate (negative)",
             &report.negative_false_positives,
+            0.0,
+        ),
+        (
+            "any-verdict FP rate (corpus)",
+            &report.any_false_positives,
+            0.05,
+        ),
+        (
+            "any-verdict FP rate (negative)",
+            &report.any_negative_false_positives,
+            0.0,
+        ),
+        (
+            "hint-free FP rate (any verdict)",
+            &report.hint_free_false_positives,
+            0.05,
         ),
     ] {
         let (with, total) = cells.iter().fold((0, 0), |(w, t), c| {
             (w + c.signatures_with_hits, t + c.signatures)
         });
         let value = ratio(with, total);
-        out.push((label.to_string(), value, 0.0, with == 0));
-    }
-    // Not a section 6 target: precision of every shipped signature, whatever
-    // its verdict. The aim is "as low as recall allows".
-    for (label, cells) in [
-        ("any-verdict FP rate (corpus)", &report.any_false_positives),
-        (
-            "any-verdict FP rate (negative)",
-            &report.any_negative_false_positives,
-        ),
-        (
-            "hint-free FP rate (any verdict)",
-            &report.hint_free_false_positives,
-        ),
-    ] {
-        let (with, total) = cells.iter().fold((0, 0), |(w, t), c| {
-            (w + c.signatures_with_hits, t + c.signatures)
-        });
-        out.push((label.to_string(), ratio(with, total), 0.0, with == 0));
+        out.push((label.to_string(), value, ceiling, value <= ceiling));
     }
     out
 }
@@ -1277,13 +1278,13 @@ pub fn render(report: &BenchReport) -> String {
             );
         }
     }
-    let _ = writeln!(text, "\ntargets (PLAN.md section 6)");
+    let _ = writeln!(text, "\nv1.0 goals (PLAN.md §2)");
     for (name, value, goal, met) in targets(report) {
         let _ = writeln!(
             text,
             "  [{}] {name}: {value:.3} (target {}{goal:.2})",
             if met { "met" } else { "   " },
-            if goal == 0.0 { "=" } else { ">=" }
+            if name.contains("FP rate") { "<=" } else { ">=" }
         );
     }
     if !report.joint.is_empty() {
