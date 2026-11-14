@@ -325,6 +325,8 @@ pub struct BenchOptions {
     pub discovery: Option<String>,
     /// Skip both false-positive measurements (recall-only iteration).
     pub skip_false_positives: bool,
+    /// Write every hint-free false-positive hit here as one JSON object per line.
+    pub fp_report: Option<PathBuf>,
 }
 
 /// [`run`] with explicit [`BenchOptions`].
@@ -593,7 +595,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     // precision is its own number: any verdict, unrelated sources and the
     // negative corpus together.
     let hint_free_false_positives = if hint_free_fp {
-        let counts = false_positive_counts(
+        let hits = false_positive_hits(
             &all,
             |sample| {
                 let mut chosen = corpus_targets(sample);
@@ -602,6 +604,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             },
             false,
         );
+        if let Some(path) = &options.fp_report {
+            write_fp_report(path, &all, &hits)?;
+        }
+        let mut counts = vec![0usize; all.len()];
+        for (index, _, matches) in &hits {
+            counts[*index] += matches.len();
+        }
         false_positive_cells(&all, &counts, None)
     } else {
         Vec::new()
@@ -648,6 +657,85 @@ where
         per_sample[*index] += count;
     }
     per_sample
+}
+
+/// Every accepted match per `(sample, target)` pair, for reporting.
+fn false_positive_hits<'t, F>(
+    samples: &[&Sample],
+    targets_for: F,
+    hints: bool,
+) -> Vec<(usize, &'t Target, Vec<Match>)>
+where
+    F: Fn(&Sample) -> Vec<&'t Target> + Sync,
+{
+    let jobs: Vec<(usize, &'t Target)> = samples
+        .iter()
+        .enumerate()
+        .flat_map(|(index, sample)| targets_for(sample).into_iter().map(move |t| (index, t)))
+        .collect();
+    let matches = parallel(jobs.len(), |job| {
+        let (index, target) = jobs[job];
+        target.scan(&samples[index].signature, hints)
+    });
+    jobs.into_iter()
+        .zip(matches)
+        .map(|((index, target), found)| (index, target, found))
+        .collect()
+}
+
+/// One JSON line per false-positive hit. The hit is labelled from the
+/// unstripped ground truth, which the scan itself never saw.
+fn write_fp_report(
+    path: &Path,
+    samples: &[&Sample],
+    hits: &[(usize, &Target, Vec<Match>)],
+) -> Result<(), String> {
+    let mut out = String::new();
+    for (index, target, matches) in hits {
+        let sample = samples[*index];
+        for found in matches {
+            let label = target
+                .functions
+                .iter()
+                .find(|(_, start)| **start == found.address)
+                .map(|(name, _)| name.clone());
+            let features: Vec<String> = sample
+                .signature
+                .features
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{}{}@{:.2}",
+                        if f.required { "!" } else { "" },
+                        f.key(),
+                        f.weight
+                    )
+                })
+                .collect();
+            let line = serde_json::json!({
+                "sample": sample.name,
+                "arch": sample.arch,
+                "source": sample.source_file,
+                "opt": sample.opt,
+                "verdict": sample.verdict,
+                "confidence": sample.signature.confidence,
+                "min_distinct": sample.signature.min_distinct,
+                "threshold": sample.signature.match_threshold,
+                "features": features,
+                "anchors": sample.signature.anchors,
+                "target": format!("{}/{}/{}", target.arch, target.opt, target.source_file),
+                "address": found.address,
+                "size": found.end.saturating_sub(found.address),
+                "score": found.score,
+                "similarity": found.similarity,
+                "matched": found.matched,
+                "label": label,
+            });
+            out.push_str(&line.to_string());
+            out.push('\n');
+        }
+    }
+    std::fs::write(path, out).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn false_positive_cells(
