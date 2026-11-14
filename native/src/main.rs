@@ -1,6 +1,7 @@
 //! Command-line front-end for the native scanner.
 //!
-//! The CLI is thin by contract (AGENTS.md rule 2): it opens a [`FileSource`],
+//! The CLI is thin by contract (AGENTS.md rule 2): it opens a [`FileSource`]
+//! (`--file`) or a read-only [`ProcessSource`] (`--pid`, Windows only),
 //! calls [`sigtool_native::generate::generate`], the reference matcher, or the
 //! scanner, and formats results. No feature, scoring, matching, or serialisation
 //! logic lives here.
@@ -8,6 +9,8 @@
 //! ```text
 //! sigtool-native gen --file image.elf --addr 0x1000
 //! sigtool-native gen --file image.elf --module image.elf --rva 0x1000
+//! sigtool-native gen --pid 4242 --module target --rva 0x1a2b0
+//! sigtool-native locate --signature fn.yaml --pid 4242
 //! sigtool-native locate --signature fn.yaml --file other.so --json matches.json
 //! sigtool-native scan --file image.elf --signature fn.yaml --signature other.yaml
 //! sigtool-native scan --file image.elf --db signatures.db
@@ -40,6 +43,7 @@ use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate, GenerateError, GenerationResult};
 use sigtool_native::matcher::{scan, Match};
 use sigtool_native::merge::{merge, MergeSample};
+use sigtool_native::proc_win::{ProcessError, ProcessSource};
 use sigtool_native::scanner::{ScanHit, SignatureScanner};
 use sigtool_native::sigfile::Signature;
 use sigtool_native::source::{ByteSource, Module};
@@ -81,8 +85,16 @@ enum Command {
 #[derive(Args)]
 struct GenArgs {
     /// ELF or PE image
-    #[arg(long, value_name = "IMAGE")]
-    file: PathBuf,
+    #[arg(
+        long,
+        value_name = "IMAGE",
+        required_unless_present = "pid",
+        conflicts_with = "pid"
+    )]
+    file: Option<PathBuf>,
+    /// Live Windows process to read (read-only)
+    #[arg(long, value_name = "PID")]
+    pid: Option<u32>,
     /// Absolute address, e.g. 0x1000
     #[arg(long, value_name = "ADDR", conflicts_with = "rva")]
     addr: Option<String>,
@@ -115,8 +127,16 @@ struct LocateArgs {
     #[arg(long, value_name = "FILE")]
     signature: PathBuf,
     /// ELF or PE image to scan
-    #[arg(long, value_name = "IMAGE")]
-    file: PathBuf,
+    #[arg(
+        long,
+        value_name = "IMAGE",
+        required_unless_present = "pid",
+        conflicts_with = "pid"
+    )]
+    file: Option<PathBuf>,
+    /// Live Windows process to scan (read-only)
+    #[arg(long, value_name = "PID")]
+    pid: Option<u32>,
     /// Write the match list as JSON
     #[arg(long, value_name = "FILE")]
     json: Option<PathBuf>,
@@ -128,8 +148,16 @@ struct LocateArgs {
 #[derive(Args)]
 struct ScanArgs {
     /// ELF or PE image to scan
-    #[arg(long, value_name = "IMAGE")]
-    file: PathBuf,
+    #[arg(
+        long,
+        value_name = "IMAGE",
+        required_unless_present = "pid",
+        conflicts_with = "pid"
+    )]
+    file: Option<PathBuf>,
+    /// Live Windows process to scan (read-only)
+    #[arg(long, value_name = "PID")]
+    pid: Option<u32>,
     /// Signature YAML file (repeatable)
     #[arg(long, value_name = "FILE")]
     signature: Vec<PathBuf>,
@@ -259,15 +287,16 @@ fn main() -> ExitCode {
 // -- gen ---------------------------------------------------------------------
 
 fn run_gen(args: GenArgs) -> Result<u8, CliError> {
-    let source = load_file(&args.file)?;
+    let target = load_target(args.file.as_deref(), args.pid)?;
+    let source = target.as_ref();
     let addr = resolve_address(
-        &source,
+        source,
         args.addr.as_deref(),
         args.rva.as_deref(),
         args.module.as_deref(),
     )?;
     let result = generate(
-        &source,
+        source,
         addr,
         args.name.as_deref(),
         args.opt.as_deref(),
@@ -487,11 +516,12 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
 
 fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     let signature = load_signature(&args.signature)?;
-    let source = load_file(&args.file)?;
-    let matches = scan(&source, &signature, None, 256, true, None);
+    let target = load_target(args.file.as_deref(), args.pid)?;
+    let source = target.as_ref();
+    let matches = scan(source, &signature, None, 256, true, None);
 
     if let Some(path) = &args.json {
-        let document = match_document(&source, &signature, &matches);
+        let document = match_document(source, &signature, &matches);
         write_json(path, &document)?;
     }
 
@@ -540,7 +570,7 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
 }
 
 fn match_document(
-    source: &FileSource,
+    source: &dyn ByteSource,
     signature: &Signature,
     matches: &[Match],
 ) -> BTreeMap<String, Value> {
@@ -583,7 +613,8 @@ fn match_document(
 // -- scan --------------------------------------------------------------------
 
 fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
-    let source = load_file(&args.file)?;
+    let target = load_target(args.file.as_deref(), args.pid)?;
+    let source = target.as_ref();
     let signatures = if let Some(db_path) = &args.db {
         load_db_signatures(db_path)?
     } else {
@@ -596,12 +627,12 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             .collect::<Result<Vec<_>, _>>()?
     };
 
-    let mut scanner = SignatureScanner::new(&source, signatures, None, None)
+    let mut scanner = SignatureScanner::new(source, signatures, None, None)
         .map_err(|error| CliError::input(error.to_string()))?;
     let report = scanner.scan_pass();
 
     if let Some(path) = &args.json {
-        write_json(path, &scan_document(&source, &report.hits))?;
+        write_json(path, &scan_document(source, &report.hits))?;
     }
     for hit in &report.hits {
         let where_ = source
@@ -619,7 +650,7 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     Ok(EXIT_OK)
 }
 
-fn scan_document(source: &FileSource, hits: &[ScanHit]) -> BTreeMap<String, Value> {
+fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, Value> {
     let mut document: BTreeMap<String, Value> = BTreeMap::new();
     let entries = hits
         .iter()
@@ -706,6 +737,22 @@ fn load_file(path: &Path) -> Result<FileSource, CliError> {
     FileSource::from_path(path).map_err(classify_source_error)
 }
 
+/// Open the `--file` image or the `--pid` process (clap enforces exactly one).
+fn load_target(file: Option<&Path>, pid: Option<u32>) -> Result<Box<dyn ByteSource>, CliError> {
+    match (file, pid) {
+        (Some(path), _) => Ok(Box::new(load_file(path)?)),
+        (None, Some(pid)) => ProcessSource::open(pid)
+            .map(|source| Box::new(source) as Box<dyn ByteSource>)
+            .map_err(|error| match error {
+                ProcessError::Unsupported(message) => {
+                    CliError::unsupported(format!("unsupported target: {message}"))
+                }
+                ProcessError::Os(message) => CliError::input(message),
+            }),
+        (None, None) => Err(CliError::input("one of --file or --pid is required")),
+    }
+}
+
 fn load_signature(path: &Path) -> Result<Signature, CliError> {
     if !path.is_file() {
         return Err(CliError::input(format!(
@@ -729,7 +776,7 @@ fn classify_source_error(error: SourceFormatError) -> CliError {
 }
 
 fn resolve_address(
-    source: &FileSource,
+    source: &dyn ByteSource,
     addr: Option<&str>,
     rva: Option<&str>,
     module_name: Option<&str>,
@@ -768,7 +815,7 @@ fn resolve_address(
     Ok(addr)
 }
 
-fn find_module<'a>(source: &'a FileSource, name: Option<&str>) -> Result<&'a Module, CliError> {
+fn find_module<'a>(source: &'a dyn ByteSource, name: Option<&str>) -> Result<&'a Module, CliError> {
     let modules = source.modules();
     if modules.is_empty() {
         return Err(CliError::input("the image has no modules"));
@@ -792,6 +839,16 @@ fn find_module<'a>(source: &'a FileSource, name: Option<&str>) -> Result<&'a Mod
         .collect();
     if folded.len() == 1 {
         return Ok(folded[0]);
+    }
+    // Modules are named by stem, so `--module kernel32.dll` names `kernel32`.
+    if let Some(stem) = Path::new(name).file_stem().and_then(|stem| stem.to_str()) {
+        let stemmed: Vec<&Module> = modules
+            .iter()
+            .filter(|module| module.name.eq_ignore_ascii_case(stem))
+            .collect();
+        if stemmed.len() == 1 {
+            return Ok(stemmed[0]);
+        }
     }
     let names: Vec<&str> = modules.iter().map(|module| module.name.as_str()).collect();
     Err(CliError::input(format!(

@@ -79,6 +79,8 @@ cargo test                          # native gates: golden, scanner, merge, x64 
 cargo fmt --all && cargo clippy --all-targets
 cargo run --release -- gen --file IMAGE --addr A
 cargo run --release -- locate --signature S.yaml --file IMAGE
+cargo run --release -- gen --pid P --addr A   # or --module M --rva R; live Windows x64/arm64 process, read-only
+cargo run --release -- locate --signature S.yaml --pid P  # scan --pid P works the same way
 cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:ADDR --name N
 cargo run --release -- scan --file IMAGE --signature S.yaml
 cargo run --release -- scan --file IMAGE --db signatures.db

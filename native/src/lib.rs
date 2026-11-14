@@ -21,6 +21,7 @@ pub mod generate;
 pub mod matcher;
 pub mod merge;
 pub mod normalize;
+pub mod proc_win;
 pub mod recover;
 pub mod scanner;
 pub mod score;

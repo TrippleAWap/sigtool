@@ -7,6 +7,7 @@
 //! The parser mirrors `sources/file.py`; divergence would change feature
 //! records, so it is kept deliberately close to the Python code.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -315,7 +316,7 @@ fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| char::from(*byte)).collect()
 }
 
-fn module_stem(name: &str) -> String {
+pub(crate) fn module_stem(name: &str) -> String {
     Path::new(name)
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -737,8 +738,76 @@ fn symbol_name(
 }
 
 // -- PE -----------------------------------------------------------------------
+//
+// The directory walkers address the image by RVA through `PeImage`, so one
+// parser serves a file on disk (`PeFile`, RVAs mapped through the section
+// table) and an image mapped in a live process (`proc_win`, RVAs read from the
+// target). Every loop is bounded: both layouts are untrusted input.
 
-fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFormatError> {
+/// RVA-addressed, read-only view of one PE image.
+pub(crate) trait PeImage {
+    /// Exactly `len` bytes at `rva`, or `None` when any of them is unbacked.
+    fn bytes(&self, rva: u64, len: usize) -> Option<Cow<'_, [u8]>>;
+    /// Up to `len` bytes at `rva`, cut at the end of the backed range.
+    fn span(&self, rva: u64, len: usize) -> Option<Cow<'_, [u8]>>;
+    /// Whether `rva` is backed at all.
+    fn contains(&self, rva: u64) -> bool;
+    /// The NUL-terminated string at `rva` (empty when unbacked).
+    fn cstr(&self, rva: u64) -> String;
+
+    fn u16(&self, rva: u64) -> Option<u16> {
+        self.bytes(rva, 2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn u32(&self, rva: u64) -> Option<u32> {
+        self.bytes(rva, 4)
+            .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn u64(&self, rva: u64) -> Option<u64> {
+        self.bytes(rva, 8).map(|bytes| {
+            u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ])
+        })
+    }
+}
+
+/// One section header, as the loader sees it.
+#[derive(Debug, Clone)]
+pub(crate) struct PeSection {
+    pub name: String,
+    pub virtual_address: u64,
+    pub virtual_size: u64,
+    pub raw_size: u64,
+    pub raw_ptr: usize,
+    pub characteristics: u32,
+}
+
+impl PeSection {
+    /// Mapped extent: the larger of the virtual and raw sizes.
+    pub fn span(&self) -> u64 {
+        self.virtual_size.max(self.raw_size)
+    }
+}
+
+/// The parts of the PE headers the directory walkers need.
+#[derive(Debug, Clone)]
+pub(crate) struct PeHeaders {
+    pub machine: u16,
+    pub image_base: u64,
+    pub thunk_size: usize,
+    /// Data directories 0 (export), 1 (import), 3 (exception) when present.
+    pub export: Option<(u32, u32)>,
+    pub import: Option<(u32, u32)>,
+    pub exception: Option<(u32, u32)>,
+    /// Sections with a non-zero span, in header order.
+    pub sections: Vec<PeSection>,
+}
+
+/// Parse the DOS, COFF, optional, and section headers at the start of `data`.
+pub(crate) fn parse_pe_headers(data: &[u8]) -> Result<PeHeaders, SourceFormatError> {
     if data.len() < 0x40 {
         return Err(SourceFormatError("truncated DOS header".into()));
     }
@@ -747,6 +816,7 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         return Err(SourceFormatError("PE signature missing".into()));
     }
     let coff = lfanew + 4;
+    let machine = u16_at(data, coff)?;
     let number_of_sections = u16_at(data, coff + 2)?;
     let size_of_optional = u16_at(data, coff + 16)? as usize;
     let optional = coff + 20;
@@ -776,14 +846,13 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
     let number_of_dirs = u32_at(data, count_offset)?;
 
     let headers_end = optional + size_of_optional;
-    let mut sections: Vec<(u64, u64, usize)> = Vec::new(); // (rva, span, raw_ptr)
-    let mut regions: Vec<Region> = Vec::new();
+    let mut sections = Vec::new();
     for index in 0..number_of_sections as usize {
         let offset = headers_end + index * PE_SECTION_HEADER_SIZE;
         if offset + PE_SECTION_HEADER_SIZE > data.len() {
             return Err(SourceFormatError("truncated PE section table".into()));
         }
-        let section_name = {
+        let name = {
             let raw = &data[offset..offset + 8];
             let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
             let decoded = latin1(&raw[..end]);
@@ -793,100 +862,175 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
                 decoded
             }
         };
-        let virtual_size = u32_at(data, offset + 8)? as u64;
-        let virtual_address = u32_at(data, offset + 12)? as u64;
-        let raw_size = u32_at(data, offset + 16)? as u64;
-        let raw_ptr = u32_at(data, offset + 20)? as usize;
-        let span = virtual_size.max(raw_size);
-        if span == 0 {
-            continue;
+        let section = PeSection {
+            name,
+            virtual_size: u32_at(data, offset + 8)? as u64,
+            virtual_address: u32_at(data, offset + 12)? as u64,
+            raw_size: u32_at(data, offset + 16)? as u64,
+            raw_ptr: u32_at(data, offset + 20)? as usize,
+            characteristics: u32_at(data, offset + 36)?,
+        };
+        if section.span() != 0 {
+            sections.push(section);
         }
+    }
+
+    let directory = |index: usize| -> Result<Option<(u32, u32)>, SourceFormatError> {
+        if number_of_dirs as usize <= index {
+            return Ok(None);
+        }
+        let offset = dirs_offset + index * 8;
+        Ok(Some((u32_at(data, offset)?, u32_at(data, offset + 4)?)))
+    };
+    Ok(PeHeaders {
+        machine,
+        image_base,
+        thunk_size,
+        export: directory(0)?,
+        import: directory(1)?,
+        exception: directory(3)?,
+        sections,
+    })
+}
+
+/// A PE file on disk: RVAs resolve through the section table to file offsets.
+struct PeFile<'a> {
+    data: &'a [u8],
+    sections: &'a [PeSection],
+}
+
+impl PeFile<'_> {
+    fn offset(&self, rva: u64) -> Option<usize> {
+        self.sections.iter().find_map(|section| {
+            let start = section.virtual_address;
+            (start <= rva && rva < start + section.span())
+                .then(|| section.raw_ptr + (rva - start) as usize)
+        })
+    }
+}
+
+impl PeImage for PeFile<'_> {
+    fn bytes(&self, rva: u64, len: usize) -> Option<Cow<'_, [u8]>> {
+        let offset = self.offset(rva)?;
+        self.data
+            .get(offset..offset.checked_add(len)?)
+            .map(Cow::Borrowed)
+    }
+
+    fn span(&self, rva: u64, len: usize) -> Option<Cow<'_, [u8]>> {
+        let offset = self.offset(rva)?;
+        let end = offset.saturating_add(len).min(self.data.len());
+        Some(Cow::Borrowed(&self.data[offset.min(end)..end]))
+    }
+
+    fn contains(&self, rva: u64) -> bool {
+        self.offset(rva).is_some()
+    }
+
+    fn cstr(&self, rva: u64) -> String {
+        self.offset(rva)
+            .map(|offset| cstr(self.data, offset))
+            .unwrap_or_default()
+    }
+}
+
+/// Names and unwind entries from the export, import, and exception directories.
+#[derive(Debug, Default)]
+pub(crate) struct PeMetadata {
+    pub exports: Vec<(String, u64)>,
+    pub functions: HashMap<u64, String>,
+    pub imports: HashMap<u64, String>,
+    pub unwind: Vec<(u64, u64)>,
+}
+
+/// Walk the directories of `image`, loaded at `image_base`.
+///
+/// `strict` (mapped images) additionally drops forwarder exports, whose RVA
+/// points at a string inside the export directory rather than at code, and
+/// exports outside the image. `.pdata` reads stop at `max_pdata_bytes`.
+pub(crate) fn pe_metadata(
+    image: &impl PeImage,
+    headers: &PeHeaders,
+    image_base: u64,
+    arm64: bool,
+    strict: bool,
+    max_pdata_bytes: usize,
+) -> PeMetadata {
+    let mut metadata = PeMetadata::default();
+    if let Some((export_rva, export_size)) = headers.export {
+        if export_rva != 0 && export_size != 0 {
+            parse_pe_exports(
+                image,
+                image_base,
+                u64::from(export_rva),
+                u64::from(export_size),
+                strict,
+                &mut metadata,
+            );
+        }
+    }
+    if let Some((import_rva, import_size)) = headers.import {
+        if import_rva != 0 && import_size != 0 {
+            parse_pe_imports(
+                image,
+                image_base,
+                u64::from(import_rva),
+                headers.thunk_size,
+                &mut metadata.imports,
+            );
+        }
+    }
+    // Exception directory (index 3): RUNTIME_FUNCTION entries.
+    if let Some((pdata_rva, pdata_size)) = headers.exception {
+        if pdata_rva != 0 && pdata_size != 0 {
+            let size = (pdata_size as usize).min(max_pdata_bytes);
+            if let Some(bytes) = image.span(u64::from(pdata_rva), size) {
+                metadata.unwind = crate::unwind::pdata(&bytes, image_base, arm64);
+            }
+        }
+    }
+    metadata
+}
+
+fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFormatError> {
+    let headers = parse_pe_headers(data)?;
+    let image_base = headers.image_base;
+    let mut regions: Vec<Region> = Vec::new();
+    for section in &headers.sections {
+        let span = section.span();
         let mut payload = {
-            let take = (raw_size.min(span)) as usize;
-            let end = raw_ptr.saturating_add(take).min(data.len());
-            let start = raw_ptr.min(data.len());
+            let take = (section.raw_size.min(span)) as usize;
+            let end = section.raw_ptr.saturating_add(take).min(data.len());
+            let start = section.raw_ptr.min(data.len());
             data[start..end].to_vec()
         };
         if (payload.len() as u64) < span {
             payload.resize(span as usize, 0);
         }
-        let characteristics = u32_at(data, offset + 36)?;
-        sections.push((virtual_address, span, raw_ptr));
         regions.push(Region::new(
-            section_name,
-            image_base + virtual_address,
+            section.name.clone(),
+            image_base + section.virtual_address,
             payload,
-            characteristics & 0x2000_0000 != 0,
-            characteristics & 0x8000_0000 != 0,
+            section.characteristics & 0x2000_0000 != 0,
+            section.characteristics & 0x8000_0000 != 0,
         ));
     }
     if regions.is_empty() {
         return Err(SourceFormatError("PE image has no sections".into()));
     }
 
-    let rva_to_offset = |rva: u64| -> Option<usize> {
-        sections
-            .iter()
-            .find_map(|(virtual_address, span, raw_ptr)| {
-                if *virtual_address <= rva && rva < virtual_address + span {
-                    Some(raw_ptr + (rva - virtual_address) as usize)
-                } else {
-                    None
-                }
-            })
+    let image = PeFile {
+        data,
+        sections: &headers.sections,
     };
-
-    let mut exports: Vec<(String, u64)> = Vec::new();
-    let mut export_seen: HashMap<String, ()> = HashMap::new();
-    let mut functions: HashMap<u64, String> = HashMap::new();
-    let mut imports: HashMap<u64, String> = HashMap::new();
-
-    if number_of_dirs > 0 {
-        let export_rva = u32_at(data, dirs_offset)? as u64;
-        let export_size = u32_at(data, dirs_offset + 4)?;
-        if export_rva != 0 && export_size != 0 {
-            parse_pe_exports(
-                data,
-                &rva_to_offset,
-                image_base,
-                export_rva,
-                &mut exports,
-                &mut export_seen,
-                &mut functions,
-            );
-        }
-    }
-    if number_of_dirs > 1 {
-        let import_rva = u32_at(data, dirs_offset + 8)? as u64;
-        let import_size = u32_at(data, dirs_offset + 12)?;
-        if import_rva != 0 && import_size != 0 {
-            parse_pe_imports(
-                data,
-                &rva_to_offset,
-                image_base,
-                import_rva,
-                thunk_size,
-                &mut imports,
-            );
-        }
-    }
-
-    // Exception directory (index 3): RUNTIME_FUNCTION entries.
-    let mut unwind = Vec::new();
-    if number_of_dirs > 3 {
-        let pdata_rva = u32_at(data, dirs_offset + 24)? as u64;
-        let pdata_size = u32_at(data, dirs_offset + 28)? as usize;
-        if pdata_rva != 0 && pdata_size != 0 {
-            if let Some(offset) = rva_to_offset(pdata_rva) {
-                let end = offset.saturating_add(pdata_size).min(data.len());
-                unwind = crate::unwind::pdata(
-                    &data[offset.min(end)..end],
-                    image_base,
-                    arch == Arch::Arm64,
-                );
-            }
-        }
-    }
+    let metadata = pe_metadata(
+        &image,
+        &headers,
+        image_base,
+        arch == Arch::Arm64,
+        false,
+        usize::MAX,
+    );
 
     // A PE RVA is relative to ImageBase, which the headers occupy.
     let section_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
@@ -897,9 +1041,9 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         base: module_start,
         size: module_end - module_start,
         path: Some(name.to_string()),
-        exports,
-        functions,
-        imports,
+        exports: metadata.exports,
+        functions: metadata.functions,
+        imports: metadata.imports,
     };
     // PE exports carry no size, so there are no symbol bounds to hint recovery.
     Ok(ParsedImage {
@@ -908,7 +1052,7 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         bounds: Vec::new(),
         thumb_starts: Vec::new(),
         code_pointers: None,
-        unwind,
+        unwind: metadata.unwind,
         // `.pdata` lengths are exact; PE start synthesis is not measured yet.
         unwind_exact_ends: true,
         start_pointers: None,
@@ -916,150 +1060,128 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
 }
 
 fn parse_pe_exports(
-    data: &[u8],
-    rva_to_offset: &impl Fn(u64) -> Option<usize>,
+    image: &impl PeImage,
     image_base: u64,
     export_rva: u64,
-    exports: &mut Vec<(String, u64)>,
-    export_seen: &mut HashMap<String, ()>,
-    functions: &mut HashMap<u64, String>,
+    export_size: u64,
+    strict: bool,
+    metadata: &mut PeMetadata,
 ) {
-    let Some(base_offset) = rva_to_offset(export_rva) else {
+    let Some(directory) = image.bytes(export_rva, 40) else {
         return;
     };
-    if base_offset + 40 > data.len() {
+    let field = |offset: usize| {
+        u32::from_le_bytes([
+            directory[offset],
+            directory[offset + 1],
+            directory[offset + 2],
+            directory[offset + 3],
+        ])
+    };
+    let number_of_functions = field(20);
+    let number_of_names = field(24);
+    let address_of_functions = u64::from(field(28));
+    let address_of_names = u64::from(field(32));
+    let address_of_ordinals = u64::from(field(36));
+    if !(image.contains(address_of_functions)
+        && image.contains(address_of_names)
+        && image.contains(address_of_ordinals))
+    {
         return;
     }
-    let number_of_functions = match u32_at(data, base_offset + 20) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let number_of_names = match u32_at(data, base_offset + 24) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let address_of_functions = match u32_at(data, base_offset + 28) {
-        Ok(value) => value as u64,
-        Err(_) => return,
-    };
-    let address_of_names = match u32_at(data, base_offset + 32) {
-        Ok(value) => value as u64,
-        Err(_) => return,
-    };
-    let address_of_ordinals = match u32_at(data, base_offset + 36) {
-        Ok(value) => value as u64,
-        Err(_) => return,
-    };
-    let (Some(functions_offset), Some(names_offset), Some(ordinals_offset)) = (
-        rva_to_offset(address_of_functions),
-        rva_to_offset(address_of_names),
-        rva_to_offset(address_of_ordinals),
-    ) else {
-        return;
-    };
-    for index in 0..(number_of_names.min(number_of_functions).min(65536) as usize) {
-        let name_entry = names_offset + index * 4;
-        let ordinal_entry = ordinals_offset + index * 2;
-        if name_entry + 4 > data.len() || ordinal_entry + 2 > data.len() {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for index in 0..u64::from(number_of_names.min(number_of_functions).min(65536)) {
+        let (Some(name_rva), Some(ordinal)) = (
+            image.u32(address_of_names + index * 4),
+            image.u16(address_of_ordinals + index * 2),
+        ) else {
             break;
-        }
-        let name_rva = match u32_at(data, name_entry) {
-            Ok(value) => value as u64,
-            Err(_) => break,
         };
-        let ordinal = match u16_at(data, ordinal_entry) {
-            Ok(value) => value,
-            Err(_) => break,
-        };
-        let Some(name_offset) = rva_to_offset(name_rva) else {
-            continue;
-        };
-        if ordinal as u32 >= number_of_functions {
+        let name_rva = u64::from(name_rva);
+        if !image.contains(name_rva) {
             continue;
         }
-        let function_entry = functions_offset + ordinal as usize * 4;
-        if function_entry + 4 > data.len() {
+        if u32::from(ordinal) >= number_of_functions {
             continue;
         }
-        let symbol = cstr(data, name_offset);
+        let Some(function_rva) = image.u32(address_of_functions + u64::from(ordinal) * 4) else {
+            continue;
+        };
+        let function_rva = u64::from(function_rva);
+        let symbol = image.cstr(name_rva);
         if symbol.is_empty() {
             continue;
         }
-        let function_rva = match u32_at(data, function_entry) {
-            Ok(value) => value as u64,
-            Err(_) => continue,
-        };
-        let address = image_base + function_rva;
-        if export_seen.insert(symbol.clone(), ()).is_none() {
-            exports.push((symbol.clone(), address));
+        if strict
+            && (function_rva == 0
+                || (export_rva..export_rva + export_size).contains(&function_rva)
+                || !image.contains(function_rva))
+        {
+            continue;
         }
-        functions.entry(address).or_insert(symbol);
+        let address = image_base + function_rva;
+        if seen.insert(symbol.clone()) {
+            metadata.exports.push((symbol.clone(), address));
+        }
+        metadata.functions.entry(address).or_insert(symbol);
     }
 }
 
 fn parse_pe_imports(
-    data: &[u8],
-    rva_to_offset: &impl Fn(u64) -> Option<usize>,
+    image: &impl PeImage,
     image_base: u64,
     import_rva: u64,
     thunk_size: usize,
     imports: &mut HashMap<u64, String>,
 ) {
-    let Some(descriptor_offset) = rva_to_offset(import_rva) else {
+    if !image.contains(import_rva) {
         return;
+    }
+    let thunk = thunk_size as u64;
+    let ordinal_flag = if thunk_size == 8 {
+        1u64 << 63
+    } else {
+        1u64 << 31
     };
-    for index in 0..4096 {
-        let offset = descriptor_offset + index * 20;
-        if offset + 20 > data.len() {
+    for index in 0..4096u64 {
+        let Some(descriptor) = image.bytes(import_rva + index * 20, 20) else {
             return;
-        }
-        let original_thunk = match u32_at(data, offset) {
-            Ok(value) => value as u64,
-            Err(_) => return,
         };
-        let name_rva = match u32_at(data, offset + 12) {
-            Ok(value) => value as u64,
-            Err(_) => return,
+        let field = |offset: usize| {
+            u64::from(u32::from_le_bytes([
+                descriptor[offset],
+                descriptor[offset + 1],
+                descriptor[offset + 2],
+                descriptor[offset + 3],
+            ]))
         };
-        let first_thunk = match u32_at(data, offset + 16) {
-            Ok(value) => value as u64,
-            Err(_) => return,
-        };
+        let original_thunk = field(0);
+        let name_rva = field(12);
+        let first_thunk = field(16);
         if original_thunk == 0 && name_rva == 0 && first_thunk == 0 {
             return;
         }
-        let Some(name_offset) = rva_to_offset(name_rva) else {
+        if !image.contains(name_rva) {
             continue;
-        };
-        let dll = module_stem(&cstr(data, name_offset));
-        let Some(thunk_offset) = rva_to_offset(if original_thunk != 0 {
+        }
+        let dll = module_stem(&image.cstr(name_rva));
+        let thunk_rva = if original_thunk != 0 {
             original_thunk
         } else {
             first_thunk
-        }) else {
-            continue;
         };
-        for slot in 0..4096 {
-            let entry = thunk_offset + slot * thunk_size;
-            if entry + thunk_size > data.len() {
-                break;
-            }
-            let (value, ordinal_flag) = if thunk_size == 8 {
-                (
-                    match u64_at(data, entry) {
-                        Ok(value) => value,
-                        Err(_) => break,
-                    },
-                    1u64 << 63,
-                )
+        if !image.contains(thunk_rva) {
+            continue;
+        }
+        for slot in 0..4096u64 {
+            let entry = thunk_rva + slot * thunk;
+            let value = if thunk_size == 8 {
+                image.u64(entry)
             } else {
-                (
-                    match u32_at(data, entry) {
-                        Ok(value) => value as u64,
-                        Err(_) => break,
-                    },
-                    1u64 << 31,
-                )
+                image.u32(entry).map(u64::from)
+            };
+            let Some(value) = value else {
+                break;
             };
             if value == 0 {
                 break;
@@ -1067,12 +1189,13 @@ fn parse_pe_imports(
             let symbol = if value & ordinal_flag != 0 {
                 format!("#{}", value & 0xFFFF)
             } else {
-                let Some(hint_offset) = rva_to_offset(value & 0x7FFF_FFFF) else {
+                let hint_rva = value & 0x7FFF_FFFF;
+                if !image.contains(hint_rva) {
                     break;
-                };
-                cstr(data, hint_offset + 2)
+                }
+                image.cstr(hint_rva + 2)
             };
-            let address = image_base + first_thunk + (slot * thunk_size) as u64;
+            let address = image_base + first_thunk + slot * thunk;
             imports
                 .entry(address)
                 .or_insert_with(|| format!("{dll}!{symbol}"));
