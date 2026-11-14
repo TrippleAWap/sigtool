@@ -28,6 +28,8 @@ this one is what the cross-architecture numbers should be read from.
 from __future__ import annotations
 
 import argparse
+import os
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import shutil
@@ -168,9 +170,22 @@ def output_path(library: Library, arch: str, compiler: str, opt: str) -> Path:
     return outdir / f"{library.name}.so"
 
 
+def up_to_date(output: Path, library: Library, root: Path) -> bool:
+    """The output is newer than every input that can change it."""
+    if not output.exists():
+        return False
+    inputs = [*sources(library, root), Path(__file__), *SHIM.rglob("*.h")]
+    for include in library.includes:
+        inputs.extend((root / include).glob("*.h"))
+    built = output.stat().st_mtime
+    return all(path.stat().st_mtime <= built for path in inputs)
+
+
 def build_clang(clang: str, library: Library, root: Path, arch: str, opt: str) -> Path | None:
     target, extra = TARGETS[arch]
     output = output_path(library, arch, "clang", opt)
+    if up_to_date(output, library, root):
+        return output
     command = [
         clang,
         f"--target={target}",
@@ -200,12 +215,14 @@ def build_clang(clang: str, library: Library, root: Path, arch: str, opt: str) -
 
 def build_gcc(library: Library, root: Path) -> dict[tuple[str, str], Path]:
     """Every GCC build of one library in a single container run."""
-    lines = ["set -u", "status=0"]
+    lines = ["set -u"]
     outputs: dict[tuple[str, str], Path] = {}
     for arch, (driver, extra) in GCC.items():
         for opt in OPT_LEVELS:
             output = output_path(library, arch, "gcc", opt)
             outputs[(arch, opt)] = output
+            if up_to_date(output, library, root):
+                continue
             container_out = "/work/" + output.relative_to(CORPUS).as_posix()
             container_root = "/work/" + root.relative_to(CORPUS).as_posix()
             files = " ".join(
@@ -217,16 +234,19 @@ def build_gcc(library: Library, root: Path) -> dict[tuple[str, str], Path]:
                 + [f"-I{container_root}/{include}" for include in library.includes]
                 + [f"-D{define}" for define in library.defines]
             )
+            # Independent builds run as concurrent jobs inside one container.
             lines.append(
-                f"{driver} {flags} {files} -o {container_out} -lm "
-                f"|| {{ echo FAIL gcc {library.name} {arch} {opt}; status=1; }}"
+                f"( {driver} {flags} {files} -o {container_out} -lm "
+                f"|| echo FAIL gcc {library.name} {arch} {opt} ) &"
             )
-    lines.append("exit $status")
+    if len(lines) == 1:
+        return outputs
+    lines.append("wait")
     command = [
         "docker", "run", "--rm", "-v", f"{CORPUS}:/work", DOCKER_IMAGE, "sh", "-c", "\n".join(lines)
     ]
     result = subprocess.run(command, capture_output=True, text=True, errors="replace")
-    if result.returncode != 0:
+    if result.returncode != 0 or "FAIL" in result.stdout:
         print(result.stdout[-2000:], result.stderr[-3000:])
     return {key: path for key, path in outputs.items() if path.exists()}
 
@@ -282,20 +302,35 @@ def main(argv: list[str] | None = None) -> int:
     if clang is None or readelf is None:
         raise SystemExit("clang and llvm-readelf must be on PATH")
 
+    libraries = [lib for lib in LIBRARIES if not args.library or lib.name in args.library]
+    roots = {library.name: fetch(library) for library in libraries}
+
+    # Every build is independent: clang jobs per (library, arch, opt) and one
+    # container per library (itself running its builds concurrently) share
+    # one pool sized to the machine.
+    clang_jobs = {}
+    gcc_jobs = {}
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+        for library in libraries:
+            root = roots[library.name]
+            if "gcc" in args.compiler:
+                gcc_jobs[library.name] = pool.submit(build_gcc, library, root)
+            if "clang" in args.compiler:
+                for arch in TARGETS:
+                    for opt in OPT_LEVELS:
+                        clang_jobs[(library.name, arch, opt)] = pool.submit(
+                            build_clang, clang, library, root, arch, opt
+                        )
+
     binaries: list[dict[str, object]] = []
-    for library in LIBRARIES:
-        if args.library and library.name not in args.library:
-            continue
-        root = fetch(library)
+    for library in libraries:
         built: dict[tuple[str, str], dict[str, tuple[int, int]]] = {}
-        if "clang" in args.compiler:
-            for arch in TARGETS:
-                for opt in OPT_LEVELS:
-                    output = build_clang(clang, library, root, arch, opt)
-                    if output is not None:
-                        built[(arch, f"clang-{opt.strip('-')}")] = function_symbols(readelf, output)
-        if "gcc" in args.compiler:
-            for (arch, opt), output in build_gcc(library, root).items():
+        for (name, arch, opt), job in sorted(clang_jobs.items()):
+            output = job.result()
+            if name == library.name and output is not None:
+                built[(arch, f"clang-{opt.strip('-')}")] = function_symbols(readelf, output)
+        if library.name in gcc_jobs:
+            for (arch, opt), output in gcc_jobs[library.name].result().items():
                 built[(arch, f"gcc-{opt.strip('-')}")] = function_symbols(readelf, output)
         if len(built) != len(TARGETS) * len(OPT_LEVELS) * len(args.compiler):
             print(f"  {library.name}: some builds failed; skipped from ground truth")
