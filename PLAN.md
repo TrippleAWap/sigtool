@@ -1,6 +1,6 @@
 # Cross-Architecture Code Signatures: Project Plan
 
-*Working name: sigtool. Plan version 0.4.*
+*Working name: sigtool. Plan version 0.5: the Rust crate under `native/` is the product; the Python prototype was removed (section 13).*
 
 ## 1. Goal and scope
 
@@ -19,7 +19,7 @@ Build a system that generates architecture-independent signatures for functions 
 - IR lifting, symbolic execution, or learned embeddings in any hot path.
 - Arbitrary function matching between unrelated binaries (v1 targets known library or family code).
 - Guaranteed recall on small functions. They are signed with a low-confidence tag and matched using neighbor context (section 4).
-- A production-speed scanner. v1 ships a Python reference matcher; the fast scanner is a later phase.
+- ~~A production-speed scanner.~~ Superseded: the native scanner (M7) is the product.
 
 ## 2. Key design decisions (locked)
 
@@ -27,8 +27,8 @@ Build a system that generates architecture-independent signatures for functions 
 |---|---|---|
 | Matching basis | Features, not bytes | Bytes are architecture specific |
 | Extractor | One shared extractor for generation and scanning | Avoids train/serve skew |
-| Decoder | Capstone (x86-64, ARM32, Thumb, AArch64) plus small normalization tables | No lifter dependency, cheap, stable |
-| Core language | Python for v1 | Runs inside IDAPython and the CLI unchanged |
+| Decoder | `iced-x86` (x86-64), `yaxpeax-arm` (AArch64), Capstone (ARM32/Thumb), plus small normalization tables | Chosen per arch on coverage; no lifter dependency |
+| Core language | Rust (`native/`); the v1 Python prototype was removed | Speed, one implementation; the IDA plugin shells out to the CLI |
 | Fuzzy tier | Weighted feature match against anchor-shortlisted candidates; MinHash/LSH optional | Complexity vs speed balance |
 | Signature format | Human-readable source form (YAML) compiled to a binary DB | Diffable and reviewable |
 | Determinism | Fixed hash seeds, sorted features, versioned spec | Reproducible signatures |
@@ -37,21 +37,22 @@ Build a system that generates architecture-independent signatures for functions 
 ## 3. Architecture
 
 ```
-core
- ├─ source.py     ByteSource interface
- ├─ arch.py       arch/mode detection, Capstone setup
- ├─ normalize.py  per-arch constant and pointer normalization
- ├─ recover.py    bounded recursive descent, function bounds
- ├─ features.py   strings, callees, consts, CFG counts, op-class histogram
- ├─ score.py      IDF weights, anchor selection, thresholds
- ├─ sigfile.py    YAML <-> canonical bytes, spec versioning
- ├─ validate.py   self-test, FP scan, quality report
- └─ match.py      reference matcher (Tier 0 -> 1 -> 2)
-sources: proc_win, proc_linux, file (PE/ELF/Mach-O), ida
-front-ends: cli.py, ida_plugin.py
+native/src
+ ├─ source.rs     ByteSource trait, Module (base, image_base), MemorySource
+ ├─ elf.rs        ELF/PE FileSource; unwind.rs, starts.rs, arm_mode.rs for stripped images
+ ├─ proc_win.rs   read-only live Windows process source (cfg(windows))
+ ├─ arch.rs, arm64.rs, arm32.rs, normalize.rs (x64 via iced-x86), stubs.rs   decode and normalization
+ ├─ recover.rs    bounded recursive descent, function bounds
+ ├─ features.rs   strings, callees, consts, CFG counts, op-class histogram
+ ├─ score.rs, sigfile.rs, validate.rs, generate.rs, merge.rs
+ ├─ matcher.rs    hinted and hint-free discovery, gates, ranking
+ ├─ scanner.rs, db.rs        incremental scanner and binary signature DB
+ ├─ bench.rs      corpus recall/FP harness and baselines
+ └─ main.rs       sigtool-native CLI: gen, locate, scan, merge, db, bench
+front-ends: sigtool-native CLI, ida_plugin.py (shells out to the CLI)
 ```
 
-**ByteSource contract:** `arch`, `read(addr, n)`, `regions()`, `modules()` with export maps, and an optional `hint_function(addr)`. `generate(source, addr) -> (Signature, QualityReport)` is the single entry point.
+**ByteSource contract:** `arch`, `read(addr, n)`, `regions()`, `modules()` with export/import maps, `unwind_entries()` (survives stripping), and optional symbol hints (`hint_function`, `function_starts`) that hint-free discovery never uses. `generate(source, addr)` is the single generation entry point.
 
 ## 4. Signature spec v1
 
@@ -410,9 +411,9 @@ merging is the planned fix).**
   menu glue cannot run in CI (no IDA host); it is deliberately thin, and the
   first IDA-session check should follow `README.md` "In IDA".
 
-**Not started:** native live-PID sources and a native IDA adapter, plus VFP/NEON
-coverage for the native ARM32/Thumb decoder. Everything else through M7 is
-implemented, including native `merge` and all four target architectures.
+**Done since (section 13):** native live-PID source (`proc_win.rs`) and the IDA
+plugin as a thin wrapper over `sigtool-native`; ARM32/Thumb decode through
+Capstone, which covers VFP/NEON.
 
 **M6 — implemented; native port is the follow-on (M7).**
 
@@ -612,3 +613,88 @@ implemented, including native `merge` and all four target architectures.
   23/120; only total chance hits move, 476 -> 432 and 1323 -> 1355). PE and x64
   sweeps are not implemented (`.pdata` and `.eh_frame` are complete on the
   corpus).
+
+## 13. Native-first (2026-11)
+
+The Rust crate is the product and the Python prototype (`core/`, `sources/`,
+`cli.py`, `bench.py`, the Python tests and `tests/baseline/bench.json`) is
+removed. Python remains for `corpus/build.py`, `corpus/real.py`,
+`corpus/shim/gen_shim.py`, `tests/vectors/generate.py` (now driven by the
+native `vector_skeleton` example and golden bless mode), and `ida_plugin.py`,
+which shells out to `sigtool-native`. The focus is finding one function across
+architectures, compilers, and optimization levels, hint-free on stripped
+targets.
+
+**Real corpus.** zlib 1.3.1, lz4 1.10.0, cJSON 1.7.18, Lua 5.4.7, SQLite
+3.46.1, pinned by sha256, built as shared objects with clang 22 (host, libc
+shim) and GCC 12 (Docker cross image) at -O0/-O2/-Os for x64, arm64, arm32,
+and thumb: 120 binaries, each with an `llvm-strip --strip-all` copy that
+hint-free scans search. Baseline: `tests/baseline/native-real-bench.json`
+(`--max-functions 4`, 577 signatures).
+
+**Top-1 recall on the real corpus, start of this phase -> now.** "Now" is the
+full baseline run. The start values are indicative, not like-for-like: they
+come from the earliest runs of each row, which used other slices (hinted
+same-opt from a clang-only 10-function run; other hinted rows and the
+held-out row from a 6-function run; hint-free rows from the x64+arm64 slice
+before unwind discovery, when stripped targets had almost no function
+starts).
+
+| Row | hinted start | hinted now | hint-free start | hint-free now |
+|---|---|---|---|---|
+| same arch, same opt | 0.558 | 0.671 | 0.117 | 0.810 |
+| same arch, other compiler | — | 0.354 | 0.042 | 0.294 |
+| same arch, cross opt | — | 0.296 | 0.037 | 0.246 |
+| cross arch, same opt | 0.212 | 0.326 | 0.050 | 0.293 |
+| cross arch, other compiler | 0.132 | 0.263 | — | 0.198 |
+| cross arch, cross opt | 0.081 | 0.227 | — | 0.176 |
+| merged, same opt | 0.558 | 0.593 | 0.146 | 0.639 |
+| merged, held-out arch, same opt | 0.365 | 0.454 | 0.032 | 0.371 |
+
+False positives now: strong 0.072 (corpus) and 0.000 (negative), any-verdict
+0.196 (corpus) and 0.000 (negative), hint-free any-verdict 0.250. None of the
+recall targets in section 6 is met yet.
+
+**What moved the numbers, in order** (each change measured before and after on
+the real corpus; details in the commit messages and `spec/CHANGELOG.md`):
+
+1. Ranking by weighted-Jaccard similarity and a shape-corroboration gate for
+   low-information signatures.
+2. Unwind tables (`.eh_frame`, `.ARM.exidx`, `.pdata`) as the hint-free
+   function list: the enclosing entry first, then every entry compared, with
+   a chance gate (expected chance matches per image at most 1.0, needing 32
+   functions for frequencies) and a 0.2 similarity floor for hint-free scans.
+3. Thumb detection in stripped ARM32 images (`arm_mode.rs`).
+4. Constants as 32-bit words, with partial `movw`/`movt` and `movz`/`movk`
+   values kept pending until their register is used.
+5. Synthesized function starts for images without full tables (`starts.rs`):
+   code pointers, mode-checked call targets, and post-terminator prologues.
+   Stripped ARM start recall went from 0.001-0.669 to 0.95-0.996 at 0.999+
+   precision. A table-less image with fewer than 32 synthesized starts keeps
+   the backward sweep instead.
+6. Portable callees: PLT stubs and veneers resolve to their import on every
+   arch, ARM32 `Elf32_Rel` imports are read, `.symtab`-only names are optional,
+   `module+rva` callee labels are gone, and calls into other images are
+   low-information (`*!name`).
+7. arm32 PIC `ldr rd, [pc, rm]` resolves to the slot instead of recording the
+   next instruction word as a constant.
+
+**Front-ends.** `proc_win.rs` is the read-only Windows process source
+(`--pid` in `gen`, `locate`, `scan`; WOW64 rejected; live tests in
+`native/tests/live_proc_win.rs`). RVAs are relative to the image base (lowest
+`PT_LOAD`, PE `ImageBase`), kept in `Module::image_base` separately from the
+mapped range that rule 4 uses; `merge --sample FILE:+RVA` and the `rva` in
+`locate --json` let the IDA plugin work on rebased databases.
+
+**Known limits and next steps.**
+
+- Hint-free false positives (0.250) rose with every gain in candidate
+  coverage; acceptance, not discovery, is now the limiting factor.
+- Cross-compiler and cross-opt recall (0.2-0.35) are far below cross-build
+  same-opt; inlining and different block structure dominate the misses, and
+  local (static) callees cannot be resolved in stripped targets.
+- Not covered: Thumb-2 lld thunks, AArch64 `-fno-plt` calls, gcc `.part.N` and
+  `.cold` splits, functions after noreturn calls without a prologue (~4-5% of
+  gcc ARM starts), PE images without `.pdata`, and a Linux process source.
+- The toy-corpus baseline depends on the compiler version (CI pins LLVM 22);
+  the real corpus is not in CI because it needs the GCC cross image.

@@ -214,12 +214,12 @@ levels, and architectures.
 ## 6. Hashing
 
 * Hash: BLAKE2b, `digest_size=16`, `person=b"sigtool.v1"`.
-* Python's `hash()` is never used for persisted data.
+* No language-runtime hash (randomized or seed-dependent) is used for persisted data.
 * The hash is used for over-long string values and, from M2, for signature ids.
 
 ## 7. Signature document
 
-Generation produces one YAML document per function (`core/sigfile.py`). The
+Generation produces one YAML document per function (`native/src/sigfile.rs`). The
 canonical YAML text is the signature's identity: its BLAKE2b-16 digest is the
 `signature_id`, so the byte form must stay stable.
 
@@ -268,7 +268,7 @@ Rules:
 ### Weights
 
 `weight = base(kind) * rarity(value) * idf(key)`, where `idf` defaults to 1.0
-unless a reference corpus is supplied (`core.score.build_idf`).
+unless a reference corpus is supplied (`native/src/score.rs`).
 
 | kind | base | anchors | required |
 | --- | --- | --- | --- |
@@ -312,7 +312,7 @@ and rely on neighbour context (§8).
 
 ### Quality report
 
-`core/validate.py` reports what is measurable without a matcher:
+`native/src/validate.rs` reports what is measurable without a matcher:
 
 * `strong` — at least 2 anchors, 2 data features, 2 different data kinds, and
   complete recovery.
@@ -329,7 +329,7 @@ bump and a changelog entry.
 
 ## 8. Matching
 
-`core/match.py` is the reference matcher. It uses the same extractor as
+`native/src/matcher.rs` is the matcher. It uses the same extractor as
 generation and never decodes with its own tables.
 
 * **Tier 0 — anchors as bytes.** `const` anchors are searched at 4 and 8 bytes
@@ -410,7 +410,7 @@ with `confidence: low`.
 
 ### Merging samples (multi-arch signatures)
 
-`core/merge.py` combines two or more samples of one function — different
+`native/src/merge.rs` combines two or more samples of one function — different
 optimization levels, different architectures — into one document:
 
 * A feature present in **every** sample keeps its weight and, for data kinds,
