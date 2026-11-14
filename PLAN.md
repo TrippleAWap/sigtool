@@ -551,6 +551,22 @@ implemented, including native `merge` and all four target architectures.
   every arm32 and thumb vector, including the auto-vectorized `recurse` builds,
   with no skips, and a full sweep of all 102 arm32/thumb corpus functions
   emits `gen` YAML byte-identical to the Python front end.
+- Intentional divergence from the Python reference: native `const` features
+  are 32-bit words (SPEC.md §3). A sign- or zero-extended 32-bit value is its
+  low word and any other value is its non-zero high and low words, so x64
+  `0xffffffff94d049bb` meets ARM32 `0x94d049bb` and a `movabs`/`movz`+`movk`
+  64-bit value meets the ARM32 register pair. Partial `movw`/`movt` and
+  `movz`/`movk` values also stay pending until their register is used, and
+  ARM32/Thumb PIC `add rd, pc` consumes its pooled offset as an address (it
+  used to leak as a constant and lose the string). Measured on the real corpus
+  (`bench --max-functions 6`): cross arch one sample same opt hinted top-1
+  0.212 -> 0.262, merged held-out arch same opt hinted top-1 0.365 -> 0.430,
+  cross arch same opt hint-free top-1 0.013 -> 0.029; strong FP vs other
+  corpus sources 0.081 -> 0.083 (one arm32 signature), any-verdict 0.158 ->
+  0.158, negative corpus 0 -> 0. On 38 sampled functions the share of x64 large
+  constants present in the other architecture's sample rose from 0.533 to 0.716
+  (arm64), 0.250 to 0.343 (arm32), and 0.183 to 0.284 (thumb). `core/` is
+  deprecated and keeps the old form; `SPEC_VERSION` is not bumped.
 - Not ported yet: live-PID sources and the IDA adapter. `gen`/`locate`/`scan`/
   `merge` return exit code `3` only for an unknown architecture. The Python
   implementation remains the reference for those paths.
