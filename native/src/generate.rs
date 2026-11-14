@@ -10,7 +10,7 @@ use std::fmt;
 
 use crate::errors::{DecodeError, SelfTestError, SignatureError};
 use crate::features::extract;
-use crate::matcher::{self_test, Match, MAX_CANDIDATE_STARTS};
+use crate::matcher::{self_test, self_test_in, Match, ScanContext, MAX_CANDIDATE_STARTS};
 use crate::recover::{recover, RecoveryLimits};
 use crate::score::{
     choose_thresholds, confidence_for, score_features, select_anchors, signature_feature,
@@ -86,6 +86,22 @@ pub fn generate<S: ByteSource + ?Sized>(
     idf: Option<&HashMap<String, f64>>,
     limits: Option<RecoveryLimits>,
 ) -> Result<GenerationResult, GenerateError> {
+    generate_in(source, addr, name, opt, tool, idf, limits, None)
+}
+
+/// [`generate`], self-testing through the image's shared [`ScanContext`] when
+/// one is given (many signatures from one image: build the context once).
+#[allow(clippy::too_many_arguments)]
+pub fn generate_in<S: ByteSource + ?Sized>(
+    source: &S,
+    addr: u64,
+    name: Option<&str>,
+    opt: Option<&str>,
+    tool: Option<&str>,
+    idf: Option<&HashMap<String, f64>>,
+    limits: Option<RecoveryLimits>,
+    context: Option<&ScanContext>,
+) -> Result<GenerationResult, GenerateError> {
     let recovered = recover(source, addr, limits, true)?;
     let features = extract(source, &recovered);
     let scored = score_features(&features, idf);
@@ -127,13 +143,23 @@ pub fn generate<S: ByteSource + ?Sized>(
     // Rule 7: never emit a signature the reference matcher cannot re-find (or,
     // when the matcher cannot reach the function, one that does not describe
     // its bytes exactly).
-    let matched = self_test(
-        &signature,
-        source,
-        recovered.start(),
-        limits,
-        MAX_CANDIDATE_STARTS,
-    )?;
+    let matched = match context {
+        Some(context) => self_test_in(
+            &signature,
+            source,
+            recovered.start(),
+            limits,
+            MAX_CANDIDATE_STARTS,
+            context,
+        ),
+        None => self_test(
+            &signature,
+            source,
+            recovered.start(),
+            limits,
+            MAX_CANDIDATE_STARTS,
+        ),
+    }?;
     Ok(GenerationResult {
         signature,
         report,

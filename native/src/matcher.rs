@@ -376,6 +376,27 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     )
 }
 
+/// The candidate starts [`scan_in`] would try, in order. Diagnostic: it
+/// separates "the start was never a candidate" from "it was, but did not
+/// match" when a scan misses.
+pub fn explain_candidates<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    context: &ScanContext,
+    hints: bool,
+) -> Vec<u64> {
+    let hits = anchor_hits(source, signature);
+    candidate_starts(
+        source,
+        signature,
+        &hits,
+        MAX_CANDIDATE_STARTS,
+        hints,
+        Some(&context.references),
+        Some(&context.code),
+    )
+}
+
 /// A recovered candidate function reduced to what comparison needs.
 #[derive(Debug)]
 pub struct Candidate {
@@ -722,6 +743,75 @@ pub fn self_test<S: ByteSource + ?Sized>(
         )));
     }
 
+    structural_self_test(signature, source, start, limits)
+}
+
+/// [`self_test`] through an image's shared [`ScanContext`].
+///
+/// The reference index is already built, so string anchors seed candidates up
+/// front instead of costing a whole-image index per generated signature (the
+/// dominant generation cost on real libraries), and recovered candidates come
+/// from the shared cache.
+pub fn self_test_in<S: ByteSource + ?Sized>(
+    signature: &Signature,
+    source: &S,
+    start: u64,
+    limits: Option<RecoveryLimits>,
+    max_candidates: usize,
+    context: &ScanContext,
+) -> Result<Match, SelfTestError> {
+    let hits = anchor_hits(source, signature);
+    let references = Some(&context.references);
+    let code = Some(&context.code);
+    let matches = scan_candidates_with(
+        source,
+        signature,
+        &hits,
+        limits,
+        max_candidates,
+        true,
+        references,
+        code,
+        Some(&context.features),
+        None,
+    );
+    if let Some(found) = matches.iter().find(|item| item.address == start) {
+        return Ok(found.clone());
+    }
+    let candidates = candidate_starts(
+        source,
+        signature,
+        &hits,
+        max_candidates,
+        true,
+        references,
+        code,
+    );
+    if candidates.contains(&start) {
+        let detail = if matches.is_empty() {
+            "no candidate matched anywhere in the image".to_string()
+        } else {
+            format!(
+                "best accepted match was at another function (score {:.3})",
+                matches[0].score
+            )
+        };
+        return Err(SelfTestError(format!(
+            "signature {:?} failed self-test at 0x{start:x}: {detail}",
+            signature.name
+        )));
+    }
+    structural_self_test(signature, source, start, limits)
+}
+
+/// The matcher cannot reach `start`: require the signature to describe the
+/// bytes there exactly.
+fn structural_self_test<S: ByteSource + ?Sized>(
+    signature: &Signature,
+    source: &S,
+    start: u64,
+    limits: Option<RecoveryLimits>,
+) -> Result<Match, SelfTestError> {
     let recovered = recover(source, start, limits, true)
         .map_err(|error| SelfTestError(format!("cannot recover 0x{start:x}: {error}")))?;
     let result = compare(signature, &extract(source, &recovered));
