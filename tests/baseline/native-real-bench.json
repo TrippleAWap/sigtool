@@ -9646,7 +9646,7 @@
       "target_opt": "gcc-O2",
       "discovery": "hint-free",
       "hits": 7,
-      "top_hits": 7,
+      "top_hits": 6,
       "attempts": 20
     },
     {

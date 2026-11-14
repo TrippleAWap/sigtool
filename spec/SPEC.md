@@ -424,8 +424,9 @@ from an interior address.
 **Hint-free acceptance.** On an image with frequency estimates (at least 32
 unwind-table functions), a hint-free match must also pass:
 
-* the chance gate (at most 1.0 expected chance matches) and similarity at
-  least 0.2;
+* similarity at least 0.2, and the chance gate (at most 1.0 expected chance
+  matches) unless the match shares a neighbour key: the gate prices only the
+  candidate's own keys;
 * *shape-only* matches, those whose matched keys hold no identifying key (a
   `str`, a `callee` without `!`, or a `const` at least `0x100` from zero), need
   at least 6 matched features, unless they share a neighbour key;

@@ -403,34 +403,37 @@ fn locate_finds_a_shape_only_helper_through_its_caller() {
     ]);
     let yaml = std::fs::read_to_string(&signature).unwrap();
     let json = dir.join("matches.json");
-    run(&[
-        "locate",
-        "--signature",
-        signature.to_str().unwrap(),
-        "--file",
-        stripped.to_str().unwrap(),
-        "--json",
-        json.to_str().unwrap(),
-        "--yes",
-    ]);
-    let document: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    // Not `run`: a miss exits 1, and the failure message below says more.
+    let locate = Command::new(env!("CARGO_BIN_EXE_sigtool-native"))
+        .args(["locate", "--signature", signature.to_str().unwrap()])
+        .args(["--file", stripped.to_str().unwrap()])
+        .args(["--json", json.to_str().unwrap(), "--yes"])
+        .output()
+        .expect("run sigtool-native");
+    let document: serde_json::Value = std::fs::read_to_string(&json)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
     for path in [&source, &image, &stripped, &signature, &json] {
         std::fs::remove_file(path).ok();
     }
     std::fs::remove_dir(&dir).ok();
+    let context = format!(
+        "signature:\n{yaml}\nlocate stderr:\n{}\nmatches:\n{document}",
+        String::from_utf8_lossy(&locate.stderr)
+    );
     assert!(
         yaml.contains("- in:str:neighbour evidence banner"),
-        "{yaml}"
+        "{context}"
     );
     let best = &document["matches"][0];
-    assert_eq!(best["address"], format!("0x{address:x}"), "{document}");
-    assert_eq!(best["evidence"], "identified", "{document}");
-    let matched = best["matched"].as_array().unwrap();
+    assert_eq!(best["address"], format!("0x{address:x}"), "{context}");
+    assert_eq!(best["evidence"], "identified", "{context}");
+    let matched = best["matched"].as_array().cloned().unwrap_or_default();
     assert!(
         matched
             .iter()
             .any(|key| key == "near:in:str:neighbour evidence banner"),
-        "{document}"
+        "{context}"
     );
 }

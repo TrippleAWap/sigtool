@@ -642,7 +642,7 @@ pub fn scan_in<S: ByteSource + ?Sized>(
         signature.neighbours.iter().map(String::as_str).collect();
     let mut kept: Vec<Match> = matches
         .into_iter()
-        .filter(|found| specific(frequencies, found))
+        .filter(|found| found.similarity >= MIN_SIMILARITY)
         .filter_map(|mut found| {
             let own_evidence = identified(&found);
             let shared: Vec<String> = if signature_neighbours.is_empty() {
@@ -655,6 +655,13 @@ pub fn scan_in<S: ByteSource + ?Sized>(
                     .map(|key| format!("{NEIGHBOUR_PREFIX}{key}"))
                     .collect()
             };
+            // The chance gate prices only the candidate's own keys. A shared
+            // neighbour key is evidence it does not see: a one-block helper
+            // has the commonest shape in the image, yet only one such helper
+            // is called from the function holding the signature's string.
+            if shared.is_empty() && !specific(frequencies, &found) {
+                return None;
+            }
             // A function whose neighbours carry evidence is expected to keep
             // some of it: a shape-only lookalike elsewhere shares none.
             if !own_evidence
