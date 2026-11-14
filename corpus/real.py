@@ -7,7 +7,13 @@ Outputs, never committed:
 
     corpus/third_party/<archive and extracted sources>
     corpus/build-real/<arch>/<compiler>-<opt>/<library>.so
-    corpus/build-real/ground_truth.json   (same schema as corpus/build/)
+    corpus/build-real/stripped/<arch>/<compiler>-<opt>/<library>.so  (llvm-strip --strip-all)
+    corpus/build-real/ground_truth.json   (same schema as corpus/build/, plus "stripped")
+
+Hint-free recall is measured on the stripped copies: `--strip-all` removes
+.symtab exactly as a distro strip does and keeps .dynsym, which dynamic
+linking needs. Scanning the unstripped file without hints would still leak
+local symbol names into callee features and Thumb-mode detection.
 
 Every library is built by two compiler families. clang runs on the host and
 links a shared object with no libc (calls stay undefined PLT imports), with
@@ -251,7 +257,7 @@ def build_gcc(library: Library, root: Path) -> dict[tuple[str, str], Path]:
     return {key: path for key, path in outputs.items() if path.exists()}
 
 
-def function_symbols(readelf: str, binary: Path) -> dict[str, tuple[int, int]]:
+def function_symbols(readelf: str, binary: Path, arch: str) -> dict[str, tuple[int, int]]:
     """Defined FUNC symbols with a size, minus names that occur twice."""
     text = subprocess.run(
         [readelf, "-sW", str(binary)], capture_output=True, text=True, check=True
@@ -270,8 +276,11 @@ def function_symbols(readelf: str, binary: Path) -> dict[str, tuple[int, int]]:
         size = int(parts[2], 0)
         if size == 0:
             continue
-        # ARM ELF marks Thumb functions with the low address bit.
-        start = int(parts[1], 16) & ~1
+        # ARM ELF marks Thumb functions with the low address bit. Only there:
+        # x86-64 functions at O0/Os often start at odd addresses.
+        start = int(parts[1], 16)
+        if arch in ("arm32", "thumb"):
+            start &= ~1
         name = parts[7].split("@")[0]
         if name in symbols and symbols[name][0] != start:
             duplicate.add(name)
@@ -279,6 +288,14 @@ def function_symbols(readelf: str, binary: Path) -> dict[str, tuple[int, int]]:
     for name in duplicate:
         del symbols[name]
     return symbols
+
+
+def strip(llvm_strip: str, binary: Path) -> Path:
+    stripped = BUILD / "stripped" / binary.relative_to(BUILD)
+    stripped.parent.mkdir(parents=True, exist_ok=True)
+    if not stripped.exists() or stripped.stat().st_mtime < binary.stat().st_mtime:
+        subprocess.run([llvm_strip, "--strip-all", str(binary), "-o", str(stripped)], check=True)
+    return stripped
 
 
 def select(names: set[str], limit: int) -> list[str]:
@@ -299,8 +316,9 @@ def main(argv: list[str] | None = None) -> int:
 
     clang = shutil.which("clang")
     readelf = shutil.which("llvm-readelf")
-    if clang is None or readelf is None:
-        raise SystemExit("clang and llvm-readelf must be on PATH")
+    llvm_strip = shutil.which("llvm-strip")
+    if clang is None or readelf is None or llvm_strip is None:
+        raise SystemExit("clang, llvm-readelf, and llvm-strip must be on PATH")
 
     libraries = [lib for lib in LIBRARIES if not args.library or lib.name in args.library]
     roots = {library.name: fetch(library) for library in libraries}
@@ -328,10 +346,10 @@ def main(argv: list[str] | None = None) -> int:
         for (name, arch, opt), job in sorted(clang_jobs.items()):
             output = job.result()
             if name == library.name and output is not None:
-                built[(arch, f"clang-{opt.strip('-')}")] = function_symbols(readelf, output)
+                built[(arch, f"clang-{opt.strip('-')}")] = function_symbols(readelf, output, arch)
         if library.name in gcc_jobs:
             for (arch, opt), output in gcc_jobs[library.name].result().items():
-                built[(arch, f"gcc-{opt.strip('-')}")] = function_symbols(readelf, output)
+                built[(arch, f"gcc-{opt.strip('-')}")] = function_symbols(readelf, output, arch)
         if len(built) != len(TARGETS) * len(OPT_LEVELS) * len(args.compiler):
             print(f"  {library.name}: some builds failed; skipped from ground truth")
             continue
@@ -339,9 +357,11 @@ def main(argv: list[str] | None = None) -> int:
         chosen = select(common, args.max_functions)
         print(f"{library.name}: {len(common)} common functions, {len(chosen)} selected")
         for (arch, opt), symbols in sorted(built.items()):
+            stripped = strip(llvm_strip, BUILD / arch / opt / f"{library.name}.so")
             binaries.append(
                 {
                     "path": f"{arch}/{opt}/{library.name}.so",
+                    "stripped": stripped.relative_to(BUILD).as_posix(),
                     "arch": arch,
                     "library": library.name,
                     "functions": [
