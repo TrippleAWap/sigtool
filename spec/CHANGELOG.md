@@ -131,12 +131,17 @@ document are unchanged, so `SPEC_VERSION` stays `1`.
 * The `strong` verdict counts only required data features, so a merged
   signature is no longer strong on features one sample lacks.
 
-## v1 — native constant words
+## v2 — portable features
 
-Changes `const` feature values (SPEC.md §3). The native port is the only
-maintained implementation; the deprecated Python prototype under `core/` still
-emits the old form, so `SPEC_VERSION` is not bumped here and the
-`tests/test_spec.py` agreement stays intact.
+`SPEC_VERSION` is `2`. Constant words and portable callees change feature
+records, so a v1 signature or DB is refused rather than matched with different
+semantics. The hash domain (`person="sigtool.v1"`) is unchanged: hashing did
+not change, only what is hashed. The Python prototype under `core/` was
+removed; the native crate is the only implementation of this spec.
+
+### Constant words
+
+Changes `const` feature values (SPEC.md §3).
 
 * Every constant is recorded as 32-bit words. A value that is the zero- or
   sign-extension of a 32-bit value is its low word; any other value is its
@@ -159,12 +164,9 @@ emits the old form, so `SPEC_VERSION` is not bumped here and the
   for the register form. Previously the offset leaked as a build-specific
   `const` (`0xfffeff36`) and the string it addressed was lost.
 
-## Unreleased — portable callees
+### Portable callees
 
-Changes `callee` feature semantics (SPEC.md §2.1). `SPEC_VERSION` is not
-bumped here so that one bump can cover this and the concurrent constant
-canonicalization change; signatures written before this change carry callees
-that the new extractor never emits.
+Changes `callee` feature semantics (SPEC.md §2.1).
 
 * Only calls and jumps that leave the function produce callees; a jump into
   the function's own body is control flow.
@@ -191,3 +193,11 @@ that the new extractor never emits.
   (0.081 before the callee changes, 0.374 without the rule).
 * Golden vectors: 57 callee records removed, all `fixture+0x<rva>` labels
   (intra-function jumps); no named callee changed.
+
+### Image-relative RVAs
+
+`rva` in provenance and `module+rva` labels are relative to the image base:
+the lowest `PT_LOAD` address for linked ELF images and `ImageBase` for PE,
+the values readelf and disassemblers use. Before, the base was the lowest
+mapped section, which put PE RVAs 0x1000 off and made `--rva` disagree with
+IDA. Relocatable objects keep the lowest placed section.

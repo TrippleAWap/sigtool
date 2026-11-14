@@ -579,8 +579,8 @@ mod tests {
     fn rejects_a_foreign_spec_version() {
         let mut bytes = sample_db().encode();
         // The spec string sits immediately after the fixed header.
-        assert_eq!(bytes[DB_HEADER_SIZE], b'1');
-        bytes[DB_HEADER_SIZE] = b'2';
+        assert_eq!(bytes[DB_HEADER_SIZE], SPEC_VERSION.as_bytes()[0]);
+        bytes[DB_HEADER_SIZE] = b'0';
         let error = DbView::parse(&bytes).expect_err("spec mismatch");
         assert!(error.to_string().contains("spec version"), "{error}");
     }

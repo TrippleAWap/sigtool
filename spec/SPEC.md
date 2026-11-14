@@ -224,7 +224,7 @@ canonical YAML text is the signature's identity: its BLAKE2b-16 digest is the
 `signature_id`, so the byte form must stay stable.
 
 ```yaml
-spec_version: '1'
+spec_version: '2'
 name: parse_record
 confidence: single-arch
 anchors:
@@ -254,7 +254,7 @@ Rules:
 
 * Field order is fixed as above; `features` are sorted by `(kind, value)` and
   anchors by descending weight, then `(kind, value)`.
-* `spec_version` is a string and must equal `core.spec.SPEC_VERSION`; a reader
+* `spec_version` is a string and must equal `SPEC_VERSION` (`native/src/spec.rs`); a reader
   rejects any other value rather than guessing.
 * `arch` is not a top-level list. One document describes one sample; multiple
   architectures are combined by merging provenance and promoting `confidence`
