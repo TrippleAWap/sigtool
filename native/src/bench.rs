@@ -301,15 +301,32 @@ fn limit_functions(functions: BTreeMap<String, u64>, limit: usize) -> BTreeMap<S
 /// Measure the corpus under `corpus` (the directory holding `ground_truth.json`).
 /// `arches` limits the run; empty means every architecture present.
 pub fn run(corpus: &Path, arches: &[String]) -> Result<BenchReport, String> {
-    run_with(corpus, arches, 0)
+    run_with(
+        corpus,
+        &BenchOptions {
+            arches: arches.to_vec(),
+            ..BenchOptions::default()
+        },
+    )
 }
 
-/// [`run`] keeping at most `max_functions` ground-truth functions per binary.
-pub fn run_with(
-    corpus: &Path,
-    arches: &[String],
-    max_functions: usize,
-) -> Result<BenchReport, String> {
+/// What a bench run measures.
+#[derive(Debug, Clone, Default)]
+pub struct BenchOptions {
+    /// Architectures to load; empty means all.
+    pub arches: Vec<String>,
+    /// Ground-truth functions kept per binary; 0 keeps all.
+    pub max_functions: usize,
+    /// Only this discovery mode (`hinted` or `hint-free`); `None` runs both.
+    pub discovery: Option<String>,
+    /// Skip both false-positive measurements (recall-only iteration).
+    pub skip_false_positives: bool,
+}
+
+/// [`run`] with explicit [`BenchOptions`].
+pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, String> {
+    let arches = &options.arches;
+    let max_functions = options.max_functions;
     let clock = std::time::Instant::now();
     let ground_truth_path = corpus.join("ground_truth.json");
     let text = std::fs::read_to_string(&ground_truth_path).map_err(|error| {
@@ -456,8 +473,12 @@ pub fn run_with(
             if target.source_file == sample.source_file
                 && target.functions.contains_key(&sample.name)
             {
-                recall_jobs.push((s, t, true));
-                recall_jobs.push((s, t, false));
+                for hints in [true, false] {
+                    let mode = if hints { HINTED } else { HINT_FREE };
+                    if options.discovery.as_deref().is_none_or(|only| only == mode) {
+                        recall_jobs.push((s, t, hints));
+                    }
+                }
             }
         }
     }
@@ -536,8 +557,14 @@ pub fn run_with(
     };
     // Scan every signature once per target set; the strong cells are the
     // strong subset of the same counts.
-    let corpus_counts = false_positive_counts(&all, corpus_targets);
-    let negative_counts = false_positive_counts(&all, negative_targets);
+    let (corpus_counts, negative_counts) = if options.skip_false_positives {
+        (vec![0; all.len()], vec![0; all.len()])
+    } else {
+        (
+            false_positive_counts(&all, corpus_targets),
+            false_positive_counts(&all, negative_targets),
+        )
+    };
     let is_strong: Vec<bool> = all.iter().map(|s| s.verdict == "strong").collect();
     let false_positives = false_positive_cells(&all, &corpus_counts, Some(&is_strong));
     let negative_false_positives = false_positive_cells(&all, &negative_counts, Some(&is_strong));
