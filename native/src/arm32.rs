@@ -604,13 +604,32 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             return 0;
         }
         for (index, operand) in ops.iter().enumerate() {
-            let ArmOp::Mem { base, disp, .. } = operand else {
+            let ArmOp::Mem {
+                base,
+                index: offset_register,
+                disp,
+            } = operand
+            else {
                 continue;
             };
             if *base != PC {
                 continue;
             }
             if index == 0 {
+                return 0;
+            }
+            // GCC's arm32 PIC loads a global through `ldr rd, [pc, rm]` with a
+            // pooled offset in `rm`. The word at the PC is the next instruction,
+            // not pool data, so resolve the slot from the offset or record nothing.
+            if offset_register.0 != 0 {
+                if let Some(held) = state.take(reg_key(*offset_register)) {
+                    if !held.is_page && !thumb {
+                        refs.push(DataRef {
+                            addr: addr.wrapping_add(8).wrapping_add(held.value) & MASK32,
+                            width: 4,
+                        });
+                    }
+                }
                 return 0;
             }
             let ArmOp::Reg(destination) = ops[index - 1] else {
