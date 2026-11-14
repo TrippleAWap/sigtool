@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::arch::{detect, Arch};
+use crate::arm_mode::ModeMap;
 use crate::errors::{ReadError, SourceFormatError};
 use crate::source::{read_regions, ByteSource, Module, Region};
 
@@ -26,6 +27,7 @@ const ELF_SHF_ALLOC: u64 = 0x2;
 const ELF_SHF_EXECINSTR: u64 = 0x4;
 const ELF_STT_FUNC: u8 = 2;
 const ELF_ET_REL: u16 = 1;
+const R_ARM_RELATIVE: u64 = 23;
 
 const PE_SECTION_HEADER_SIZE: usize = 40;
 
@@ -49,6 +51,8 @@ pub struct FileSource {
     bounds: Vec<(u64, u64)>,
     bounds_starts: Vec<u64>,
     thumb_starts: Vec<u64>,
+    /// ARM32 images without `.symtab`: mode from surviving pointers and code.
+    mode_map: Option<ModeMap>,
     unwind: Vec<(u64, u64)>,
 }
 
@@ -99,6 +103,9 @@ impl FileSource {
         thumb_starts.sort_unstable();
         thumb_starts.dedup();
         let unwind = crate::unwind::finish(parsed.unwind, &regions);
+        let mode_map = parsed
+            .code_pointers
+            .map(|pointers| ModeMap::build(&regions, &pointers));
         FileSource {
             arch,
             regions,
@@ -106,6 +113,7 @@ impl FileSource {
             bounds,
             bounds_starts,
             thumb_starts,
+            mode_map,
             unwind,
         }
     }
@@ -156,6 +164,9 @@ impl ByteSource for FileSource {
         if self.arch == Arch::Thumb {
             return true;
         }
+        if let Some(map) = &self.mode_map {
+            return map.is_thumb(addr);
+        }
         if self.thumb_starts.is_empty() {
             return false;
         }
@@ -176,6 +187,9 @@ struct ParsedImage {
     module: Module,
     bounds: Vec<(u64, u64)>,
     thumb_starts: Vec<u64>,
+    /// Set for a linked ARM32 image without `.symtab` function symbols: every
+    /// surviving pointer to code whose low bit still encodes the mode.
+    code_pointers: Option<Vec<u64>>,
     unwind: Vec<(u64, u64)>,
 }
 
@@ -349,6 +363,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     let sym_struct_size = if is64 { 24usize } else { 16usize };
     let mut symbols: Vec<(String, u64, u8, u16, u64)> = Vec::new();
     let mut tables: HashMap<usize, (Vec<u8>, Vec<u8>)> = HashMap::new();
+    let mut symtab_functions = false;
     for (index, section) in sections.iter().enumerate() {
         if section.kind != ELF_SHT_SYMTAB && section.kind != ELF_SHT_DYNSYM {
             continue;
@@ -390,6 +405,9 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                 )
             };
             let symbol_name = cstr(&strings, st_name as usize);
+            if section.kind == ELF_SHT_SYMTAB && st_info & 0xF == ELF_STT_FUNC && st_shndx != 0 {
+                symtab_functions = true;
+            }
             if st_shndx != 0 && !symbol_name.is_empty() {
                 symbols.push((symbol_name, st_value, st_info, st_shndx, st_size));
             }
@@ -397,6 +415,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     }
 
     let mut imports: HashMap<u64, String> = HashMap::new();
+    let mut relative_slots: Vec<u64> = Vec::new();
     for section in &sections {
         if section.kind != ELF_SHT_RELA && section.kind != ELF_SHT_REL {
             continue;
@@ -424,6 +443,14 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                     u32_at(&raw, offset + 4)? as u64,
                 )
             };
+            if arch == Arch::Arm32
+                && !is64
+                && e_type != ELF_ET_REL
+                && r_info & 0xff == R_ARM_RELATIVE
+            {
+                relative_slots.push(r_offset);
+                continue;
+            }
             let symbol_index = if is64 { r_info >> 32 } else { r_info >> 8 };
             let Some(target) = symbol_name(&tables, section.link as usize, symbol_index, is64)
             else {
@@ -449,6 +476,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     let mut export_seen: HashMap<String, ()> = HashMap::new();
     let mut bounds: Vec<(u64, u64)> = Vec::new();
     let mut thumb_starts: Vec<u64> = Vec::new();
+    let mut code_pointers: Vec<u64> = Vec::new();
     for (symbol_name, value, info, shndx, size) in symbols {
         let Some(base) = places.get(&(shndx as usize)) else {
             continue;
@@ -464,6 +492,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
             thumb = true;
         }
         if info & 0xF == ELF_STT_FUNC {
+            code_pointers.push(address | u64::from(thumb));
             functions
                 .entry(address)
                 .or_insert_with(|| symbol_name.clone());
@@ -492,11 +521,28 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         imports,
     };
     let unwind = crate::unwind::elf_entries(&regions, if is64 { 8 } else { 4 });
+    // Stripping removes `.symtab` (local functions and mapping symbols), so
+    // the ELF symbol bit no longer covers most code. Dynamic symbols and
+    // `R_ARM_RELATIVE` function pointers keep the bit; see `arm_mode`.
+    let code_pointers =
+        (arch == Arch::Arm32 && e_type != ELF_ET_REL && !symtab_functions).then(|| {
+            code_pointers.extend(
+                relative_slots
+                    .iter()
+                    .take(crate::arm_mode::MAX_MODE_MARKS)
+                    .filter_map(|slot| read_regions(&regions, *slot, 4).ok())
+                    .map(|word| {
+                        u64::from(u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+                    }),
+            );
+            code_pointers
+        });
     Ok(ParsedImage {
         regions,
         module,
         bounds,
         thumb_starts,
+        code_pointers,
         unwind,
     })
 }
@@ -705,6 +751,7 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         module,
         bounds: Vec::new(),
         thumb_starts: Vec::new(),
+        code_pointers: None,
         unwind,
     })
 }
