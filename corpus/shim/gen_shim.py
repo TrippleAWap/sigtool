@@ -1,3 +1,4 @@
+# ruff: noqa: E501  (the header bodies are C declarations, kept one per line as in libc)
 """Write the declarations-only libc shim used to cross-build real libraries.
 
     python corpus/shim/gen_shim.py

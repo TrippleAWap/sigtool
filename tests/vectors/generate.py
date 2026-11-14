@@ -120,7 +120,9 @@ def find_clang() -> str:
     return clang
 
 
-def build_vector(clang: str, skeleton: Path, arch: str, opt: str, workdir: Path) -> dict[str, object]:
+def build_vector(
+    clang: str, skeleton: Path, arch: str, opt: str, workdir: Path
+) -> dict[str, object]:
     target, extra = TARGETS[arch]
     source = workdir / "fixture.c"
     source.write_text(FIXTURE)

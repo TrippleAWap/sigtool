@@ -34,10 +34,9 @@ this one is what the cross-architecture numbers should be read from.
 from __future__ import annotations
 
 import argparse
-import os
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -45,6 +44,7 @@ import tarfile
 import urllib.request
 import zipfile
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -145,7 +145,7 @@ def fetch(library: Library) -> Path:
     archive.parent.mkdir(parents=True, exist_ok=True)
     if not archive.exists():
         print(f"fetch {library.url}")
-        with urllib.request.urlopen(library.url, timeout=120) as response:  # noqa: S310
+        with urllib.request.urlopen(library.url, timeout=120) as response:
             archive.write_bytes(response.read())
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     if digest != library.sha256:
@@ -249,7 +249,15 @@ def build_gcc(library: Library, root: Path) -> dict[tuple[str, str], Path]:
         return outputs
     lines.append("wait")
     command = [
-        "docker", "run", "--rm", "-v", f"{CORPUS}:/work", DOCKER_IMAGE, "sh", "-c", "\n".join(lines)
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{CORPUS}:/work",
+        DOCKER_IMAGE,
+        "sh",
+        "-c",
+        "\n".join(lines),
     ]
     result = subprocess.run(command, capture_output=True, text=True, errors="replace")
     if result.returncode != 0 or "FAIL" in result.stdout:
