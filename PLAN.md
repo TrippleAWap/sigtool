@@ -643,16 +643,16 @@ starts).
 | Row | hinted start | hinted now | hint-free start | hint-free now |
 |---|---|---|---|---|
 | same arch, same opt | 0.558 | 0.671 | 0.117 | 0.810 |
-| same arch, other compiler | — | 0.354 | 0.042 | 0.294 |
-| same arch, cross opt | — | 0.296 | 0.037 | 0.246 |
-| cross arch, same opt | 0.212 | 0.326 | 0.050 | 0.293 |
-| cross arch, other compiler | 0.132 | 0.263 | — | 0.198 |
-| cross arch, cross opt | 0.081 | 0.227 | — | 0.176 |
-| merged, same opt | 0.558 | 0.593 | 0.146 | 0.639 |
-| merged, held-out arch, same opt | 0.365 | 0.454 | 0.032 | 0.371 |
+| same arch, other compiler | — | 0.354 | 0.042 | 0.304 |
+| same arch, cross opt | — | 0.296 | 0.037 | 0.249 |
+| cross arch, same opt | 0.212 | 0.326 | 0.050 | 0.301 |
+| cross arch, other compiler | 0.132 | 0.263 | — | 0.210 |
+| cross arch, cross opt | 0.081 | 0.227 | — | 0.181 |
+| merged, same opt | 0.558 | 0.593 | 0.146 | 0.649 |
+| merged, held-out arch, same opt | 0.365 | 0.454 | 0.032 | 0.392 |
 
 False positives now: strong 0.072 (corpus) and 0.000 (negative), any-verdict
-0.196 (corpus) and 0.000 (negative), hint-free any-verdict 0.203. None of the
+0.196 (corpus) and 0.000 (negative), hint-free any-verdict 0.163. None of the
 recall targets in section 6 is met yet.
 
 **What moved the numbers, in order** (each change measured before and after on
@@ -685,6 +685,16 @@ the real corpus; details in the commit messages and `spec/CHANGELOG.md`):
    recall scan, so rules can be simulated offline first; a similarity floor,
    uniqueness, margin, and a recalibrated chance gate all traded recall for
    precision at the same rate beyond this point.
+9. Neighbour evidence (spec v3): signatures carry the strings and distinctive
+   constants of their callers and callees, two hops out, with PLT calls to
+   the image's own exports resolved to the export (`-fPIC` calls them through
+   the PLT, which had hidden every caller of an exported function). Hint-free
+   matches that share neighbour keys rank first and count as identified; a
+   shape-only match sharing none is rejected when the signature has 2 or
+   more. FP 0.203 -> 0.163 with every aggregate top-1 row up (cross-arch
+   other compiler 0.198 -> 0.210, merged held-out 0.371 -> 0.392); a few
+   arm64->thumb gcc cells lost 1-2 of 20 where the Thumb call graph is
+   incomplete.
 
 **Front-ends.** `locate` and `scan` take `--discovery auto|hinted|hint-free`;
 `auto` (the default) runs hint-free on image files without `.symtab` function
@@ -699,11 +709,11 @@ mapped range that rule 4 uses; `merge --sample FILE:+RVA` and the `rva` in
 
 **Known limits and next steps.**
 
-- Hint-free false positives (0.203): what remains is low-information
-  matches of small functions (shape buckets plus constants like 0 and 1),
-  including byte-identical helpers in other libraries. Cutting further with
-  the current features costs recall one-for-one; it needs new evidence for
-  small functions.
+- Hint-free false positives (0.163): mostly small functions with no
+  evidence-bearing neighbours (leaf exported APIs nothing in the library
+  calls), including byte-identical helpers in other libraries. Next: joint
+  resolution across a signature database (an identified caller pins its
+  callees), and Thumb call-graph gaps (lld thunks).
 - Cross-compiler and cross-opt recall (0.2-0.35) are far below cross-build
   same-opt; inlining and different block structure dominate the misses, and
   local (static) callees cannot be resolved in stripped targets.

@@ -6,7 +6,7 @@ The goal everything is measured against: **find a function across architectures,
 
 ## Project in one paragraph
 
-Signatures are **feature sets, not byte patterns**: strings, normalized constants, portable callee names, coarse CFG shape, and a bucketed op-class histogram. One shared extractor produces features for both signature generation and scanning. Supported architectures: x86-64, AArch64, ARM32, and Thumb. Front-ends (CLI, IDA plugin) are thin and only supply bytes, an address, and arch info; the IDA plugin shells out to `sigtool-native`.
+Signatures are **feature sets, not byte patterns**: strings, normalized constants, portable callee names, coarse CFG shape, and a bucketed op-class histogram, plus the strings and constants of the function's call-graph neighbours for small functions with no evidence of their own. One shared extractor produces features for both signature generation and scanning. Supported architectures: x86-64, AArch64, ARM32, and Thumb. Front-ends (CLI, IDA plugin) are thin and only supply bytes, an address, and arch info; the IDA plugin shells out to `sigtool-native`.
 
 ## Repo layout
 

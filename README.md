@@ -74,15 +74,15 @@ library per build, targets stripped for hint-free scans:
 | Search | hinted | hint-free (stripped) |
 |---|---|---|
 | same arch, same build | 0.671 | 0.810 |
-| same arch, other compiler (clang ↔ gcc) | 0.354 | 0.294 |
-| same arch, other optimization level | 0.296 | 0.246 |
-| other arch, one sample, same level | 0.326 | 0.293 |
-| other arch, one sample, other compiler | 0.263 | 0.198 |
-| merged x64+arm64 signature, same level | 0.593 | 0.639 |
-| merged, held-out arch, same level | 0.454 | 0.371 |
+| same arch, other compiler (clang ↔ gcc) | 0.354 | 0.304 |
+| same arch, other optimization level | 0.296 | 0.249 |
+| other arch, one sample, same level | 0.326 | 0.301 |
+| other arch, one sample, other compiler | 0.263 | 0.210 |
+| merged x64+arm64 signature, same level | 0.593 | 0.649 |
+| merged, held-out arch, same level | 0.454 | 0.392 |
 
 False positives: strong signatures 0.072 against other corpus libraries,
-0.000 against the negative corpus; any-verdict hint-free 0.203. Hinted scans
+0.000 against the negative corpus; any-verdict hint-free 0.163. Hinted scans
 may use the target's symbols. Hint-free scans of stripped targets compare
 every unwind entry, while hinted scans start from anchor hits; that is
 probably why hint-free is ahead on same-arch searches.
