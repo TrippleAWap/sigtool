@@ -379,6 +379,7 @@ fn build_module(process: &os::Process, raw: &RawModule) -> ModuleParts {
     let mut module = Module {
         name,
         base: raw.base,
+        image_base: raw.base,
         size: raw.size,
         path: (!raw.path.is_empty()).then(|| raw.path.clone()),
         ..Module::default()

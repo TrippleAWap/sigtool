@@ -58,6 +58,7 @@ fn strong_source() -> MemorySource {
     let module = Module {
         name: "gen".to_string(),
         base: 0x1000,
+        image_base: 0x1000,
         size: 0x2000 + BANNER.len() as u64 - 0x1000,
         path: None,
         exports: vec![("helper".to_string(), HELPER)],
@@ -92,6 +93,7 @@ fn deep_source() -> MemorySource {
     let module = Module {
         name: "deep".to_string(),
         base: 0x1000,
+        image_base: 0x1000,
         size: 0x2000 + BANNER.len() as u64 - 0x1000,
         path: None,
         exports: Vec::new(),
@@ -114,6 +116,7 @@ fn tiny_source() -> MemorySource {
     let module = Module {
         name: "tiny".to_string(),
         base: 0x1000,
+        image_base: 0x1000,
         size: 3,
         path: None,
         exports: Vec::new(),

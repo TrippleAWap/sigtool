@@ -111,9 +111,7 @@ pub fn generate_in<S: ByteSource + ?Sized>(
     let confidence = confidence_for(false, recovered.is_small(), anchors.len());
 
     let module = source.module_for(addr);
-    let rva = module
-        .map(|module| addr.wrapping_sub(module.base))
-        .unwrap_or(0);
+    let rva = module.map(|module| module.rva(addr)).unwrap_or(0);
     let sample = SampleProvenance {
         arch: source.arch().as_str().to_string(),
         module: module

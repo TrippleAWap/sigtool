@@ -47,6 +47,7 @@ fn make_source(with_helper: bool) -> MemorySource {
     let module = Module {
         name: "fixture".to_string(),
         base: 0x1000,
+        image_base: 0x1000,
         size: 0x2000 + BANNER.len() as u64 - 0x1000,
         path: None,
         exports,
@@ -177,6 +178,7 @@ fn strong_source() -> MemorySource {
     let module = Module {
         name: "gen".to_string(),
         base: 0x1000,
+        image_base: 0x1000,
         size: 0x2000 + BANNER.len() as u64 - 0x1000,
         path: None,
         exports: vec![("helper".to_string(), helper)],

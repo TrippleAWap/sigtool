@@ -646,15 +646,16 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     }
 
     let section_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
-    let module_start = match load_base {
+    let image_start = match load_base {
         Some(base) if e_type != ELF_ET_REL => base.min(section_start),
         _ => section_start,
     };
     let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
     let module = Module {
         name: module_stem(name),
-        base: module_start,
-        size: module_end - module_start,
+        base: section_start,
+        image_base: image_start,
+        size: module_end - section_start,
         path: Some(name.to_string()),
         exports,
         functions,
@@ -1034,12 +1035,13 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
 
     // A PE RVA is relative to ImageBase, which the headers occupy.
     let section_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
-    let module_start = image_base.min(section_start);
+    let image_start = image_base.min(section_start);
     let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
     let module = Module {
         name: module_stem(name),
-        base: module_start,
-        size: module_end - module_start,
+        base: section_start,
+        image_base: image_start,
+        size: module_end - section_start,
         path: Some(name.to_string()),
         exports: metadata.exports,
         functions: metadata.functions,

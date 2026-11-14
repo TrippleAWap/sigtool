@@ -420,6 +420,7 @@ mod tests {
         let module = Module {
             name: "fixture".to_string(),
             base: 0x1000,
+            image_base: 0x1000,
             size: 0x1008,
             path: None,
             exports: vec![("f".to_string(), 0x1000), ("api".to_string(), 0x1050)],

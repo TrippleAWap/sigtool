@@ -71,7 +71,12 @@ impl Region {
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub name: String,
+    /// Lowest mapped address; with `size`, the range rule 4 treats as pointers.
     pub base: u64,
+    /// What `rva` is relative to: the lowest `PT_LOAD` address or PE
+    /// `ImageBase`. It can sit below `base` (a shared object's base is 0),
+    /// so it must never widen the pointer range.
+    pub image_base: u64,
     pub size: u64,
     pub path: Option<String>,
     /// `name -> address` for exported/dynamic symbols, in insertion order.
@@ -98,7 +103,7 @@ impl Module {
     }
 
     pub fn rva(&self, addr: u64) -> u64 {
-        addr.wrapping_sub(self.base)
+        addr.wrapping_sub(self.image_base)
     }
 
     /// Return the symbol name defined exactly at `addr`, if any.

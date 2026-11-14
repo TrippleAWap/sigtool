@@ -58,6 +58,7 @@ fn source_from_vector(vector: &Value) -> MemorySource {
     let module = Module {
         name: "fixture".to_string(),
         base,
+        image_base: base,
         size: end - base,
         path: None,
         exports,

@@ -480,7 +480,7 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
                 let Some(module) = source.modules().first() else {
                     return Err(CliError::input(format!("{path} has no module")));
                 };
-                module.base.wrapping_add(rva)
+                module.image_base.wrapping_add(rva)
             }
             None => parse_address(addr_text, "--sample")?,
         };
@@ -819,7 +819,7 @@ fn resolve_address(
     };
     let module = find_module(source, module_name)?;
     let rva = parse_address(rva, "--rva")?;
-    let addr = module.base.wrapping_add(rva);
+    let addr = module.image_base.wrapping_add(rva);
     if !module.contains(addr, 1) {
         return Err(CliError::input(format!(
             "rva 0x{rva:x} is outside module {:?} (size 0x{:x})",

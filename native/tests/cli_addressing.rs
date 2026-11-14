@@ -129,3 +129,83 @@ fn rva_addressing_matches_the_image_base() {
     assert_eq!(best["rva"], serde_json::Value::String(arm_rva));
     assert_eq!(best["module"], "loops");
 }
+
+/// A shared object's image base is 0, below its first section. The image base
+/// may only shift RVAs: if it widened the module range, every constant below
+/// the first section (loop bounds, masks, small sizes) would be dropped as a
+/// pointer by rule 4. Built on the fly because the toy corpus is all static
+/// executables, whose first section sits on the image base.
+#[test]
+fn shared_object_keeps_small_constants_and_reports_symbol_rvas() {
+    let has = |tool: &str| {
+        Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if !has("clang") || !has("ld.lld") || !has("llvm-nm") {
+        eprintln!("skip: clang, ld.lld, and llvm-nm are needed for the shared object");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sigtool-so-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("small.c");
+    let image = dir.join("libsmall.so");
+    std::fs::write(
+        &source,
+        "unsigned scramble(unsigned x) { return ((x ^ 0x55u) * 0x9e3779b1u) & 0xffu; }\n",
+    )
+    .unwrap();
+    let built = Command::new("clang")
+        .args([
+            "--target=x86_64-linux-gnu",
+            "-O2",
+            "-fPIC",
+            "-shared",
+            "-nostdlib",
+        ])
+        .args(["-fuse-ld=lld", "-fno-asynchronous-unwind-tables"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&image)
+        .status()
+        .expect("run clang");
+    assert!(built.success(), "clang failed to build the shared object");
+
+    let symbols = Command::new("llvm-nm")
+        .arg(&image)
+        .output()
+        .expect("run llvm-nm");
+    let symbols = String::from_utf8(symbols.stdout).expect("utf-8");
+    let address = symbols
+        .lines()
+        .find(|line| line.ends_with(" scramble"))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|text| u64::from_str_radix(text, 16).ok())
+        .expect("scramble in llvm-nm output");
+
+    let yaml = run(&[
+        "gen",
+        "--file",
+        image.to_str().unwrap(),
+        "--addr",
+        &format!("0x{address:x}"),
+    ]);
+    std::fs::remove_file(&source).ok();
+    std::fs::remove_file(&image).ok();
+    std::fs::remove_dir(&dir).ok();
+    // The image base is 0, so the RVA is the symbol address itself.
+    assert!(yaml.contains(&format!("rva: '0x{address:x}'")), "{yaml}");
+    let constants: Vec<&str> = yaml
+        .lines()
+        .skip_while(|line| !line.starts_with("features:"))
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|pair| pair[0].trim_start() == "- kind: const")
+        .map(|pair| pair[1].trim())
+        .collect();
+    assert!(
+        constants.iter().any(|value| value.contains("0x55")),
+        "{yaml}"
+    );
+}
