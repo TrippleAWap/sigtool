@@ -17,15 +17,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from core.arch import UnsupportedArchError  # noqa: E402
-from sources.file import FileSource  # noqa: E402
 
 BUILD = ROOT / "corpus" / "build"
 SOURCES = sorted((ROOT / "corpus" / "src").glob("*.c"))
@@ -41,11 +35,36 @@ TARGETS = {
 OPT_LEVELS = ("-O0", "-O2", "-Os")
 
 
-def find_clang() -> str:
-    clang = shutil.which("clang")
-    if clang is None:
-        raise SystemExit("clang not found in PATH")
-    return clang
+def find_tool(name: str) -> str:
+    tool = shutil.which(name)
+    if tool is None:
+        raise SystemExit(f"{name} not found in PATH")
+    return tool
+
+
+def function_symbols(readelf: str, binary: Path, arch: str) -> list[tuple[str, int, int]]:
+    """`.symtab` FUNC symbols as (name, start, size), one per address.
+
+    ARM ELF marks Thumb functions with the low address bit; the start is the
+    instruction address, so the bit is cleared there and only there.
+    """
+    text = subprocess.run(
+        [readelf, "-sW", str(binary)], capture_output=True, text=True, check=True
+    ).stdout
+    by_address: dict[int, tuple[str, int]] = {}
+    in_symtab = False
+    for line in text.splitlines():
+        if line.startswith("Symbol table"):
+            in_symtab = "'.symtab'" in line
+            continue
+        parts = line.split()
+        if not in_symtab or len(parts) < 8 or parts[3] != "FUNC" or parts[6] == "UND":
+            continue
+        start = int(parts[1], 16)
+        if arch in ("arm32", "thumb"):
+            start &= ~1
+        by_address[start] = (parts[7].split("@")[0], int(parts[2], 0))
+    return [(name, start, size) for start, (name, size) in by_address.items()]
 
 
 def build(
@@ -86,36 +105,32 @@ def build(
     return binary
 
 
-def describe(binary: Path) -> dict[str, object]:
-    image = FileSource.from_path(binary)
-    module = image.modules()[0]
-    functions = []
-    for address, name in sorted(module.functions.items(), key=lambda item: item[1]):
-        bounds = image.hint_function(address)
-        if bounds is None:
-            continue
-        functions.append({"name": name, "start": bounds[0], "size": bounds[1] - bounds[0]})
+def describe(readelf: str, binary: Path, arch: str) -> dict[str, object]:
+    symbols = function_symbols(readelf, binary, arch)
+    functions = [
+        {"name": name, "start": start, "size": size}
+        for name, start, size in sorted(symbols)
+        if size > 0
+    ]
     return {
         "path": binary.relative_to(BUILD).as_posix(),
-        "arch": image.arch.value,
+        "arch": arch,
         "functions": functions,
-        "total_symbols": len(module.functions),
+        "total_symbols": len(symbols),
     }
 
 
 CORPUS = ROOT / "corpus"
 
 
-def describe_negative(binary: Path) -> dict[str, object]:
+def describe_negative(binary: Path, arch: str) -> dict[str, object]:
     """A negative sample needs only its location and architecture."""
-    return {
-        "path": binary.relative_to(BUILD).as_posix(),
-        "arch": FileSource.from_path(binary).arch.value,
-    }
+    return {"path": binary.relative_to(BUILD).as_posix(), "arch": arch}
 
 
 def main() -> int:
-    clang = find_clang()
+    clang = find_tool("clang")
+    readelf = find_tool("llvm-readelf")
     if not SOURCES:
         raise SystemExit("no corpus sources under corpus/src")
     BUILD.mkdir(parents=True, exist_ok=True)
@@ -126,10 +141,7 @@ def main() -> int:
                 binary = build(clang, arch, target, opt, source, extra=extra)
                 if binary is None:
                     continue
-                try:
-                    binaries.append(describe(binary))
-                except UnsupportedArchError as error:
-                    print(f"  skip {binary.name}: {error}")
+                binaries.append(describe(readelf, binary, arch))
     if not binaries:
         raise SystemExit("no corpus binaries were built")
 
@@ -141,10 +153,7 @@ def main() -> int:
             )
             if binary is None:
                 continue
-            try:
-                negative.append(describe_negative(binary))
-            except UnsupportedArchError as error:
-                print(f"  skip {binary.name}: {error}")
+            negative.append(describe_negative(binary, arch))
 
     covered = sum(len(entry["functions"]) for entry in binaries)
     total = sum(int(entry["total_symbols"]) for entry in binaries)

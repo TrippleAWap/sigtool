@@ -5,27 +5,23 @@ semantics, review the diff, and commit the vectors with the change.
 
 A vector is not a binary. It stores the fixture's section bytes and addresses,
 so the test can rebuild a ``MemorySource`` and run the real extractor; the
-expected features are stored alongside for comparison.
+expected features are stored alongside for comparison. This script compiles
+the fixture with clang + ld.lld, takes sections and symbol bounds from the
+native ``vector_skeleton`` example, and then runs the golden test in bless mode
+(``SIGTOOL_BLESS=1 cargo test --test golden``) to fill in the records.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from core.features import extract  # noqa: E402
-from core.recover import recover  # noqa: E402
-from core.spec import SPEC_VERSION  # noqa: E402
-from sources.file import FileSource  # noqa: E402
-
+NATIVE = ROOT / "native"
 VECTOR_DIR = Path(__file__).resolve().parent
 
 FIXTURE = r"""
@@ -124,7 +120,7 @@ def find_clang() -> str:
     return clang
 
 
-def build_vector(clang: str, arch: str, opt: str, workdir: Path) -> dict[str, object]:
+def build_vector(clang: str, skeleton: Path, arch: str, opt: str, workdir: Path) -> dict[str, object]:
     target, extra = TARGETS[arch]
     source = workdir / "fixture.c"
     source.write_text(FIXTURE)
@@ -146,65 +142,43 @@ def build_vector(clang: str, arch: str, opt: str, workdir: Path) -> dict[str, ob
         str(binary),
     ]
     subprocess.run(command, check=True, capture_output=True)
-    # A fixed module name keeps `module+rva` callee labels stable across builds
-    # and independent of the temporary output path.
-    image = FileSource.from_bytes(binary.read_bytes(), "fixture.elf")
-    module = image.modules()[0]
+    result = subprocess.run(
+        [str(skeleton), str(binary), *FUNCTIONS], check=True, capture_output=True, text=True
+    )
+    vector: dict[str, object] = json.loads(result.stdout)
+    vector.update({"arch": arch, "opt": opt, "target": target, "flags": list(extra)})
+    return vector
 
-    sections = []
-    for region in image.regions():
-        if not region.data:
-            continue
-        sections.append(
-            {
-                "name": region.name,
-                "addr": region.start,
-                "executable": region.executable,
-                "bytes": region.data.hex(),
-            }
-        )
 
-    functions: dict[str, object] = {}
-    for address, name in sorted(module.functions.items(), key=lambda item: item[1]):
-        if name not in FUNCTIONS or name in functions:
-            continue
-        recovered = recover(image, address)
-        features = extract(image, recovered)
-        bounds = image.hint_function(address)
-        functions[name] = {
-            "entry": address,
-            "end": bounds[1] if bounds else address + recovered.size,
-            "blocks": recovered.block_count,
-            "edges": recovered.edge_count,
-            "loops": recovered.loop_count,
-            "degraded": recovered.degraded,
-            "features": [{"kind": feature.kind, "value": feature.value} for feature in features],
-        }
-
-    return {
-        "spec_version": SPEC_VERSION,
-        "arch": arch,
-        "opt": opt,
-        "target": target,
-        "flags": list(extra),
-        "sections": sections,
-        "functions": functions,
-    }
+def build_skeleton() -> Path:
+    subprocess.run(
+        ["cargo", "build", "--release", "--example", "vector_skeleton"], check=True, cwd=NATIVE
+    )
+    target = Path(os.environ.get("CARGO_TARGET_DIR", NATIVE / "target"))
+    if not target.is_absolute():
+        target = NATIVE / target
+    name = "vector_skeleton.exe" if os.name == "nt" else "vector_skeleton"
+    return target / "release" / "examples" / name
 
 
 def main() -> int:
     clang = find_clang()
+    skeleton = build_skeleton()
     VECTOR_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         workdir = Path(temp)
         for arch in TARGETS:
             for opt in OPT_LEVELS:
-                vector = build_vector(clang, arch, opt, workdir)
+                vector = build_vector(clang, skeleton, arch, opt, workdir)
                 name = f"{arch}{opt}.json"
                 (VECTOR_DIR / name).write_text(
                     json.dumps(vector, indent=1, sort_keys=True) + "\n", encoding="utf-8"
                 )
-                print(f"wrote {name}: {len(vector['functions'])} functions")
+                print(f"wrote {name}: {len(vector['functions'])} functions")  # type: ignore[arg-type]
+    bless = dict(os.environ, SIGTOOL_BLESS="1")
+    subprocess.run(
+        ["cargo", "test", "--release", "--test", "golden"], check=True, cwd=NATIVE, env=bless
+    )
     return 0
 
 
