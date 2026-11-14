@@ -355,6 +355,22 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     }
 
     phase(&clock, "load");
+    // Build every image's indexes up front, one image per worker. Built
+    // lazily, jobs for the same image are adjacent, so every worker blocked
+    // on one OnceLock while a single thread built it.
+    let images: Vec<&Target> = targets.iter().chain(negatives.iter()).collect();
+    parallel(images.len(), |index| {
+        let target = images[index];
+        target
+            .context
+            .get_or_init(|| ScanContext::build(&target.source));
+        if let Some((source, context)) = &target.stripped {
+            if options.discovery.as_deref() != Some(HINTED) {
+                context.get_or_init(|| ScanContext::build(source));
+            }
+        }
+    });
+    phase(&clock, "indexes");
     // -- single-arch samples ------------------------------------------------
     let jobs: Vec<(usize, String, u64)> = targets
         .iter()
