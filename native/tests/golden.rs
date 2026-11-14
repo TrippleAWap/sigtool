@@ -124,7 +124,8 @@ fn golden_vectors_match_reference_features() {
             serde::Serialize::serialize(&vector, &mut serializer).expect("vector json");
             let mut out = String::from_utf8(buffer).expect("utf-8");
             out.push('\n');
-            if out != text {
+            // A CRLF checkout of an unchanged vector is not a change.
+            if out != text.replace("\r\n", "\n") {
                 std::fs::write(&path, out).expect("write vector");
                 eprintln!("blessed {}", path.display());
             }
