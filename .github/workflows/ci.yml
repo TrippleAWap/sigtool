@@ -19,7 +19,9 @@ env:
 jobs:
   linux:
     name: linux (fmt, clippy, tests, corpus gate)
-    runs-on: ubuntu-latest
+    # Pinned: the LLVM release binaries link libxml2.so.2, which Ubuntu 26.04
+    # (the new ubuntu-latest) no longer ships.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +32,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install LLVM runtime libraries
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libxml2
 
       - name: Cache LLVM ${{ env.LLVM_VERSION }}
         id: llvm-cache
@@ -59,6 +64,7 @@ jobs:
         run: |
           echo "$HOME/llvm/bin" >> "$GITHUB_PATH"
           ~/llvm/bin/clang --version | head -1
+          ~/llvm/bin/ld.lld --version
 
       - name: Lint build scripts and the IDA plugin
         run: |
