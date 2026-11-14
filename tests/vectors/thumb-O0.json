@@ -67,7 +67,7 @@
     },
     {
      "kind": "const",
-     "value": "0xfffffffffffeff50"
+     "value": "0xfffeff50"
     },
     {
      "kind": "ops",
@@ -133,7 +133,7 @@
     },
     {
      "kind": "const",
-     "value": "0xffffffffffffffff"
+     "value": "0xffffffff"
     },
     {
      "kind": "ops",
@@ -299,7 +299,7 @@
     },
     {
      "kind": "const",
-     "value": "0xffffffffffffffff"
+     "value": "0xffffffff"
     },
     {
      "kind": "ops",
@@ -577,7 +577,7 @@
     },
     {
      "kind": "const",
-     "value": "0xffffffff9e3779b9"
+     "value": "0x9e3779b9"
     },
     {
      "kind": "ops",
@@ -701,7 +701,7 @@
     },
     {
      "kind": "const",
-     "value": "0xfffffffffffefe7c"
+     "value": "0xfffefe7c"
     },
     {
      "kind": "ops",

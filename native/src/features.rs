@@ -90,8 +90,10 @@ pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> 
             }
             *ops.entry(insn.op).or_insert(0) += 1;
             for value in &insn.consts {
+                // The pointer test needs the full value: a 64-bit address split
+                // into words would no longer be recognisable as one.
                 if !is_pointer(source, *value) {
-                    consts.insert(*value);
+                    consts.extend(const_words(*value));
                 }
             }
             for reference in &insn.refs {
@@ -160,6 +162,30 @@ pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> 
 }
 
 /// Absolute addresses inside a mapped module must never become features.
+/// Canonical `const` feature values for one materialised constant.
+///
+/// The same source constant reaches the extractor in different shapes per
+/// architecture: x64 and AArch64 sign-extend a 32-bit immediate into a 64-bit
+/// register (`0xffffffff94d049bb`) while ARM32 holds it in one 32-bit register
+/// (`0x94d049bb`), and a 64-bit value that x64 loads with one `movabs` and
+/// AArch64 builds with a `movz`/`movk` chain is two 32-bit registers on ARM32.
+/// Recording every constant as 32-bit words makes all of these agree: a value
+/// that is the zero- or sign-extension of a 32-bit value is its low word, and
+/// any other value is its non-zero high and low words. A zero word carries no
+/// evidence and appears when an AArch64 chain is split by an interleaved
+/// instruction (`0x9e3779b900000000`), so it is dropped.
+pub fn const_words(value: u64) -> impl Iterator<Item = u64> {
+    let high = value >> 32;
+    let low = value & 0xFFFF_FFFF;
+    let extended = high == 0 || (high == 0xFFFF_FFFF && low & 0x8000_0000 != 0);
+    let words = if extended {
+        [Some(low), None]
+    } else {
+        [Some(high), Some(low).filter(|word| *word != 0)]
+    };
+    words.into_iter().flatten()
+}
+
 fn is_pointer<S: ByteSource + ?Sized>(source: &S, value: u64) -> bool {
     if value == 0 {
         return false;
@@ -267,6 +293,28 @@ fn latin1(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(value: u64) -> Vec<u64> {
+        const_words(value).collect()
+    }
+
+    #[test]
+    fn extended_32_bit_constants_are_their_low_word() {
+        assert_eq!(words(0xFFFF_FFFF_94D0_49BB), vec![0x94D0_49BB]);
+        assert_eq!(words(0x94D0_49BB), vec![0x94D0_49BB]);
+        assert_eq!(words(u64::MAX), vec![0xFFFF_FFFF]);
+        assert_eq!(words(0x1234), vec![0x1234]);
+        assert_eq!(words(0), vec![0]);
+    }
+
+    #[test]
+    fn wide_constants_split_into_non_zero_words() {
+        assert_eq!(words(0x94D0_49BB_1331_11EB), vec![0x94D0_49BB, 0x1331_11EB]);
+        assert_eq!(words(0x9E37_79B9_0000_0000), vec![0x9E37_79B9]);
+        // A high word of all ones above a non-negative low word is not a sign
+        // extension, so both words are evidence.
+        assert_eq!(words(0xFFFF_FFFF_0000_0005), vec![0xFFFF_FFFF, 0x5]);
+    }
 
     #[test]
     fn narrow_strings_require_termination_and_length() {

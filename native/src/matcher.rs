@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::errors::SelfTestError;
-use crate::features::{extract, Feature, FeatureKind};
+use crate::features::{const_words, extract, Feature, FeatureKind};
 use crate::normalize::{Kind, Normalizer};
 use crate::recover::{recover, RecoveryLimits};
 use crate::score::score_features;
@@ -194,7 +194,13 @@ pub const MIN_SHAPE_AGREEMENT: f64 = 0.8;
 pub fn low_information_const(value: &str) -> bool {
     let digits = value.strip_prefix("0x").unwrap_or(value);
     match u64::from_str_radix(digits, 16) {
-        Ok(number) => number < MIN_SEARCHABLE_CONST || number.wrapping_neg() < MIN_SEARCHABLE_CONST,
+        // Constants are 32-bit words (SPEC.md §3), so a small negative value is
+        // near 2^32; the 64-bit test still covers documents that predate that.
+        Ok(number) => {
+            number < MIN_SEARCHABLE_CONST
+                || number.wrapping_neg() < MIN_SEARCHABLE_CONST
+                || (0x1_0000_0000 - MIN_SEARCHABLE_CONST..=0xFFFF_FFFF).contains(&number)
+        }
         Err(_) => false,
     }
 }
@@ -1358,8 +1364,8 @@ impl CodeIndex {
                             }
                         }
                     }
-                    for value in &insn.consts {
-                        index.const_refs.entry(*value).or_default().push(insn.addr);
+                    for value in insn.consts.iter().flat_map(|value| const_words(*value)) {
+                        index.const_refs.entry(value).or_default().push(insn.addr);
                     }
                 }
                 let last = insns.last().expect("non-empty");

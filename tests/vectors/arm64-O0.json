@@ -111,7 +111,7 @@
     },
     {
      "kind": "const",
-     "value": "0xffffffffffffffff"
+     "value": "0xffffffff"
     },
     {
      "kind": "ops",
@@ -377,7 +377,7 @@
     },
     {
      "kind": "const",
-     "value": "0xffffffffffffffff"
+     "value": "0xffffffff"
     },
     {
      "kind": "ops",
@@ -615,7 +615,11 @@
     },
     {
      "kind": "const",
-     "value": "0x9e3779b97f4a7c15"
+     "value": "0x7f4a7c15"
+    },
+    {
+     "kind": "const",
+     "value": "0x9e3779b9"
     },
     {
      "kind": "ops",

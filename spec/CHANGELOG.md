@@ -130,3 +130,21 @@ document are unchanged, so `SPEC_VERSION` stays `1`.
   sources, 0.263 → 0.105 against the negative corpus) and raises top-1 recall.
 * The `strong` verdict counts only required data features, so a merged
   signature is no longer strong on features one sample lacks.
+
+## v1 — native constant words
+
+Changes `const` feature values (SPEC.md §3). The native port is the only
+maintained implementation; the deprecated Python prototype under `core/` still
+emits the old form, so `SPEC_VERSION` is not bumped here and the
+`tests/test_spec.py` agreement stays intact.
+
+* Every constant is recorded as 32-bit words. A value that is the zero- or
+  sign-extension of a 32-bit value is its low word; any other value is its
+  non-zero high and low words. x86-64 and AArch64 sign-extend 32-bit
+  immediates while ARM32 holds them in one register, and a 64-bit value is one
+  `movabs` on x86-64, a `movz`/`movk` chain on AArch64, and two registers on
+  ARM32; all of them now yield the same features.
+* Low-information constants (§8) include words within `0x100` below `2^32`,
+  the 32-bit form of small negative values.
+* The hint-free code index keys constants by the same words, so a decoded
+  `movabs` still lands on a signature anchored on either half.

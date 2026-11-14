@@ -229,7 +229,7 @@
     },
     {
      "kind": "const",
-     "value": "0xffffffffffffffff"
+     "value": "0xffffffff"
     },
     {
      "kind": "ops",
@@ -443,7 +443,7 @@
     },
     {
      "kind": "const",
-     "value": "0x9e3779b900000000"
+     "value": "0x9e3779b9"
     },
     {
      "kind": "ops",

@@ -94,12 +94,29 @@ matter; this is a property of the object format, not of the extractor.
 
 ## 3. Constant canonicalization
 
-* Constants are stored as unsigned 64-bit values, printed as `0x%x`.
-* Values in the 32-bit range are sign-extended to 64 bits, so `mov rax, -1`,
-  `mov eax, -1`, `mov rdi, -1`, and AArch64 `movn w0, #0` all yield
-  `0xffffffffffffffff`.
-  A genuine unsigned 32-bit mask with the top bit set collapses onto the same
-  value; constants are supporting evidence, so the ambiguity is accepted.
+* Constants are recorded as unsigned 32-bit *words*, printed as `0x%x`. The
+  same source constant is a sign-extended 64-bit register value on x86-64 and
+  AArch64 but a 32-bit register (or a pair of them) on ARM32, so a word is the
+  only form every architecture can produce.
+* Each materialised value is first taken as 64 bits: an immediate of 32 bits
+  or fewer is sign-extended, a `movabs`, a `movz`/`movk` chain, or a 64-bit
+  literal-pool load keeps its full value. The pointer rule (§2) applies to
+  that 64-bit value. It then becomes features as follows:
+  * a value that is the zero- or sign-extension of a 32-bit value is its low
+    word, so `mov rax, -1`, `mov eax, -1`, AArch64 `movn w0, #0` and
+    `movn x0, #0`, and ARM32 `mvn r0, #0` all yield `0xffffffff`, and
+    `0xffffffff94d049bb` (x86-64) meets `0x94d049bb` (ARM32);
+  * any other value is its high and low words, each a separate `const`
+    feature, and a zero word is dropped. `movabs rax, 0x94d049bb133111eb`, the
+    equivalent AArch64 chain, and the ARM32 pair of 32-bit halves all yield
+    `0x94d049bb` and `0x133111eb`; an AArch64 chain split by an interleaved
+    instruction (`0x94d049bb00000000` plus `0x133111eb`) yields the same two.
+  A genuine unsigned 32-bit mask and the sign-extended negative with the same
+  low word collapse onto one value; constants are supporting evidence, so the
+  ambiguity is accepted.
+* A word within `0x100` of zero in either direction (`< 0x100`, or
+  `>= 0xffffff00`) is low-information for shape corroboration (§8): it does
+  not by itself excuse a signature from it.
 * Only materialisation and comparison/mask instructions contribute constants:
   x86-64 `mov*`, `cmp`, `test`, `and`, `or`, `xor`, `imul`; AArch64
   `mov`/`movz`/`movk`/`movn` chains and immediate operands of `cmp`/`cmn`/
@@ -300,7 +317,7 @@ generation and never decodes with its own tables.
   low-information signature, shape corroboration.
 * **Shape corroboration.** A signature is low-information when none of its
   required features is a `str`, a `callee`, or a `const` whose magnitude (either
-  sign) is at least `0x100`. Constants such as loop steps, field offsets, and
+  sign, as a 32-bit word per §3) is at least `0x100`. Constants such as loop steps, field offsets, and
   `-8` stack alignment occur in most functions, and on the corpus every false
   positive came from such a signature. Its candidate must also agree with at
   least 0.8 of the signature's shape dimensions. A dimension is a shape key
