@@ -13,6 +13,7 @@
 //!   it when the weighted score and `min_distinct` both pass.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use crate::errors::SelfTestError;
 use crate::features::{extract, Feature, FeatureKind};
@@ -34,13 +35,15 @@ pub const DEFAULT_MAX_RECOVERIES: usize = 4_096;
 /// Reference-index budgets: a linear sweep indexes whole regions at once, so
 /// the instruction count must be bounded (AGENTS.md rule 8), and a run of
 /// undecodable bytes must not cost one resync per byte.
-pub const MAX_INDEX_INSTRUCTIONS: usize = 200_000;
+// Sized for real shared libraries (SQLite is ~600K instructions per arch):
+// a smaller budget silently left most of a large image unindexed.
+pub const MAX_INDEX_INSTRUCTIONS: usize = 4_000_000;
 pub const MAX_INDEX_RESYNCS: usize = 4_096;
 
 /// Hint-free discovery pass: instructions decoded while collecting boundaries,
 /// call targets, and constant references. Bounded like the reference index for
 /// the same reason (rule 8).
-pub const MAX_DISCOVERY_INSTRUCTIONS: usize = 50_000;
+pub const MAX_DISCOVERY_INSTRUCTIONS: usize = 4_000_000;
 
 /// One- and two-byte immediates occur everywhere; searching for them produces
 /// noise without narrowing anything, so they are not used as needles.
@@ -304,24 +307,170 @@ pub fn scan_candidates<S: ByteSource + ?Sized>(
     index: Option<&ReferenceIndex>,
     budget: Option<&mut RecoveryBudget>,
 ) -> Vec<Match> {
+    scan_candidates_with(
+        source,
+        signature,
+        hits,
+        limits,
+        max_candidates,
+        hints,
+        index,
+        None,
+        None,
+        budget,
+    )
+}
+
+/// Per-image indexes for scanning many signatures against one image.
+///
+/// Both are whole-image passes. Building them per signature made hint-free
+/// scanning cost one full decode of the image per signature; a context builds
+/// them once and every [`scan_in`] call shares them.
+#[derive(Debug)]
+pub struct ScanContext {
+    pub references: ReferenceIndex,
+    pub code: CodeIndex,
+    pub features: FeatureCache,
+}
+
+impl ScanContext {
+    pub fn build<S: ByteSource + ?Sized>(source: &S) -> ScanContext {
+        let mut references = ReferenceIndex::default();
+        for region in source.regions() {
+            if region.executable {
+                references.index_region(source, region);
+            }
+        }
+        ScanContext {
+            references,
+            code: CodeIndex::build(source),
+            features: FeatureCache::default(),
+        }
+    }
+}
+
+/// [`scan`] with the image's shared indexes: string anchors seed candidates
+/// through the reference index in both modes, and hint-free discovery reuses
+/// the code index instead of rebuilding it.
+pub fn scan_in<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    context: &ScanContext,
+    hints: bool,
+) -> Vec<Match> {
+    let hits = anchor_hits(source, signature);
+    scan_candidates_with(
+        source,
+        signature,
+        &hits,
+        None,
+        MAX_CANDIDATE_STARTS,
+        hints,
+        Some(&context.references),
+        Some(&context.code),
+        Some(&context.features),
+        None,
+    )
+}
+
+/// A recovered candidate function reduced to what comparison needs.
+#[derive(Debug)]
+pub struct Candidate {
+    pub start: u64,
+    pub end: u64,
+    pub features: Vec<Feature>,
+}
+
+impl Candidate {
+    fn recover<S: ByteSource + ?Sized>(
+        source: &S,
+        start: u64,
+        limits: Option<RecoveryLimits>,
+        hints: bool,
+    ) -> Option<Candidate> {
+        let recovered = recover(source, start, limits, hints).ok()?;
+        Some(Candidate {
+            start: recovered.start(),
+            end: recovered.end(),
+            features: extract(source, &recovered),
+        })
+    }
+}
+
+/// `(start, hints)` to the recovered candidate, or `None` when recovery failed.
+type CandidateMap = HashMap<(u64, bool), Option<Arc<Candidate>>>;
+
+/// Recovered candidates per `(start, hints)`, shared across signatures.
+///
+/// Recovery and extraction are deterministic functions of the image bytes, so
+/// a candidate start yields the same features for every signature. Scanning
+/// many signatures over one image recovers the same symbol starts and sweep
+/// boundaries again and again; caching them turns that into one recovery per
+/// start. Bounded by the number of distinct candidate starts, which the
+/// per-signature cap and the image size already bound.
+#[derive(Debug, Default)]
+pub struct FeatureCache {
+    entries: RwLock<CandidateMap>,
+}
+
+impl FeatureCache {
+    fn get_or_recover<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> Option<Arc<Candidate>> {
+        if let Some(entry) = self
+            .entries
+            .read()
+            .expect("feature cache")
+            .get(&(start, hints))
+        {
+            return entry.clone();
+        }
+        let candidate = Candidate::recover(source, start, None, hints).map(Arc::new);
+        self.entries
+            .write()
+            .expect("feature cache")
+            .insert((start, hints), candidate.clone());
+        candidate
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_candidates_with<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    hits: &[(u64, String)],
+    limits: Option<RecoveryLimits>,
+    max_candidates: usize,
+    hints: bool,
+    index: Option<&ReferenceIndex>,
+    code: Option<&CodeIndex>,
+    cache: Option<&FeatureCache>,
+    budget: Option<&mut RecoveryBudget>,
+) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
-    for start in candidate_starts(source, signature, hits, max_candidates, hints, index) {
+    for start in candidate_starts(source, signature, hits, max_candidates, hints, index, code) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
                 break;
             }
             remaining.remaining -= 1;
         }
-        let recovered = match recover(source, start, limits, hints) {
-            Ok(recovered) => recovered,
-            Err(_) => continue,
+        let candidate = match cache {
+            Some(cache) if limits.is_none() => cache.get_or_recover(source, start, hints),
+            _ => Candidate::recover(source, start, limits, hints).map(Arc::new),
         };
-        let result = compare(signature, &extract(source, &recovered));
+        let Some(candidate) = candidate else {
+            continue;
+        };
+        let result = compare(signature, &candidate.features);
         if accepts(signature, &result) {
             matches.push(Match {
-                address: recovered.start(),
-                end: recovered.end(),
+                address: candidate.start,
+                end: candidate.end,
                 score: result.score,
                 matched: result.matched,
             });
@@ -498,7 +647,8 @@ pub fn self_test<S: ByteSource + ?Sized>(
     }
 
     let hits = anchor_hits(source, signature);
-    let mut candidates = candidate_starts(source, signature, &hits, max_candidates, true, None);
+    let mut candidates =
+        candidate_starts(source, signature, &hits, max_candidates, true, None, None);
     if !candidates.contains(&start) && hits.iter().any(|(_, key)| key.starts_with("str:")) {
         // String anchors only rank through the reference index; build it once
         // before declaring the function unreachable.
@@ -508,7 +658,15 @@ pub fn self_test<S: ByteSource + ?Sized>(
                 index.index_region(source, region);
             }
         }
-        candidates = candidate_starts(source, signature, &hits, max_candidates, true, Some(&index));
+        candidates = candidate_starts(
+            source,
+            signature,
+            &hits,
+            max_candidates,
+            true,
+            Some(&index),
+            None,
+        );
         if candidates.contains(&start) {
             matches = scan_candidates(
                 source,
@@ -720,6 +878,7 @@ fn candidate_starts<S: ByteSource + ?Sized>(
     max_candidates: usize,
     use_hints: bool,
     index: Option<&ReferenceIndex>,
+    shared_code: Option<&CodeIndex>,
 ) -> Vec<u64> {
     let code_hits: Vec<u64> = unique_sorted(
         hits.iter()
@@ -747,12 +906,16 @@ fn candidate_starts<S: ByteSource + ?Sized>(
     // from real decoding instead of a restart that can desync and stop short of
     // the landmark, and direct call targets are exact entries. A value
     // materialized too often to identify a function is not used as a landmark.
-    let code = if use_hints {
+    let built;
+    let code: Option<&CodeIndex> = if use_hints {
         None
+    } else if let Some(shared) = shared_code {
+        Some(shared)
     } else {
-        Some(CodeIndex::build(source))
+        built = CodeIndex::build(source);
+        Some(&built)
     };
-    let const_landmarks: Vec<u64> = match &code {
+    let const_landmarks: Vec<u64> = match code {
         Some(code) => signature
             .anchors
             .iter()
@@ -854,14 +1017,14 @@ fn candidate_starts<S: ByteSource + ?Sized>(
 /// [`MAX_INDEX_RESYNCS`], so a hostile image cannot make it run unbounded
 /// (AGENTS.md rule 8).
 #[derive(Debug, Default)]
-struct CodeIndex {
+pub struct CodeIndex {
     boundaries: HashMap<u64, Vec<u64>>,
     call_targets: HashSet<u64>,
     const_refs: HashMap<u64, Vec<u64>>,
 }
 
 impl CodeIndex {
-    fn build<S: ByteSource + ?Sized>(source: &S) -> CodeIndex {
+    pub fn build<S: ByteSource + ?Sized>(source: &S) -> CodeIndex {
         let normalizer = Normalizer::new(source);
         let mut index = CodeIndex::default();
         let mut decoded = 0usize;
