@@ -314,4 +314,9 @@ fn locate_finds_a_local_function_in_a_stripped_image() {
     std::fs::remove_dir(&dir).ok();
     let best = document["matches"][0]["address"].as_str().unwrap_or("");
     assert_eq!(best, format!("0x{address:x}"), "{document}");
+    // Its multiplier constants identify it; shape alone would not.
+    assert_eq!(
+        document["matches"][0]["evidence"], "identified",
+        "{document}"
+    );
 }

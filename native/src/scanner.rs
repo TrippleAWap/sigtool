@@ -48,6 +48,8 @@ pub struct ScanHit {
     pub score: f64,
     pub region: String,
     pub first_seen: usize,
+    /// The match rests on identifying evidence ([`crate::matcher::identified`]).
+    pub identified: bool,
 }
 
 /// Cached Tier 0 hits and matches for one signature.
@@ -235,6 +237,7 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                     score: matched.score,
                     region: region_name(matched.address, &regions),
                     first_seen,
+                    identified: crate::matcher::identified(matched),
                 });
             }
         }

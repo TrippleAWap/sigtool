@@ -519,7 +519,7 @@ pub fn scan_in<S: ByteSource + ?Sized>(
 
 /// A matched key that identifies a function by itself: a string, a callee
 /// inside the image, or a constant away from zero.
-fn identifying_key(key: &str) -> bool {
+pub fn identifying_key(key: &str) -> bool {
     match key.split_once(':') {
         Some(("str", _)) => true,
         Some(("callee", value)) => !low_information_callee(value),
@@ -539,6 +539,15 @@ fn identifying_key(key: &str) -> bool {
 /// in a few dozen functions coincidences are rare, and the toy corpus's tiny
 /// functions have fewer than 6 features to match.
 pub const MIN_LOW_INFORMATION_MATCHED: usize = 6;
+
+/// Whether a match rests on evidence that identifies a function (see
+/// [`identifying_key`]) rather than only shape and near-zero constants.
+/// Front-ends report it: a shape-only match of a small function is often
+/// right in its own library, but the same evidence also fires on lookalikes
+/// in unrelated code.
+pub fn identified(found: &Match) -> bool {
+    found.matched.iter().any(|key| identifying_key(key))
+}
 
 fn enough_evidence(found: &Match) -> bool {
     found.matched.len() >= MIN_LOW_INFORMATION_MATCHED

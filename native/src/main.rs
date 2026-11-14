@@ -41,7 +41,7 @@ use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate, GenerateError, GenerationResult};
-use sigtool_native::matcher::{scan, scan_in, Match, ScanContext};
+use sigtool_native::matcher::{identified, scan, scan_in, Match, ScanContext};
 use sigtool_native::merge::{merge, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
 use sigtool_native::scanner::{ScanHit, SignatureScanner};
@@ -578,10 +578,11 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
             .label_for_address(matched.address)
             .unwrap_or_else(|| "unlabelled".to_string());
         println!(
-            "  {}. 0x{:x} score {:.3} {}",
+            "  {}. 0x{:x} score {:.3} {} {}",
             index + 1,
             matched.address,
             matched.score,
+            evidence_label(identified(matched)),
             where_
         );
     }
@@ -637,6 +638,10 @@ fn match_document(
             }
             entry.insert("score".to_string(), json_number(matched.score));
             entry.insert(
+                "evidence".to_string(),
+                Value::String(evidence_label(identified(matched)).to_string()),
+            );
+            entry.insert(
                 "label".to_string(),
                 source
                     .label_for_address(matched.address)
@@ -687,8 +692,12 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             .label_for_address(hit.address)
             .unwrap_or_else(|| hit.region.clone());
         println!(
-            "{}  0x{:x} score {:.3} {}",
-            hit.name, hit.address, hit.score, where_
+            "{}  0x{:x} score {:.3} {} {}",
+            hit.name,
+            hit.address,
+            hit.score,
+            evidence_label(hit.identified),
+            where_
         );
     }
     if hits.is_empty() {
@@ -734,10 +743,22 @@ fn hint_free_hits(
                     .map(|region| region.name.clone())
                     .unwrap_or_default(),
                 first_seen: 0,
+                identified: identified(&matched),
             });
         }
     }
     Ok(hits)
+}
+
+/// `identified`: a string, in-image callee, or distinctive constant matched.
+/// `shape-only`: only CFG/op shape, near-zero constants, and imports did;
+/// treat it as a candidate, since unrelated lookalikes match the same way.
+fn evidence_label(identified: bool) -> &'static str {
+    if identified {
+        "identified"
+    } else {
+        "shape-only"
+    }
 }
 
 fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, Value> {
@@ -757,6 +778,10 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
             );
             entry.insert("end".to_string(), Value::String(format!("0x{:x}", hit.end)));
             entry.insert("score".to_string(), json_number(hit.score));
+            entry.insert(
+                "evidence".to_string(),
+                Value::String(evidence_label(hit.identified).to_string()),
+            );
             entry.insert("region".to_string(), Value::String(hit.region.clone()));
             entry.insert(
                 "label".to_string(),

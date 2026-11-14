@@ -206,7 +206,8 @@ class LocateHandler(ida_kernwin.action_handler_t):
         for index, match in enumerate(matches, start=1):
             ea = base + int(match["rva"], 16)
             label = match.get("label") or "unlabelled"
-            lines.append(f"{index}. {ea:#x} score {match['score']:.3f} {label}")
+            evidence = match.get("evidence", "")
+            lines.append(f"{index}. {ea:#x} score {match['score']:.3f} {evidence} {label}")
         ida_kernwin.info("\n".join(lines))
         ida_kernwin.jumpto(base + int(matches[0]["rva"], 16))
 
