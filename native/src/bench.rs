@@ -106,6 +106,10 @@ pub struct BenchReport {
     /// True when every hint-free scan ran on a `strip --strip-all` copy.
     #[serde(default)]
     pub hint_free_stripped: bool,
+    /// Any-verdict false positives of hint-free scans (unrelated sources plus
+    /// the negative corpus), on stripped targets when available.
+    #[serde(default)]
+    pub hint_free_false_positives: Vec<FalsePositiveCell>,
     pub signatures: usize,
     pub refused: usize,
     pub merged_refused: usize,
@@ -573,13 +577,34 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     };
     // Scan every signature once per target set; the strong cells are the
     // strong subset of the same counts.
-    let (corpus_counts, negative_counts) = if options.skip_false_positives {
-        (vec![0; all.len()], vec![0; all.len()])
-    } else {
+    let hinted_fp =
+        !options.skip_false_positives && options.discovery.as_deref() != Some(HINT_FREE);
+    let hint_free_fp =
+        !options.skip_false_positives && options.discovery.as_deref() != Some(HINTED);
+    let (corpus_counts, negative_counts) = if hinted_fp {
         (
-            false_positive_counts(&all, corpus_targets),
-            false_positive_counts(&all, negative_targets),
+            false_positive_counts(&all, corpus_targets, true),
+            false_positive_counts(&all, negative_targets, true),
         )
+    } else {
+        (vec![0; all.len()], vec![0; all.len()])
+    };
+    // Hint-free scans see every function in a stripped image, so their
+    // precision is its own number: any verdict, unrelated sources and the
+    // negative corpus together.
+    let hint_free_false_positives = if hint_free_fp {
+        let counts = false_positive_counts(
+            &all,
+            |sample| {
+                let mut chosen = corpus_targets(sample);
+                chosen.extend(negative_targets(sample));
+                chosen
+            },
+            false,
+        );
+        false_positive_cells(&all, &counts, None)
+    } else {
+        Vec::new()
     };
     let is_strong: Vec<bool> = all.iter().map(|s| s.verdict == "strong").collect();
     let false_positives = false_positive_cells(&all, &corpus_counts, Some(&is_strong));
@@ -591,6 +616,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
         hint_free_stripped: targets.iter().all(|t| t.stripped.is_some()),
+        hint_free_false_positives,
         signatures: all.len(),
         refused,
         merged_refused,
@@ -604,7 +630,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
 }
 
 /// Accepted matches per sample summed over the targets it must not match.
-fn false_positive_counts<'t, F>(samples: &[&Sample], targets_for: F) -> Vec<usize>
+fn false_positive_counts<'t, F>(samples: &[&Sample], targets_for: F, hints: bool) -> Vec<usize>
 where
     F: Fn(&Sample) -> Vec<&'t Target> + Sync,
 {
@@ -615,7 +641,7 @@ where
         .collect();
     let hits = parallel(jobs.len(), |job| {
         let (index, target) = jobs[job];
-        target.scan(&samples[index].signature, true).len()
+        target.scan(&samples[index].signature, hints).len()
     });
     let mut per_sample = vec![0usize; samples.len()];
     for ((index, _), count) in jobs.iter().zip(hits) {
@@ -716,6 +742,11 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
             "any-verdict negative false positives",
             &baseline.any_negative_false_positives,
             &current.any_negative_false_positives,
+        ),
+        (
+            "hint-free false positives",
+            &baseline.hint_free_false_positives,
+            &current.hint_free_false_positives,
         ),
     ] {
         for cell in base {
@@ -818,6 +849,10 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
             "any-verdict FP rate (negative)",
             &report.any_negative_false_positives,
         ),
+        (
+            "hint-free FP rate (any verdict)",
+            &report.hint_free_false_positives,
+        ),
     ] {
         let (with, total) = cells.iter().fold((0, 0), |(w, t), c| {
             (w + c.signatures_with_hits, t + c.signatures)
@@ -893,6 +928,10 @@ pub fn render(report: &BenchReport) -> String {
         (
             "false positives (any verdict vs negative corpus)",
             &report.any_negative_false_positives,
+        ),
+        (
+            "false positives (hint-free, any verdict, unrelated + negative)",
+            &report.hint_free_false_positives,
         ),
     ] {
         let _ = writeln!(text, "\n{label}");
