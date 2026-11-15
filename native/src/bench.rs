@@ -102,6 +102,10 @@ impl FalsePositiveCell {
 /// the source module, scanned alone and then resolved together.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JointCell {
+    /// Source library. Baselines saved before it was recorded leave it empty;
+    /// their cells are matched by order instead (see [`compare`]).
+    #[serde(default)]
+    pub library: String,
     /// `source->target` architectures.
     pub arch: String,
     pub source_opt: String,
@@ -945,6 +949,7 @@ fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveC
             let (image, image_context) = target.scan_source(false);
             crate::joint::resolve(image, image_context, &signatures, &mut matches, false);
             cells.push(JointCell {
+                library: source.source_file.clone(),
                 arch: format!("{}->{}", source.arch, target.arch),
                 source_opt: source.opt.clone(),
                 target_opt: target.opt.clone(),
@@ -1201,13 +1206,31 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
     }
     // Joint cells are gated only when both runs measured them (`--joint`).
     if !current.joint.is_empty() {
+        // One cell per source library and target build. The n-th baseline
+        // cell with a key is compared with the n-th current one: the key
+        // alone repeats once per library, and matching the first hit compared
+        // every library's baseline against the first library's result.
+        let mut seen: BTreeMap<(String, &String, &String, &String), usize> = BTreeMap::new();
         for cell in &baseline.joint {
             let key = (&cell.arch, &cell.source_opt, &cell.target_opt);
-            let Some(now) = current
+            let library = |c: &JointCell| {
+                if cell.library.is_empty() {
+                    String::new()
+                } else {
+                    c.library.clone()
+                }
+            };
+            let occurrence = seen
+                .entry((library(cell), key.0, key.1, key.2))
+                .or_insert(0);
+            let found = current
                 .joint
                 .iter()
-                .find(|c| (&c.arch, &c.source_opt, &c.target_opt) == key)
-            else {
+                .filter(|c| (&c.arch, &c.source_opt, &c.target_opt) == key)
+                .filter(|c| library(c) == library(cell))
+                .nth(*occurrence);
+            *occurrence += 1;
+            let Some(now) = found else {
                 failures.push(format!("missing joint cell {key:?}"));
                 continue;
             };
@@ -1217,7 +1240,8 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
             );
             if after < before - tolerance {
                 failures.push(format!(
-                    "joint top-1 {key:?}: {after:.3} < baseline {before:.3} - {tolerance:.2}"
+                    "joint top-1 {} {key:?}: {after:.3} < baseline {before:.3} - {tolerance:.2}",
+                    now.library
                 ));
             }
         }
@@ -1689,6 +1713,33 @@ mod tests {
             unrelated_scans: 100,
             unrelated_answers,
         }
+    }
+
+    fn joint(library: &str, joint_top: usize) -> JointCell {
+        JointCell {
+            library: library.to_string(),
+            arch: "x64->arm64".to_string(),
+            source_opt: "clang-O2".to_string(),
+            target_opt: "gcc-O2".to_string(),
+            attempts: 100,
+            independent_top: 0,
+            joint_top,
+        }
+    }
+
+    #[test]
+    fn joint_cells_repeating_a_key_compare_per_library() {
+        let mut baseline = old_baseline();
+        baseline.joint = vec![joint("lua", 20), joint("zlib", 80)];
+        let mut current = baseline.clone();
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
+        // A baseline saved before `library` was recorded matches by order.
+        let mut unlabelled = baseline.clone();
+        unlabelled.joint = vec![joint("", 20), joint("", 80)];
+        assert!(compare(&unlabelled, &current, DEFAULT_TOLERANCE).is_empty());
+        current.joint[1].joint_top = 60;
+        assert_eq!(compare(&baseline, &current, DEFAULT_TOLERANCE).len(), 1);
+        assert_eq!(compare(&unlabelled, &current, DEFAULT_TOLERANCE).len(), 1);
     }
 
     #[test]
