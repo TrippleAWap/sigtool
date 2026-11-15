@@ -3432,5 +3432,202 @@
       "signatures_with_hits": 4,
       "hits": 28
     }
-  ]
+  ],
+  "joint": [],
+  "joint_false_positives": [],
+  "identified": [
+    {
+      "discovery": "hint-free",
+      "answers": 922,
+      "correct": 868,
+      "unrelated_scans": 2280,
+      "unrelated_answers": 1
+    },
+    {
+      "discovery": "hinted",
+      "answers": 924,
+      "correct": 924,
+      "unrelated_scans": 2280,
+      "unrelated_answers": 1
+    }
+  ],
+  "library_recall": [
+    {
+      "library": "loops",
+      "discovery": "hint-free",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 30,
+      "attempts": 46
+    },
+    {
+      "library": "loops",
+      "discovery": "hint-free",
+      "row": "other arch, other optimization level",
+      "top_hits": 208,
+      "attempts": 576
+    },
+    {
+      "library": "loops",
+      "discovery": "hint-free",
+      "row": "other arch, same build settings",
+      "top_hits": 151,
+      "attempts": 300
+    },
+    {
+      "library": "loops",
+      "discovery": "hint-free",
+      "row": "same arch, other optimization level",
+      "top_hits": 81,
+      "attempts": 192
+    },
+    {
+      "library": "loops",
+      "discovery": "hint-free",
+      "row": "same arch, same build",
+      "top_hits": 90,
+      "attempts": 100
+    },
+    {
+      "library": "loops",
+      "discovery": "hinted",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 30,
+      "attempts": 46
+    },
+    {
+      "library": "loops",
+      "discovery": "hinted",
+      "row": "other arch, other optimization level",
+      "top_hits": 251,
+      "attempts": 576
+    },
+    {
+      "library": "loops",
+      "discovery": "hinted",
+      "row": "other arch, same build settings",
+      "top_hits": 175,
+      "attempts": 300
+    },
+    {
+      "library": "loops",
+      "discovery": "hinted",
+      "row": "same arch, other optimization level",
+      "top_hits": 96,
+      "attempts": 192
+    },
+    {
+      "library": "loops",
+      "discovery": "hinted",
+      "row": "same arch, same build",
+      "top_hits": 100,
+      "attempts": 100
+    },
+    {
+      "library": "parser",
+      "discovery": "hint-free",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 23,
+      "attempts": 42
+    },
+    {
+      "library": "parser",
+      "discovery": "hint-free",
+      "row": "other arch, other optimization level",
+      "top_hits": 171,
+      "attempts": 576
+    },
+    {
+      "library": "parser",
+      "discovery": "hint-free",
+      "row": "other arch, same build settings",
+      "top_hits": 127,
+      "attempts": 312
+    },
+    {
+      "library": "parser",
+      "discovery": "hint-free",
+      "row": "same arch, other optimization level",
+      "top_hits": 72,
+      "attempts": 192
+    },
+    {
+      "library": "parser",
+      "discovery": "hint-free",
+      "row": "same arch, same build",
+      "top_hits": 93,
+      "attempts": 104
+    },
+    {
+      "library": "parser",
+      "discovery": "hinted",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 23,
+      "attempts": 42
+    },
+    {
+      "library": "parser",
+      "discovery": "hinted",
+      "row": "other arch, other optimization level",
+      "top_hits": 205,
+      "attempts": 576
+    },
+    {
+      "library": "parser",
+      "discovery": "hinted",
+      "row": "other arch, same build settings",
+      "top_hits": 149,
+      "attempts": 312
+    },
+    {
+      "library": "parser",
+      "discovery": "hinted",
+      "row": "same arch, other optimization level",
+      "top_hits": 86,
+      "attempts": 192
+    },
+    {
+      "library": "parser",
+      "discovery": "hinted",
+      "row": "same arch, same build",
+      "top_hits": 102,
+      "attempts": 104
+    }
+  ],
+  "cost": {
+    "threads": 8,
+    "phases": [
+      {
+        "phase": "load",
+        "millis": 6,
+        "peak_memory_bytes": 6103040
+      },
+      {
+        "phase": "indexes",
+        "millis": 16,
+        "peak_memory_bytes": 10653696
+      },
+      {
+        "phase": "samples",
+        "millis": 26,
+        "peak_memory_bytes": 13053952
+      },
+      {
+        "phase": "merge",
+        "millis": 16,
+        "peak_memory_bytes": 13082624
+      },
+      {
+        "phase": "recall",
+        "millis": 374,
+        "peak_memory_bytes": 21938176
+      },
+      {
+        "phase": "false positives",
+        "millis": 177,
+        "peak_memory_bytes": 27095040
+      }
+    ],
+    "total_millis": 618,
+    "peak_memory_bytes": 27095040
+  }
 }

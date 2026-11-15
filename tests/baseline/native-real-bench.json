@@ -13155,6 +13155,7 @@
   ],
   "joint": [
     {
+      "library": "cjson",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13163,6 +13164,7 @@
       "joint_top": 37
     },
     {
+      "library": "cjson",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13171,6 +13173,7 @@
       "joint_top": 45
     },
     {
+      "library": "cjson",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13179,6 +13182,7 @@
       "joint_top": 34
     },
     {
+      "library": "cjson",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13187,6 +13191,7 @@
       "joint_top": 33
     },
     {
+      "library": "cjson",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13195,6 +13200,7 @@
       "joint_top": 30
     },
     {
+      "library": "cjson",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13203,6 +13209,7 @@
       "joint_top": 17
     },
     {
+      "library": "cjson",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13211,6 +13218,7 @@
       "joint_top": 36
     },
     {
+      "library": "cjson",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13219,6 +13227,7 @@
       "joint_top": 56
     },
     {
+      "library": "cjson",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13227,6 +13236,7 @@
       "joint_top": 41
     },
     {
+      "library": "cjson",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13235,6 +13245,7 @@
       "joint_top": 35
     },
     {
+      "library": "cjson",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13243,6 +13254,7 @@
       "joint_top": 38
     },
     {
+      "library": "cjson",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13251,6 +13263,7 @@
       "joint_top": 30
     },
     {
+      "library": "cjson",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13259,6 +13272,7 @@
       "joint_top": 27
     },
     {
+      "library": "cjson",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13267,6 +13281,7 @@
       "joint_top": 38
     },
     {
+      "library": "cjson",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13275,6 +13290,7 @@
       "joint_top": 36
     },
     {
+      "library": "cjson",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13283,6 +13299,7 @@
       "joint_top": 29
     },
     {
+      "library": "cjson",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13291,6 +13308,7 @@
       "joint_top": 29
     },
     {
+      "library": "cjson",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13299,6 +13317,7 @@
       "joint_top": 30
     },
     {
+      "library": "cjson",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13307,6 +13326,7 @@
       "joint_top": 34
     },
     {
+      "library": "cjson",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13315,6 +13335,7 @@
       "joint_top": 68
     },
     {
+      "library": "cjson",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13323,6 +13344,7 @@
       "joint_top": 36
     },
     {
+      "library": "cjson",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13331,6 +13353,7 @@
       "joint_top": 53
     },
     {
+      "library": "cjson",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13339,6 +13362,7 @@
       "joint_top": 36
     },
     {
+      "library": "lua",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13347,6 +13371,7 @@
       "joint_top": 47
     },
     {
+      "library": "lua",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13355,6 +13380,7 @@
       "joint_top": 110
     },
     {
+      "library": "lua",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13363,6 +13389,7 @@
       "joint_top": 75
     },
     {
+      "library": "lua",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13371,6 +13398,7 @@
       "joint_top": 34
     },
     {
+      "library": "lua",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13379,6 +13407,7 @@
       "joint_top": 56
     },
     {
+      "library": "lua",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13387,6 +13416,7 @@
       "joint_top": 39
     },
     {
+      "library": "lua",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13395,6 +13425,7 @@
       "joint_top": 44
     },
     {
+      "library": "lua",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13403,6 +13434,7 @@
       "joint_top": 121
     },
     {
+      "library": "lua",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13411,6 +13443,7 @@
       "joint_top": 78
     },
     {
+      "library": "lua",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13419,6 +13452,7 @@
       "joint_top": 53
     },
     {
+      "library": "lua",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13427,6 +13461,7 @@
       "joint_top": 83
     },
     {
+      "library": "lua",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13435,6 +13470,7 @@
       "joint_top": 62
     },
     {
+      "library": "lua",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13443,6 +13479,7 @@
       "joint_top": 43
     },
     {
+      "library": "lua",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13451,6 +13488,7 @@
       "joint_top": 105
     },
     {
+      "library": "lua",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13459,6 +13497,7 @@
       "joint_top": 72
     },
     {
+      "library": "lua",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13467,6 +13506,7 @@
       "joint_top": 33
     },
     {
+      "library": "lua",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13475,6 +13515,7 @@
       "joint_top": 50
     },
     {
+      "library": "lua",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13483,6 +13524,7 @@
       "joint_top": 42
     },
     {
+      "library": "lua",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13491,6 +13533,7 @@
       "joint_top": 52
     },
     {
+      "library": "lua",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13499,6 +13542,7 @@
       "joint_top": 98
     },
     {
+      "library": "lua",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13507,6 +13551,7 @@
       "joint_top": 52
     },
     {
+      "library": "lua",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13515,6 +13560,7 @@
       "joint_top": 86
     },
     {
+      "library": "lua",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13523,6 +13569,7 @@
       "joint_top": 65
     },
     {
+      "library": "lz4",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13531,6 +13578,7 @@
       "joint_top": 23
     },
     {
+      "library": "lz4",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13539,6 +13587,7 @@
       "joint_top": 67
     },
     {
+      "library": "lz4",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13547,6 +13596,7 @@
       "joint_top": 55
     },
     {
+      "library": "lz4",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13555,6 +13605,7 @@
       "joint_top": 17
     },
     {
+      "library": "lz4",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13563,6 +13614,7 @@
       "joint_top": 45
     },
     {
+      "library": "lz4",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13571,6 +13623,7 @@
       "joint_top": 34
     },
     {
+      "library": "lz4",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13579,6 +13632,7 @@
       "joint_top": 20
     },
     {
+      "library": "lz4",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13587,6 +13641,7 @@
       "joint_top": 71
     },
     {
+      "library": "lz4",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13595,6 +13650,7 @@
       "joint_top": 51
     },
     {
+      "library": "lz4",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13603,6 +13659,7 @@
       "joint_top": 23
     },
     {
+      "library": "lz4",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13611,6 +13668,7 @@
       "joint_top": 40
     },
     {
+      "library": "lz4",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13619,6 +13677,7 @@
       "joint_top": 35
     },
     {
+      "library": "lz4",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13627,6 +13686,7 @@
       "joint_top": 22
     },
     {
+      "library": "lz4",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13635,6 +13695,7 @@
       "joint_top": 57
     },
     {
+      "library": "lz4",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13643,14 +13704,16 @@
       "joint_top": 49
     },
     {
+      "library": "lz4",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
       "attempts": 150,
       "independent_top": 10,
-      "joint_top": 20
+      "joint_top": 19
     },
     {
+      "library": "lz4",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13659,6 +13722,7 @@
       "joint_top": 35
     },
     {
+      "library": "lz4",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13667,6 +13731,7 @@
       "joint_top": 28
     },
     {
+      "library": "lz4",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13675,6 +13740,7 @@
       "joint_top": 22
     },
     {
+      "library": "lz4",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13683,6 +13749,7 @@
       "joint_top": 83
     },
     {
+      "library": "lz4",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13691,6 +13758,7 @@
       "joint_top": 17
     },
     {
+      "library": "lz4",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13699,6 +13767,7 @@
       "joint_top": 50
     },
     {
+      "library": "lz4",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13707,6 +13776,7 @@
       "joint_top": 42
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13715,6 +13785,7 @@
       "joint_top": 10
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13723,6 +13794,7 @@
       "joint_top": 57
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13731,6 +13803,7 @@
       "joint_top": 24
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13739,6 +13812,7 @@
       "joint_top": 3
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13747,6 +13821,7 @@
       "joint_top": 9
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13755,6 +13830,7 @@
       "joint_top": 5
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13763,6 +13839,7 @@
       "joint_top": 9
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13771,6 +13848,7 @@
       "joint_top": 67
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13779,6 +13857,7 @@
       "joint_top": 36
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13787,6 +13866,7 @@
       "joint_top": 11
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13795,6 +13875,7 @@
       "joint_top": 34
     },
     {
+      "library": "sqlite",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13803,6 +13884,7 @@
       "joint_top": 14
     },
     {
+      "library": "sqlite",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13811,6 +13893,7 @@
       "joint_top": 9
     },
     {
+      "library": "sqlite",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13819,6 +13902,7 @@
       "joint_top": 55
     },
     {
+      "library": "sqlite",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13827,6 +13911,7 @@
       "joint_top": 26
     },
     {
+      "library": "sqlite",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13835,6 +13920,7 @@
       "joint_top": 2
     },
     {
+      "library": "sqlite",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13843,6 +13929,7 @@
       "joint_top": 9
     },
     {
+      "library": "sqlite",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13851,6 +13938,7 @@
       "joint_top": 5
     },
     {
+      "library": "sqlite",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13859,6 +13947,7 @@
       "joint_top": 10
     },
     {
+      "library": "sqlite",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13867,6 +13956,7 @@
       "joint_top": 57
     },
     {
+      "library": "sqlite",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13875,6 +13965,7 @@
       "joint_top": 10
     },
     {
+      "library": "sqlite",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13883,6 +13974,7 @@
       "joint_top": 40
     },
     {
+      "library": "sqlite",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13891,6 +13983,7 @@
       "joint_top": 19
     },
     {
+      "library": "zlib",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13899,6 +13992,7 @@
       "joint_top": 49
     },
     {
+      "library": "zlib",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13907,6 +14001,7 @@
       "joint_top": 77
     },
     {
+      "library": "zlib",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13915,6 +14010,7 @@
       "joint_top": 62
     },
     {
+      "library": "zlib",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13923,6 +14019,7 @@
       "joint_top": 43
     },
     {
+      "library": "zlib",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13931,6 +14028,7 @@
       "joint_top": 52
     },
     {
+      "library": "zlib",
       "arch": "x64->arm32",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13939,6 +14037,7 @@
       "joint_top": 44
     },
     {
+      "library": "zlib",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13947,6 +14046,7 @@
       "joint_top": 44
     },
     {
+      "library": "zlib",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -13955,6 +14055,7 @@
       "joint_top": 87
     },
     {
+      "library": "zlib",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -13963,6 +14064,7 @@
       "joint_top": 69
     },
     {
+      "library": "zlib",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -13971,6 +14073,7 @@
       "joint_top": 60
     },
     {
+      "library": "zlib",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -13979,6 +14082,7 @@
       "joint_top": 66
     },
     {
+      "library": "zlib",
       "arch": "x64->arm64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -13987,6 +14091,7 @@
       "joint_top": 59
     },
     {
+      "library": "zlib",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -13995,6 +14100,7 @@
       "joint_top": 52
     },
     {
+      "library": "zlib",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
@@ -14003,6 +14109,7 @@
       "joint_top": 79
     },
     {
+      "library": "zlib",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -14011,6 +14118,7 @@
       "joint_top": 56
     },
     {
+      "library": "zlib",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -14019,6 +14127,7 @@
       "joint_top": 44
     },
     {
+      "library": "zlib",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -14027,6 +14136,7 @@
       "joint_top": 60
     },
     {
+      "library": "zlib",
       "arch": "x64->thumb",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -14035,6 +14145,7 @@
       "joint_top": 44
     },
     {
+      "library": "zlib",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
@@ -14043,6 +14154,7 @@
       "joint_top": 50
     },
     {
+      "library": "zlib",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
@@ -14051,6 +14163,7 @@
       "joint_top": 79
     },
     {
+      "library": "zlib",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
@@ -14059,6 +14172,7 @@
       "joint_top": 55
     },
     {
+      "library": "zlib",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
@@ -14067,6 +14181,7 @@
       "joint_top": 67
     },
     {
+      "library": "zlib",
       "arch": "x64->x64",
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
@@ -14106,5 +14221,555 @@
       "independent_with_hits": 10,
       "joint_with_hits": 12
     }
-  ]
+  ],
+  "identified": [
+    {
+      "discovery": "hint-free",
+      "answers": 3629,
+      "correct": 3087,
+      "unrelated_scans": 20832,
+      "unrelated_answers": 11
+    },
+    {
+      "discovery": "hinted",
+      "answers": 5268,
+      "correct": 3619,
+      "unrelated_scans": 20832,
+      "unrelated_answers": 1
+    }
+  ],
+  "library_recall": [
+    {
+      "library": "cjson",
+      "discovery": "hint-free",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 25,
+      "attempts": 80
+    },
+    {
+      "library": "cjson",
+      "discovery": "hint-free",
+      "row": "other arch, other compiler",
+      "top_hits": 51,
+      "attempts": 288
+    },
+    {
+      "library": "cjson",
+      "discovery": "hint-free",
+      "row": "other arch, other optimization level",
+      "top_hits": 168,
+      "attempts": 1152
+    },
+    {
+      "library": "cjson",
+      "discovery": "hint-free",
+      "row": "other arch, same build settings",
+      "top_hits": 62,
+      "attempts": 288
+    },
+    {
+      "library": "cjson",
+      "discovery": "hint-free",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 34,
+      "attempts": 96
+    },
+    {
+      "library": "cjson",
+      "discovery": "hint-free",
+      "row": "same arch, other optimization level",
+      "top_hits": 103,
+      "attempts": 384
+    },
+    {
+      "library": "cjson",
+      "discovery": "hint-free",
+      "row": "same arch, same build",
+      "top_hits": 93,
+      "attempts": 96
+    },
+    {
+      "library": "cjson",
+      "discovery": "hinted",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 32,
+      "attempts": 80
+    },
+    {
+      "library": "cjson",
+      "discovery": "hinted",
+      "row": "other arch, other compiler",
+      "top_hits": 66,
+      "attempts": 288
+    },
+    {
+      "library": "cjson",
+      "discovery": "hinted",
+      "row": "other arch, other optimization level",
+      "top_hits": 169,
+      "attempts": 1152
+    },
+    {
+      "library": "cjson",
+      "discovery": "hinted",
+      "row": "other arch, same build settings",
+      "top_hits": 81,
+      "attempts": 288
+    },
+    {
+      "library": "cjson",
+      "discovery": "hinted",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 40,
+      "attempts": 96
+    },
+    {
+      "library": "cjson",
+      "discovery": "hinted",
+      "row": "same arch, other optimization level",
+      "top_hits": 106,
+      "attempts": 384
+    },
+    {
+      "library": "cjson",
+      "discovery": "hinted",
+      "row": "same arch, same build",
+      "top_hits": 93,
+      "attempts": 96
+    },
+    {
+      "library": "lua",
+      "discovery": "hint-free",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 45,
+      "attempts": 68
+    },
+    {
+      "library": "lua",
+      "discovery": "hint-free",
+      "row": "other arch, other compiler",
+      "top_hits": 154,
+      "attempts": 288
+    },
+    {
+      "library": "lua",
+      "discovery": "hint-free",
+      "row": "other arch, other optimization level",
+      "top_hits": 524,
+      "attempts": 1152
+    },
+    {
+      "library": "lua",
+      "discovery": "hint-free",
+      "row": "other arch, same build settings",
+      "top_hits": 165,
+      "attempts": 288
+    },
+    {
+      "library": "lua",
+      "discovery": "hint-free",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 64,
+      "attempts": 96
+    },
+    {
+      "library": "lua",
+      "discovery": "hint-free",
+      "row": "same arch, other optimization level",
+      "top_hits": 209,
+      "attempts": 384
+    },
+    {
+      "library": "lua",
+      "discovery": "hint-free",
+      "row": "same arch, same build",
+      "top_hits": 92,
+      "attempts": 96
+    },
+    {
+      "library": "lua",
+      "discovery": "hinted",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 38,
+      "attempts": 68
+    },
+    {
+      "library": "lua",
+      "discovery": "hinted",
+      "row": "other arch, other compiler",
+      "top_hits": 122,
+      "attempts": 288
+    },
+    {
+      "library": "lua",
+      "discovery": "hinted",
+      "row": "other arch, other optimization level",
+      "top_hits": 421,
+      "attempts": 1152
+    },
+    {
+      "library": "lua",
+      "discovery": "hinted",
+      "row": "other arch, same build settings",
+      "top_hits": 145,
+      "attempts": 288
+    },
+    {
+      "library": "lua",
+      "discovery": "hinted",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 54,
+      "attempts": 96
+    },
+    {
+      "library": "lua",
+      "discovery": "hinted",
+      "row": "same arch, other optimization level",
+      "top_hits": 177,
+      "attempts": 384
+    },
+    {
+      "library": "lua",
+      "discovery": "hinted",
+      "row": "same arch, same build",
+      "top_hits": 77,
+      "attempts": 96
+    },
+    {
+      "library": "lz4",
+      "discovery": "hint-free",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 26,
+      "attempts": 76
+    },
+    {
+      "library": "lz4",
+      "discovery": "hint-free",
+      "row": "other arch, other compiler",
+      "top_hits": 66,
+      "attempts": 288
+    },
+    {
+      "library": "lz4",
+      "discovery": "hint-free",
+      "row": "other arch, other optimization level",
+      "top_hits": 255,
+      "attempts": 1152
+    },
+    {
+      "library": "lz4",
+      "discovery": "hint-free",
+      "row": "other arch, same build settings",
+      "top_hits": 88,
+      "attempts": 288
+    },
+    {
+      "library": "lz4",
+      "discovery": "hint-free",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 28,
+      "attempts": 96
+    },
+    {
+      "library": "lz4",
+      "discovery": "hint-free",
+      "row": "same arch, other optimization level",
+      "top_hits": 113,
+      "attempts": 384
+    },
+    {
+      "library": "lz4",
+      "discovery": "hint-free",
+      "row": "same arch, same build",
+      "top_hits": 68,
+      "attempts": 96
+    },
+    {
+      "library": "lz4",
+      "discovery": "hinted",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 37,
+      "attempts": 76
+    },
+    {
+      "library": "lz4",
+      "discovery": "hinted",
+      "row": "other arch, other compiler",
+      "top_hits": 91,
+      "attempts": 288
+    },
+    {
+      "library": "lz4",
+      "discovery": "hinted",
+      "row": "other arch, other optimization level",
+      "top_hits": 347,
+      "attempts": 1152
+    },
+    {
+      "library": "lz4",
+      "discovery": "hinted",
+      "row": "other arch, same build settings",
+      "top_hits": 110,
+      "attempts": 288
+    },
+    {
+      "library": "lz4",
+      "discovery": "hinted",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 36,
+      "attempts": 96
+    },
+    {
+      "library": "lz4",
+      "discovery": "hinted",
+      "row": "same arch, other optimization level",
+      "top_hits": 151,
+      "attempts": 384
+    },
+    {
+      "library": "lz4",
+      "discovery": "hinted",
+      "row": "same arch, same build",
+      "top_hits": 68,
+      "attempts": 96
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hint-free",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 21,
+      "attempts": 88
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hint-free",
+      "row": "other arch, other compiler",
+      "top_hits": 21,
+      "attempts": 288
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hint-free",
+      "row": "other arch, other optimization level",
+      "top_hits": 69,
+      "attempts": 1152
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hint-free",
+      "row": "other arch, same build settings",
+      "top_hits": 89,
+      "attempts": 288
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hint-free",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 13,
+      "attempts": 96
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hint-free",
+      "row": "same arch, other optimization level",
+      "top_hits": 41,
+      "attempts": 384
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hint-free",
+      "row": "same arch, same build",
+      "top_hits": 65,
+      "attempts": 96
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hinted",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 3,
+      "attempts": 88
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hinted",
+      "row": "other arch, other compiler",
+      "top_hits": 8,
+      "attempts": 288
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hinted",
+      "row": "other arch, other optimization level",
+      "top_hits": 19,
+      "attempts": 1152
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hinted",
+      "row": "other arch, same build settings",
+      "top_hits": 9,
+      "attempts": 288
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hinted",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 6,
+      "attempts": 96
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hinted",
+      "row": "same arch, other optimization level",
+      "top_hits": 11,
+      "attempts": 384
+    },
+    {
+      "library": "sqlite",
+      "discovery": "hinted",
+      "row": "same arch, same build",
+      "top_hits": 12,
+      "attempts": 96
+    },
+    {
+      "library": "zlib",
+      "discovery": "hint-free",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 9,
+      "attempts": 76
+    },
+    {
+      "library": "zlib",
+      "discovery": "hint-free",
+      "row": "other arch, other compiler",
+      "top_hits": 11,
+      "attempts": 288
+    },
+    {
+      "library": "zlib",
+      "discovery": "hint-free",
+      "row": "other arch, other optimization level",
+      "top_hits": 24,
+      "attempts": 1152
+    },
+    {
+      "library": "zlib",
+      "discovery": "hint-free",
+      "row": "other arch, same build settings",
+      "top_hits": 28,
+      "attempts": 288
+    },
+    {
+      "library": "zlib",
+      "discovery": "hint-free",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 7,
+      "attempts": 96
+    },
+    {
+      "library": "zlib",
+      "discovery": "hint-free",
+      "row": "same arch, other optimization level",
+      "top_hits": 13,
+      "attempts": 384
+    },
+    {
+      "library": "zlib",
+      "discovery": "hint-free",
+      "row": "same arch, same build",
+      "top_hits": 71,
+      "attempts": 96
+    },
+    {
+      "library": "zlib",
+      "discovery": "hinted",
+      "row": "merged x64+arm64, held-out arch, same level",
+      "top_hits": 45,
+      "attempts": 76
+    },
+    {
+      "library": "zlib",
+      "discovery": "hinted",
+      "row": "other arch, other compiler",
+      "top_hits": 92,
+      "attempts": 288
+    },
+    {
+      "library": "zlib",
+      "discovery": "hinted",
+      "row": "other arch, other optimization level",
+      "top_hits": 350,
+      "attempts": 1152
+    },
+    {
+      "library": "zlib",
+      "discovery": "hinted",
+      "row": "other arch, same build settings",
+      "top_hits": 125,
+      "attempts": 288
+    },
+    {
+      "library": "zlib",
+      "discovery": "hinted",
+      "row": "same arch, other compiler, same level",
+      "top_hits": 34,
+      "attempts": 96
+    },
+    {
+      "library": "zlib",
+      "discovery": "hinted",
+      "row": "same arch, other optimization level",
+      "top_hits": 124,
+      "attempts": 384
+    },
+    {
+      "library": "zlib",
+      "discovery": "hinted",
+      "row": "same arch, same build",
+      "top_hits": 72,
+      "attempts": 96
+    }
+  ],
+  "cost": {
+    "threads": 8,
+    "phases": [
+      {
+        "phase": "load",
+        "millis": 911,
+        "peak_memory_bytes": 116092928
+      },
+      {
+        "phase": "indexes",
+        "millis": 31510,
+        "peak_memory_bytes": 359284736
+      },
+      {
+        "phase": "samples",
+        "millis": 5540,
+        "peak_memory_bytes": 500264960
+      },
+      {
+        "phase": "merge",
+        "millis": 1725,
+        "peak_memory_bytes": 505032704
+      },
+      {
+        "phase": "recall",
+        "millis": 29967,
+        "peak_memory_bytes": 912773120
+      },
+      {
+        "phase": "false positives",
+        "millis": 33816,
+        "peak_memory_bytes": 973541376
+      },
+      {
+        "phase": "joint",
+        "millis": 30055,
+        "peak_memory_bytes": 974950400
+      }
+    ],
+    "total_millis": 133527,
+    "peak_memory_bytes": 974950400
+  }
 }
