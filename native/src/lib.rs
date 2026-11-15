@@ -20,6 +20,7 @@ pub mod features;
 pub mod generate;
 pub mod joint;
 pub mod matcher;
+pub mod memory;
 pub mod merge;
 pub mod normalize;
 pub mod proc_win;

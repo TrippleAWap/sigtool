@@ -153,6 +153,28 @@ impl IdentifiedCell {
     }
 }
 
+/// Wall time of one bench phase and the process's peak memory at its end.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseCost {
+    pub phase: String,
+    pub millis: u64,
+    /// Peak resident memory of the whole run up to the end of this phase;
+    /// `None` where the OS does not report it.
+    pub peak_memory_bytes: Option<u64>,
+}
+
+/// What a bench run cost (G5). Machine-dependent, so [`compare`] never gates
+/// on it; it is reported until M8 measures enough runs to set gates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    /// Worker threads the scans were spread over.
+    pub threads: usize,
+    /// In execution order.
+    pub phases: Vec<PhaseCost>,
+    pub total_millis: u64,
+    pub peak_memory_bytes: Option<u64>,
+}
+
 /// The compact, reviewable metrics document (also the baseline format).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchReport {
@@ -187,6 +209,9 @@ pub struct BenchReport {
     /// Identified precision and abstention per discovery mode (G3).
     #[serde(default)]
     pub identified: Vec<IdentifiedCell>,
+    /// Wall time and peak memory per phase; informational, never compared.
+    #[serde(default)]
+    pub cost: Option<Cost>,
 }
 
 /// One generated signature and where it came from.
@@ -401,7 +426,7 @@ pub struct BenchOptions {
 pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, String> {
     let arches = &options.arches;
     let max_functions = options.max_functions;
-    let clock = std::time::Instant::now();
+    let mut phases = Phases::start();
     let ground_truth_path = corpus.join("ground_truth.json");
     let text = std::fs::read_to_string(&ground_truth_path).map_err(|error| {
         format!(
@@ -428,7 +453,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         return Err(format!("no corpus binaries under {}", corpus.display()));
     }
 
-    phase(&clock, "load");
+    phases.done("load");
     // Build every image's indexes up front, one image per worker. Built
     // lazily, jobs for the same image are adjacent, so every worker blocked
     // on one OnceLock while a single thread built it.
@@ -444,7 +469,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             }
         }
     });
-    phase(&clock, "indexes");
+    phases.done("indexes");
     // -- single-arch samples ------------------------------------------------
     let jobs: Vec<(usize, String, u64)> = targets
         .iter()
@@ -485,7 +510,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let refused = generated.iter().filter(|sample| sample.is_none()).count();
     let samples: Vec<Sample> = generated.into_iter().flatten().collect();
 
-    phase(&clock, "samples");
+    phases.done("samples");
     // -- merged samples -----------------------------------------------------
     let mut merge_jobs: Vec<(String, String, String, usize, u64, usize, u64)> = Vec::new();
     let find = |arch: &str, file: &str, opt: &str| {
@@ -564,7 +589,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             .or_default() += 1;
     }
 
-    phase(&clock, "merge");
+    phases.done("merge");
     // -- recall -------------------------------------------------------------
     // (sample index, target index, hints): one scan each.
     let mut recall_jobs: Vec<(usize, usize, bool)> = Vec::new();
@@ -689,7 +714,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         )
         .collect();
 
-    phase(&clock, "recall");
+    phases.done("recall");
     // -- false positives ----------------------------------------------------
     // Corpus FP: other source files of the same arch (any arch for merged).
     let corpus_targets = |sample: &Sample| -> Vec<&Target> {
@@ -760,14 +785,14 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let any_false_positives = false_positive_cells(&all, &corpus_counts, None);
     let any_negative_false_positives = false_positive_cells(&all, &negative_counts, None);
 
-    phase(&clock, "false positives");
+    phases.done("false positives");
     let (joint, joint_false_positives) = if options.joint {
         measure_joint(&targets)
     } else {
         (Vec::new(), Vec::new())
     };
     if options.joint {
-        phase(&clock, "joint");
+        phases.done("joint");
     }
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
@@ -785,6 +810,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         joint,
         joint_false_positives,
         identified: answers.into_values().collect(),
+        cost: Some(phases.finish()),
     })
 }
 
@@ -1472,14 +1498,74 @@ pub fn render(report: &BenchReport) -> String {
             );
         }
     }
+    if let Some(cost) = &report.cost {
+        let memory = |bytes: Option<u64>| {
+            bytes.map_or("n/a".to_string(), |bytes| {
+                format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+            })
+        };
+        let _ = writeln!(
+            text,
+            "\ncost (G5, informational, not gated; {} threads): total {:.1} s, peak memory {}",
+            cost.threads,
+            cost.total_millis as f64 / 1000.0,
+            memory(cost.peak_memory_bytes)
+        );
+        for phase in &cost.phases {
+            let _ = writeln!(
+                text,
+                "  {}: {:.1} s, peak so far {}",
+                phase.phase,
+                phase.millis as f64 / 1000.0,
+                memory(phase.peak_memory_bytes)
+            );
+        }
+    }
     text
 }
 
-/// Phase timing on stderr with `SIGTOOL_BENCH_PROGRESS` set.
-fn phase(clock: &std::time::Instant, done: &str) {
-    if std::env::var_os("SIGTOOL_BENCH_PROGRESS").is_some() {
-        eprintln!("bench: {done} done at {:.1?}", clock.elapsed());
+/// Per-phase wall time and peak memory, also printed on stderr with
+/// `SIGTOOL_BENCH_PROGRESS` set.
+struct Phases {
+    clock: std::time::Instant,
+    last: std::time::Duration,
+    phases: Vec<PhaseCost>,
+}
+
+impl Phases {
+    fn start() -> Phases {
+        Phases {
+            clock: std::time::Instant::now(),
+            last: std::time::Duration::ZERO,
+            phases: Vec::new(),
+        }
     }
+
+    fn done(&mut self, phase: &str) {
+        let now = self.clock.elapsed();
+        if std::env::var_os("SIGTOOL_BENCH_PROGRESS").is_some() {
+            eprintln!("bench: {phase} done at {now:.1?}");
+        }
+        self.phases.push(PhaseCost {
+            phase: phase.to_string(),
+            millis: millis(now - self.last),
+            peak_memory_bytes: crate::memory::peak_memory_bytes(),
+        });
+        self.last = now;
+    }
+
+    fn finish(self) -> Cost {
+        Cost {
+            threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+            phases: self.phases,
+            total_millis: millis(self.clock.elapsed()),
+            peak_memory_bytes: crate::memory::peak_memory_bytes(),
+        }
+    }
+}
+
+fn millis(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Default corpus location relative to the repository root.
@@ -1526,5 +1612,25 @@ mod tests {
         assert_eq!(failures.len(), 2, "{failures:?}");
         assert!(failures[0].starts_with("identified precision hint-free"));
         assert!(failures[1].starts_with("abstention hint-free"));
+    }
+
+    #[test]
+    fn cost_is_never_compared() {
+        let cost = |millis: u64, bytes: u64| Cost {
+            threads: 8,
+            phases: vec![PhaseCost {
+                phase: "load".to_string(),
+                millis,
+                peak_memory_bytes: Some(bytes),
+            }],
+            total_millis: millis,
+            peak_memory_bytes: Some(bytes),
+        };
+        let mut baseline = old_baseline();
+        assert!(baseline.cost.is_none());
+        baseline.cost = Some(cost(1, 1));
+        let mut current = baseline.clone();
+        current.cost = Some(cost(1_000_000, 1 << 40));
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
     }
 }
