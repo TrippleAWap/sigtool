@@ -13,15 +13,26 @@ thread_local! {
     static IN_WORKER: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Worker count: `SIGTOOL_THREADS` when set (1 runs everything on the
+/// calling thread, for determinism checks), else every core.
+pub fn threads() -> usize {
+    std::env::var("SIGTOOL_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|threads| *threads > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        })
+}
+
 /// Run `job(i)` for every `i < count` on all cores; results in index order.
 pub fn map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, job: F) -> Vec<T> {
     let threads = if IN_WORKER.with(Cell::get) {
         1
     } else {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .min(count)
+        threads().min(count)
     };
     if threads <= 1 {
         return (0..count).map(job).collect();
@@ -56,7 +67,7 @@ pub fn join<A: Send, B: Send>(
     left: impl FnOnce() -> A + Send,
     right: impl FnOnce() -> B + Send,
 ) -> (A, B) {
-    if IN_WORKER.with(Cell::get) {
+    if IN_WORKER.with(Cell::get) || threads() == 1 {
         return (left(), right());
     }
     std::thread::scope(|scope| {
