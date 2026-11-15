@@ -494,7 +494,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         let addr = raw.ip();
         let size = raw.len();
 
-        if is_x86_ignored(&mnemonic) || x86_is_hotpatch(&mnemonic, &operands) {
+        if is_x86_ignored(mnemonic) || x86_is_hotpatch(mnemonic, &operands) {
             // Multi-byte NOPs and `int3` are alignment filler; `endbr64` and the
             // `mov edi, edi` hot-patch mark a real entry and keep their address.
             return if mnemonic == "nop" || mnemonic == "int3" {
@@ -592,15 +592,15 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             {
                 target = Some(*value);
             }
-        } else if is_x86_trap(&mnemonic) {
+        } else if is_x86_trap(mnemonic) {
             kind = Kind::Trap;
-        } else if is_x86_ret(&mnemonic) {
+        } else if is_x86_ret(mnemonic) {
             kind = Kind::Ret;
         }
 
         for operand in &operands {
             if let Operand::Imm { value, width } = *operand {
-                if self.x86_const_candidate(&mnemonic, &operands) {
+                if self.x86_const_candidate(mnemonic, &operands) {
                     consts.push(canonical_const(value, width));
                 }
             }
@@ -609,7 +609,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         Insn {
             addr,
             size,
-            op: self.x86_class(raw, &mnemonic, &operands),
+            op: self.x86_class(raw, mnemonic, &operands),
             kind,
             consts: sorted_unique(consts),
             refs,
@@ -694,20 +694,40 @@ pub(crate) fn sorted_unique(mut values: Vec<u64>) -> Vec<u64> {
     values
 }
 
-fn mnemonic_name(mnemonic: Mnemonic) -> String {
-    format!("{mnemonic:?}").to_ascii_lowercase()
+/// Lowercase mnemonic spelling, from a table built once: formatting the
+/// enum's `Debug` name per decoded instruction was a measurable share of a
+/// whole-image x64 sweep.
+fn mnemonic_name(mnemonic: Mnemonic) -> &'static str {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        Mnemonic::values()
+            .map(|value| format!("{value:?}").to_ascii_lowercase())
+            .collect()
+    })[mnemonic as usize]
+        .as_str()
 }
 
-fn register_name(register: Register) -> String {
-    if register == Register::None {
-        return String::new();
-    }
-    if register.is_st() {
-        // Capstone renders x87 registers as `st(0)`; keep that spelling so the
-        // vector-register prefix rule is identical across decoders.
-        return format!("st({})", register.number());
-    }
-    format!("{register:?}").to_ascii_lowercase()
+/// Lowercase register spelling, from a table built once (see
+/// [`mnemonic_name`]).
+fn register_name(register: Register) -> &'static str {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        Register::values()
+            .map(|value| {
+                if value == Register::None {
+                    String::new()
+                } else if value.is_st() {
+                    // Capstone renders x87 registers as `st(0)`; keep that
+                    // spelling so the vector-register prefix rule is identical
+                    // across decoders.
+                    format!("st({})", value.number())
+                } else {
+                    format!("{value:?}").to_ascii_lowercase()
+                }
+            })
+            .collect()
+    })[register as usize]
+        .as_str()
 }
 
 fn collect_operands(raw: &Instruction) -> Vec<Operand> {
@@ -790,10 +810,10 @@ fn x86_is_hotpatch(mnemonic: &str, operands: &[Operand]) -> bool {
 
 fn x86_touches_stack_pointer(operands: &[Operand]) -> bool {
     operands.iter().any(|operand| match *operand {
-        Operand::Reg(register) => X86_STACK_REGS.contains(&register_name(register).as_str()),
+        Operand::Reg(register) => X86_STACK_REGS.contains(&register_name(register)),
         Operand::Mem { base, index, .. } => {
-            X86_STACK_REGS.contains(&register_name(base).as_str())
-                || X86_STACK_REGS.contains(&register_name(index).as_str())
+            X86_STACK_REGS.contains(&register_name(base))
+                || X86_STACK_REGS.contains(&register_name(index))
         }
         _ => false,
     })
@@ -822,9 +842,7 @@ fn x86_memory_class(operands: &[Operand]) -> Option<OpClass> {
         {
             let base_name = register_name(base);
             let index_name = register_name(idx);
-            if X86_STACK_REGS.contains(&base_name.as_str())
-                || X86_STACK_REGS.contains(&index_name.as_str())
-            {
+            if X86_STACK_REGS.contains(&base_name) || X86_STACK_REGS.contains(&index_name) {
                 return Some(OpClass::Stack);
             }
             return Some(if index == 0 {
