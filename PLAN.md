@@ -323,7 +323,7 @@ documented.
 
 ## 8. Status
 
-As of 2026-11-14, `native-first` branch, spec v3.
+As of 2026-11-15, `native-first` branch, spec v3.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
   same build 0.671, other arch 0.326, other arch other compiler 0.263.
@@ -333,4 +333,27 @@ As of 2026-11-14, `native-first` branch, spec v3.
 - What moved the numbers, in order, with measurements:
   [`docs/history/PLAN-v0.5.md`](docs/history/PLAN-v0.5.md) §13 and
   [`spec/CHANGELOG.md`](spec/CHANGELOG.md).
-- Next: M8.
+- M8 (2026-11-15):
+  - Bench reports identified precision and abstention, per-phase cost and
+    peak memory, and top-1 per library (gated at >= 20 attempts); both
+    baselines carry them. Identified precision, tuning corpus: hint-free
+    0.848, hinted 0.687 (target >= 0.98).
+  - Held-out corpus (zstd, libyaml, mbedtls) built and measured once.
+    Hint-free top-1, held-out vs tuning: same build 0.889 / 0.810, other
+    compiler 0.372 / 0.304, cross opt 0.370 / 0.249, other arch 0.395 /
+    0.300, other arch other compiler 0.286 / 0.210, other arch cross opt
+    0.288 / 0.181, merged held-out arch 0.389 / 0.392. Hint-free FP 0.057 /
+    0.163; identified precision hint-free 0.897, hinted 0.883. No row is
+    worse on held-out by more than 0.003.
+  - Cost: ARM32/Thumb blocks decoded from a growing prefix with one cached
+    Capstone handle (whole-image index on stripped Thumb sqlite 77 s ->
+    2.8 s), x64 names from static tables, indexes and multi-signature scans
+    in parallel. `gen` on stripped gcc-O2 sqlite: x64 0.28 s, Thumb 1.83 s
+    (G5 <= 2 s). Full real bench with `--joint`: ~130 s on 8 cores, peak
+    0.93 GB (G5 <= 30 min).
+  - Determinism: `similarity` summed weights in `HashMap` order, so tied
+    lookalikes ranked differently between runs; fixed, and two full real
+    benches now give identical reports.
+  - Open for M8 exit: the weekly workflow (`real-bench.yml`) has not run
+    yet; the 150-signature hint-free scan cost (G5) is not measured.
+- Next: finish M8, then M9.

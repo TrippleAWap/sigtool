@@ -76,6 +76,8 @@ cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --d
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --discovery hint-free \
     --arch x64 --arch arm64 --no-fp                         # quick hint-free slice
 cargo run --release --example profile_scan                  # scan cost
+cargo run --release --example profile_gen -- IMAGE ADDR [TARGET]   # gen / hint-free phase timings
+SIGTOOL_THREADS=1 cargo run --release -- bench ...          # one thread (determinism checks)
 
 python corpus/build.py              # toy corpus + ground truth (clang + ld.lld + llvm-readelf)
 python corpus/real.py               # real libraries: clang on the host, gcc via corpus/docker
