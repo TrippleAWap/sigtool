@@ -44,3 +44,24 @@ cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-fu
   relocations, code).
 * `build-real/ground_truth.json` lists up to 150 functions per library, with
   `path`, `stripped`, `functions`, `arch`, and `library` keys.
+* `.github/workflows/real-bench.yml` rebuilds this corpus (GCC image
+  included) and runs the `--joint` bench against the baseline weekly.
+
+## Held-out corpus (`build-heldout/`)
+
+```bash
+python corpus/real.py --heldout                   # same matrix, held-out libraries
+cd native && cargo run --release -- bench --corpus ../corpus/build-heldout --max-functions 4 --joint
+```
+
+* zstd 1.5.6, libyaml 0.2.5, and mbedtls 3.6.2, pinned by sha256 in
+  `real.py` (`HELDOUT`), built with exactly the tuning corpus's matrix
+  (clang and gcc, 4 arches, `-O0/-O2/-Os`, stripped copies) into the same
+  layout and ground-truth schema.
+* Never used for tuning (PLAN.md §4, §5): no rule, weight, or threshold is
+  chosen by looking at these numbers. They are measured at milestone exits,
+  recorded in PLAN.md §8, and are not a CI gate (the weekly job does not
+  build them either).
+* zstd builds with `ZSTD_DISABLE_ASM` so every arch compiles the same C
+  Huffman decoder; mbedtls leaves out `net_sockets.c` (BSD sockets are OS
+  glue, like SQLite's VFS).

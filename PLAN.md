@@ -190,7 +190,7 @@ reason.
 |---|---|---|---|
 | Toy | Freestanding sources, clang only, 4 arches × 3 levels | CI gate, quick checks | `corpus/build`, CI |
 | Real (tuning) | zlib, lz4, cJSON, Lua, SQLite; clang and gcc; 4 arches × 3 levels; stripped copies | Every change (§4 rule 1) | `corpus/build-real` |
-| Held-out (M8) | 3 libraries never used for tuning, same matrix | Milestone exits only | `corpus/build-heldout` |
+| Held-out | zstd 1.5.6, libyaml 0.2.5, mbedtls 3.6.2; never used for tuning; same matrix (`real.py --heldout`) | Milestone exits only | `corpus/build-heldout` |
 | Negative | Unrelated purpose-written code | False positives | `corpus/negative` |
 
 Pinned toolchains: LLVM 22.1.5 (CI installs the exact release) and GCC 12
@@ -214,6 +214,8 @@ baselines.
   the toy bench against its baseline with tolerance 0.05.
 - Before merging matcher, feature, or normalization work: the real corpus
   with `--joint` against `tests/baseline/native-real-bench.json`.
+- Weekly (`.github/workflows/real-bench.yml`): the real corpus built with
+  both compilers and benched with `--joint` against its baseline.
 - Milestone exit: the held-out corpus, recorded in §8.
 
 ## 6. Milestones

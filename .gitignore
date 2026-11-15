@@ -18,3 +18,4 @@ native/target/
 # real-library corpus: fetched sources and builds
 corpus/third_party/
 corpus/build-real/
+corpus/build-heldout/
