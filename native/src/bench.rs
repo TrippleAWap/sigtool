@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::elf::FileSource;
 use crate::generate::generate_in;
-use crate::matcher::{rank_key, scan_in, Match, ScanContext};
+use crate::matcher::{identified, rank_key, scan_in, Match, ScanContext};
 use crate::merge::{merge_in, MergeSample};
 use crate::sigfile::Signature;
 use crate::spec::SPEC_VERSION;
@@ -121,6 +121,107 @@ pub struct JointFalsePositiveCell {
     pub joint_with_hits: usize,
 }
 
+/// Top-1 answers labelled `identified` in one discovery mode (G3): the
+/// answers a user is told to trust, in images with and without the function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentifiedCell {
+    pub discovery: String,
+    /// Recall scans (the image holds the function) whose first match is
+    /// identified.
+    pub answers: usize,
+    /// Of those, answers at the expected start and strictly first; a tie for
+    /// first is not correct (PLAN.md rule 5), so precision is a lower bound.
+    pub correct: usize,
+    /// False-positive scans: images that do not hold the function.
+    pub unrelated_scans: usize,
+    /// False-positive scans whose first match is identified: always wrong.
+    pub unrelated_answers: usize,
+}
+
+impl IdentifiedCell {
+    /// Correct identified answers over every identified answer, including
+    /// those in images without the function.
+    pub fn precision(&self) -> f64 {
+        ratio(self.correct, self.answers + self.unrelated_answers)
+    }
+    /// Scans of images without the function that give no identified answer.
+    pub fn abstention(&self) -> f64 {
+        ratio(
+            self.unrelated_scans - self.unrelated_answers,
+            self.unrelated_scans,
+        )
+    }
+}
+
+/// Top-1 recall of one library in one G1 row (PLAN.md §2), so one library
+/// cannot hide another's regression in the aggregate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryRecallCell {
+    pub library: String,
+    pub discovery: String,
+    pub row: String,
+    pub top_hits: usize,
+    pub attempts: usize,
+}
+
+impl LibraryRecallCell {
+    pub fn top_rate(&self) -> f64 {
+        ratio(self.top_hits, self.attempts)
+    }
+}
+
+/// Library cells are gated only when both runs made at least this many
+/// attempts. At 20 one flipped answer moves the rate by exactly the 0.05
+/// tolerance, which does not fail; smaller cells would fail on one flip, and
+/// a library-wide regression still shows in its larger rows and in the
+/// aggregate recall cells.
+pub const MIN_LIBRARY_ATTEMPTS: usize = 20;
+
+/// The G1 row (PLAN.md §2) a recall cell counts toward, from its
+/// `arch`/`source->target` label and builds; `None` for cells no row covers
+/// (merged signatures scanned in one of their own architectures, or at
+/// another level).
+fn g1_row(arch: &str, source_opt: &str, target_opt: &str) -> Option<&'static str> {
+    let same_build = source_opt == target_opt;
+    let same_level = level(source_opt) == level(target_opt);
+    if arch.starts_with(MERGED) {
+        let held_out = !MERGE_ARCHES
+            .iter()
+            .any(|own| arch == format!("{MERGED}->{own}"));
+        return (held_out && same_level).then_some("merged x64+arm64, held-out arch, same level");
+    }
+    Some(match (arch.contains("->"), same_build, same_level) {
+        (false, true, _) => "same arch, same build",
+        (false, false, true) => "same arch, other compiler, same level",
+        (false, false, false) => "same arch, other optimization level",
+        (true, true, _) => "other arch, same build settings",
+        (true, false, true) => "other arch, other compiler",
+        (true, false, false) => "other arch, other optimization level",
+    })
+}
+
+/// Wall time of one bench phase and the process's peak memory at its end.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseCost {
+    pub phase: String,
+    pub millis: u64,
+    /// Peak resident memory of the whole run up to the end of this phase;
+    /// `None` where the OS does not report it.
+    pub peak_memory_bytes: Option<u64>,
+}
+
+/// What a bench run cost (G5). Machine-dependent, so [`compare`] never gates
+/// on it; it is reported until M8 measures enough runs to set gates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    /// Worker threads the scans were spread over.
+    pub threads: usize,
+    /// In execution order.
+    pub phases: Vec<PhaseCost>,
+    pub total_millis: u64,
+    pub peak_memory_bytes: Option<u64>,
+}
+
 /// The compact, reviewable metrics document (also the baseline format).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchReport {
@@ -152,6 +253,15 @@ pub struct BenchReport {
     pub joint: Vec<JointCell>,
     #[serde(default)]
     pub joint_false_positives: Vec<JointFalsePositiveCell>,
+    /// Identified precision and abstention per discovery mode (G3).
+    #[serde(default)]
+    pub identified: Vec<IdentifiedCell>,
+    /// Top-1 recall per `(library, discovery, G1 row)`.
+    #[serde(default)]
+    pub library_recall: Vec<LibraryRecallCell>,
+    /// Wall time and peak memory per phase; informational, never compared.
+    #[serde(default)]
+    pub cost: Option<Cost>,
 }
 
 /// One generated signature and where it came from.
@@ -366,7 +476,7 @@ pub struct BenchOptions {
 pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, String> {
     let arches = &options.arches;
     let max_functions = options.max_functions;
-    let clock = std::time::Instant::now();
+    let mut phases = Phases::start();
     let ground_truth_path = corpus.join("ground_truth.json");
     let text = std::fs::read_to_string(&ground_truth_path).map_err(|error| {
         format!(
@@ -393,7 +503,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         return Err(format!("no corpus binaries under {}", corpus.display()));
     }
 
-    phase(&clock, "load");
+    phases.done("load");
     // Build every image's indexes up front, one image per worker. Built
     // lazily, jobs for the same image are adjacent, so every worker blocked
     // on one OnceLock while a single thread built it.
@@ -409,7 +519,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             }
         }
     });
-    phase(&clock, "indexes");
+    phases.done("indexes");
     // -- single-arch samples ------------------------------------------------
     let jobs: Vec<(usize, String, u64)> = targets
         .iter()
@@ -450,7 +560,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let refused = generated.iter().filter(|sample| sample.is_none()).count();
     let samples: Vec<Sample> = generated.into_iter().flatten().collect();
 
-    phase(&clock, "samples");
+    phases.done("samples");
     // -- merged samples -----------------------------------------------------
     let mut merge_jobs: Vec<(String, String, String, usize, u64, usize, u64)> = Vec::new();
     let find = |arch: &str, file: &str, opt: &str| {
@@ -529,7 +639,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             .or_default() += 1;
     }
 
-    phase(&clock, "merge");
+    phases.done("merge");
     // -- recall -------------------------------------------------------------
     // (sample index, target index, hints): one scan each.
     let mut recall_jobs: Vec<(usize, usize, bool)> = Vec::new();
@@ -558,20 +668,18 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         let matches = target.scan(&sample.signature, hints);
         let found = matches.iter().any(|m| m.address == expected);
         // Matches are sorted best first; a tie for first is ambiguous.
-        let top = matches.first().is_some_and(|m| m.address == expected)
-            && matches
-                .get(1)
-                .is_none_or(|next| rank_key(next) < rank_key(&matches[0]));
+        let top = top_is(&matches, expected);
+        let answer = matches.first().is_some_and(identified);
         let kept = if options.fp_report.is_some() && !hints {
             matches
         } else {
             Vec::new()
         };
-        (found, top, kept)
+        (found, top, kept, answer)
     });
     if let Some(path) = &options.fp_report {
         let mut out = String::new();
-        for ((s, t, hints), (_, _, matches)) in recall_jobs.iter().zip(&recall_hits) {
+        for ((s, t, hints), (_, _, matches, _)) in recall_jobs.iter().zip(&recall_hits) {
             if *hints {
                 continue;
             }
@@ -608,6 +716,8 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         std::fs::write(&recall_path, out).map_err(|error| format!("{error}"))?;
     }
     let mut cells: BTreeMap<CellKey, (usize, usize, usize)> = BTreeMap::new();
+    let mut answers: BTreeMap<&str, IdentifiedCell> = BTreeMap::new();
+    let mut libraries: BTreeMap<(String, &str, &str), (usize, usize)> = BTreeMap::new();
     for ((s, t, hints), hit) in recall_jobs.iter().zip(&recall_hits) {
         let sample = all[*s];
         let target = &targets[*t];
@@ -617,6 +727,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             format!("{}->{}", sample.arch, target.arch)
         };
         let discovery = if *hints { HINTED } else { HINT_FREE };
+        if let Some(row) = g1_row(&arch, &sample.opt, &target.opt) {
+            let cell = libraries
+                .entry((sample.source_file.clone(), discovery, row))
+                .or_default();
+            cell.0 += usize::from(hit.1);
+            cell.1 += 1;
+        }
         let cell = cells
             .entry((
                 arch,
@@ -631,6 +748,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         }
         if hit.1 {
             cell.1 += 1;
+        }
+        let answer = identified_cell(&mut answers, discovery);
+        if hit.3 {
+            answer.answers += 1;
+            if hit.1 {
+                answer.correct += 1;
+            }
         }
     }
     let recall = cells
@@ -648,7 +772,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         )
         .collect();
 
-    phase(&clock, "recall");
+    phases.done("recall");
     // -- false positives ----------------------------------------------------
     // Corpus FP: other source files of the same arch (any arch for merged).
     let corpus_targets = |sample: &Sample| -> Vec<&Target> {
@@ -673,10 +797,14 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let hint_free_fp =
         !options.skip_false_positives && options.discovery.as_deref() != Some(HINTED);
     let (corpus_counts, negative_counts) = if hinted_fp {
-        (
-            false_positive_counts(&all, corpus_targets, true),
-            false_positive_counts(&all, negative_targets, true),
-        )
+        let (corpus_counts, corpus_scans, corpus_answers) =
+            false_positive_counts(&all, corpus_targets, true);
+        let (negative_counts, negative_scans, negative_answers) =
+            false_positive_counts(&all, negative_targets, true);
+        let cell = identified_cell(&mut answers, HINTED);
+        cell.unrelated_scans += corpus_scans + negative_scans;
+        cell.unrelated_answers += corpus_answers + negative_answers;
+        (corpus_counts, negative_counts)
     } else {
         (vec![0; all.len()], vec![0; all.len()])
     };
@@ -697,8 +825,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             write_fp_report(path, &all, &hits)?;
         }
         let mut counts = vec![0usize; all.len()];
+        let cell = identified_cell(&mut answers, HINT_FREE);
         for (index, _, matches) in &hits {
             counts[*index] += matches.len();
+            cell.unrelated_scans += 1;
+            if matches.first().is_some_and(identified) {
+                cell.unrelated_answers += 1;
+            }
         }
         false_positive_cells(&all, &counts, None)
     } else {
@@ -710,14 +843,14 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let any_false_positives = false_positive_cells(&all, &corpus_counts, None);
     let any_negative_false_positives = false_positive_cells(&all, &negative_counts, None);
 
-    phase(&clock, "false positives");
+    phases.done("false positives");
     let (joint, joint_false_positives) = if options.joint {
         measure_joint(&targets)
     } else {
         (Vec::new(), Vec::new())
     };
     if options.joint {
-        phase(&clock, "joint");
+        phases.done("joint");
     }
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
@@ -734,6 +867,34 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         any_negative_false_positives,
         joint,
         joint_false_positives,
+        identified: answers.into_values().collect(),
+        library_recall: libraries
+            .into_iter()
+            .map(
+                |((library, discovery, row), (top_hits, attempts))| LibraryRecallCell {
+                    library,
+                    discovery: discovery.to_string(),
+                    row: row.to_string(),
+                    top_hits,
+                    attempts,
+                },
+            )
+            .collect(),
+        cost: Some(phases.finish()),
+    })
+}
+
+/// The [`IdentifiedCell`] of `discovery`, created empty on first use.
+fn identified_cell<'a>(
+    cells: &'a mut BTreeMap<&'static str, IdentifiedCell>,
+    discovery: &'static str,
+) -> &'a mut IdentifiedCell {
+    cells.entry(discovery).or_insert_with(|| IdentifiedCell {
+        discovery: discovery.to_string(),
+        answers: 0,
+        correct: 0,
+        unrelated_scans: 0,
+        unrelated_answers: 0,
     })
 }
 
@@ -835,8 +996,13 @@ fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveC
     (cells, false_positives)
 }
 
-/// Accepted matches per sample summed over the targets it must not match.
-fn false_positive_counts<'t, F>(samples: &[&Sample], targets_for: F, hints: bool) -> Vec<usize>
+/// Accepted matches per sample summed over the targets it must not match,
+/// plus the number of scans and of scans whose first match is identified.
+fn false_positive_counts<'t, F>(
+    samples: &[&Sample],
+    targets_for: F,
+    hints: bool,
+) -> (Vec<usize>, usize, usize)
 where
     F: Fn(&Sample) -> Vec<&'t Target> + Sync,
 {
@@ -847,13 +1013,16 @@ where
         .collect();
     let hits = parallel(jobs.len(), |job| {
         let (index, target) = jobs[job];
-        target.scan(&samples[index].signature, hints).len()
+        let matches = target.scan(&samples[index].signature, hints);
+        (matches.len(), matches.first().is_some_and(identified))
     });
     let mut per_sample = vec![0usize; samples.len()];
-    for ((index, _), count) in jobs.iter().zip(hits) {
+    let mut answers = 0;
+    for ((index, _), (count, answer)) in jobs.iter().zip(hits) {
         per_sample[*index] += count;
+        answers += usize::from(answer);
     }
-    per_sample
+    (per_sample, jobs.len(), answers)
 }
 
 /// Every accepted match per `(sample, target)` pair, for reporting.
@@ -1094,6 +1263,63 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
             }
         }
     }
+    // Baselines from before identified cells existed have none: not compared.
+    for cell in &baseline.identified {
+        let Some(now) = current
+            .identified
+            .iter()
+            .find(|c| c.discovery == cell.discovery)
+        else {
+            failures.push(format!("missing identified cell {}", cell.discovery));
+            continue;
+        };
+        // Precision counts unrelated answers only when the FP scans ran, so a
+        // `--no-fp` run is compared only with another `--no-fp` run.
+        let same_scans = (cell.unrelated_scans > 0) == (now.unrelated_scans > 0);
+        if same_scans && now.precision() + tolerance < cell.precision() {
+            failures.push(format!(
+                "identified precision {}: {:.3} < baseline {:.3} - {tolerance:.2}",
+                cell.discovery,
+                now.precision(),
+                cell.precision()
+            ));
+        }
+        if cell.unrelated_scans > 0
+            && now.unrelated_scans > 0
+            && now.abstention() + tolerance < cell.abstention()
+        {
+            failures.push(format!(
+                "abstention {}: {:.3} < baseline {:.3} - {tolerance:.2}",
+                cell.discovery,
+                now.abstention(),
+                cell.abstention()
+            ));
+        }
+    }
+    // Library cells: only where both runs have enough attempts for the
+    // tolerance to mean something (see `MIN_LIBRARY_ATTEMPTS`).
+    for cell in baseline
+        .library_recall
+        .iter()
+        .filter(|c| c.attempts >= MIN_LIBRARY_ATTEMPTS)
+    {
+        let key = (&cell.library, &cell.discovery, &cell.row);
+        let Some(now) = current
+            .library_recall
+            .iter()
+            .find(|c| (&c.library, &c.discovery, &c.row) == key)
+        else {
+            failures.push(format!("missing library recall cell {key:?}"));
+            continue;
+        };
+        if now.attempts >= MIN_LIBRARY_ATTEMPTS && now.top_rate() + tolerance < cell.top_rate() {
+            failures.push(format!(
+                "library top-1 recall {key:?}: {:.3} < baseline {:.3} - {tolerance:.2}",
+                now.top_rate(),
+                cell.top_rate()
+            ));
+        }
+    }
     failures
 }
 
@@ -1190,6 +1416,15 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
         let value = ratio(with, total);
         out.push((label.to_string(), value, ceiling, value <= ceiling));
     }
+    for cell in &report.identified {
+        let value = cell.precision();
+        out.push((
+            format!("identified precision, {}", cell.discovery),
+            value,
+            0.98,
+            value >= 0.98,
+        ));
+    }
     out
 }
 
@@ -1278,6 +1513,54 @@ pub fn render(report: &BenchReport) -> String {
             );
         }
     }
+    if !report.identified.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nidentified top-1 answers (precision: correct / all identified; \
+             abstention: images without the function)"
+        );
+    }
+    for cell in &report.identified {
+        let _ = writeln!(
+            text,
+            "  {}: precision {}/{} = {:.3} ({} wrong where the function is, {} where it is not); \
+             abstention {}/{} = {:.3}",
+            cell.discovery,
+            cell.correct,
+            cell.answers + cell.unrelated_answers,
+            cell.precision(),
+            cell.answers - cell.correct,
+            cell.unrelated_answers,
+            cell.unrelated_scans - cell.unrelated_answers,
+            cell.unrelated_scans,
+            cell.abstention()
+        );
+    }
+    for discovery in [HINTED, HINT_FREE] {
+        let cells: Vec<&LibraryRecallCell> = report
+            .library_recall
+            .iter()
+            .filter(|c| c.discovery == discovery)
+            .collect();
+        if cells.is_empty() {
+            continue;
+        }
+        let _ = writeln!(
+            text,
+            "\ntop-1 recall per library ({discovery}, G1 rows; gated at >= {MIN_LIBRARY_ATTEMPTS} attempts)"
+        );
+        for cell in cells {
+            let _ = writeln!(
+                text,
+                "  {} / {}: {}/{} = {:.3}",
+                cell.library,
+                cell.row,
+                cell.top_hits,
+                cell.attempts,
+                cell.top_rate()
+            );
+        }
+    }
     let _ = writeln!(text, "\nv1.0 goals (PLAN.md §2)");
     for (name, value, goal, met) in targets(report) {
         let _ = writeln!(
@@ -1334,17 +1617,183 @@ pub fn render(report: &BenchReport) -> String {
             );
         }
     }
+    if let Some(cost) = &report.cost {
+        let memory = |bytes: Option<u64>| {
+            bytes.map_or("n/a".to_string(), |bytes| {
+                format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+            })
+        };
+        let _ = writeln!(
+            text,
+            "\ncost (G5, informational, not gated; {} threads): total {:.1} s, peak memory {}",
+            cost.threads,
+            cost.total_millis as f64 / 1000.0,
+            memory(cost.peak_memory_bytes)
+        );
+        for phase in &cost.phases {
+            let _ = writeln!(
+                text,
+                "  {}: {:.1} s, peak so far {}",
+                phase.phase,
+                phase.millis as f64 / 1000.0,
+                memory(phase.peak_memory_bytes)
+            );
+        }
+    }
     text
 }
 
-/// Phase timing on stderr with `SIGTOOL_BENCH_PROGRESS` set.
-fn phase(clock: &std::time::Instant, done: &str) {
-    if std::env::var_os("SIGTOOL_BENCH_PROGRESS").is_some() {
-        eprintln!("bench: {done} done at {:.1?}", clock.elapsed());
+/// Per-phase wall time and peak memory, also printed on stderr with
+/// `SIGTOOL_BENCH_PROGRESS` set.
+struct Phases {
+    clock: std::time::Instant,
+    last: std::time::Duration,
+    phases: Vec<PhaseCost>,
+}
+
+impl Phases {
+    fn start() -> Phases {
+        Phases {
+            clock: std::time::Instant::now(),
+            last: std::time::Duration::ZERO,
+            phases: Vec::new(),
+        }
     }
+
+    fn done(&mut self, phase: &str) {
+        let now = self.clock.elapsed();
+        if std::env::var_os("SIGTOOL_BENCH_PROGRESS").is_some() {
+            eprintln!("bench: {phase} done at {now:.1?}");
+        }
+        self.phases.push(PhaseCost {
+            phase: phase.to_string(),
+            millis: millis(now - self.last),
+            peak_memory_bytes: crate::memory::peak_memory_bytes(),
+        });
+        self.last = now;
+    }
+
+    fn finish(self) -> Cost {
+        Cost {
+            threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+            phases: self.phases,
+            total_millis: millis(self.clock.elapsed()),
+            peak_memory_bytes: crate::memory::peak_memory_bytes(),
+        }
+    }
+}
+
+fn millis(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Default corpus location relative to the repository root.
 pub fn default_corpus(repo_root: &Path) -> PathBuf {
     repo_root.join("corpus").join("build")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed toy baseline predates the M8 keys.
+    fn old_baseline() -> BenchReport {
+        serde_json::from_str(include_str!("../../tests/baseline/native-bench.json"))
+            .expect("old baseline loads")
+    }
+
+    fn answers(discovery: &str, correct: usize, unrelated_answers: usize) -> IdentifiedCell {
+        IdentifiedCell {
+            discovery: discovery.to_string(),
+            answers: 100,
+            correct,
+            unrelated_scans: 100,
+            unrelated_answers,
+        }
+    }
+
+    #[test]
+    fn missing_identified_cells_are_not_compared() {
+        let baseline = old_baseline();
+        assert!(baseline.identified.is_empty());
+        let mut current = baseline.clone();
+        current.identified = vec![answers(HINT_FREE, 10, 90)];
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
+    }
+
+    #[test]
+    fn identified_precision_and_abstention_are_gated() {
+        let mut baseline = old_baseline();
+        baseline.identified = vec![answers(HINT_FREE, 100, 0)];
+        let mut current = baseline.clone();
+        current.identified = vec![answers(HINT_FREE, 90, 20)];
+        let failures = compare(&baseline, &current, DEFAULT_TOLERANCE);
+        assert_eq!(failures.len(), 2, "{failures:?}");
+        assert!(failures[0].starts_with("identified precision hint-free"));
+        assert!(failures[1].starts_with("abstention hint-free"));
+    }
+
+    fn library(row: &str, top_hits: usize, attempts: usize) -> LibraryRecallCell {
+        LibraryRecallCell {
+            library: "zlib".to_string(),
+            discovery: HINT_FREE.to_string(),
+            row: row.to_string(),
+            top_hits,
+            attempts,
+        }
+    }
+
+    #[test]
+    fn library_cells_are_gated_only_when_large_enough() {
+        let mut baseline = old_baseline();
+        assert!(baseline.library_recall.is_empty());
+        let mut current = baseline.clone();
+        current.library_recall = vec![library("small", 0, 19)];
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
+
+        baseline.library_recall = vec![library("small", 19, 19), library("large", 20, 20)];
+        current.library_recall = vec![library("small", 0, 19), library("large", 19, 20)];
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
+        current.library_recall[1].top_hits = 18;
+        let failures = compare(&baseline, &current, DEFAULT_TOLERANCE);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].starts_with("library top-1 recall"));
+    }
+
+    #[test]
+    fn g1_rows_follow_the_plan() {
+        assert_eq!(
+            g1_row("x64", "clang-O2", "clang-O2"),
+            Some("same arch, same build")
+        );
+        assert_eq!(
+            g1_row("x64->arm64", "clang-O2", "gcc-O2"),
+            Some("other arch, other compiler")
+        );
+        assert_eq!(
+            g1_row("merged->arm32", "O2", "O2"),
+            Some("merged x64+arm64, held-out arch, same level")
+        );
+        assert_eq!(g1_row("merged->x64", "O2", "O2"), None);
+    }
+
+    #[test]
+    fn cost_is_never_compared() {
+        let cost = |millis: u64, bytes: u64| Cost {
+            threads: 8,
+            phases: vec![PhaseCost {
+                phase: "load".to_string(),
+                millis,
+                peak_memory_bytes: Some(bytes),
+            }],
+            total_millis: millis,
+            peak_memory_bytes: Some(bytes),
+        };
+        let mut baseline = old_baseline();
+        assert!(baseline.cost.is_none());
+        baseline.cost = Some(cost(1, 1));
+        let mut current = baseline.clone();
+        current.cost = Some(cost(1_000_000, 1 << 40));
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
+    }
 }

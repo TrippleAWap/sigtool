@@ -49,7 +49,11 @@ fn bench_report_is_deterministic() {
         return;
     }
     let arches = ["x64".to_string()];
-    let first = bench::run(&corpus, &arches).expect("first run");
-    let second = bench::run(&corpus, &arches).expect("second run");
+    let mut first = bench::run(&corpus, &arches).expect("first run");
+    let mut second = bench::run(&corpus, &arches).expect("second run");
+    // Wall time and memory are measured, not computed; everything else must match.
+    assert!(first.cost.is_some() && second.cost.is_some());
+    first.cost = None;
+    second.cost = None;
     assert_eq!(first, second, "parallel bench must be deterministic");
 }
