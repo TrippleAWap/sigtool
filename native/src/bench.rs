@@ -13,8 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -399,30 +398,10 @@ fn load_targets(
 
 /// Run `job(i)` for every `i < count` on all cores; results keep index order.
 fn parallel<T: Send, F: Fn(usize) -> T + Sync>(count: usize, job: F) -> Vec<T> {
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(count.max(1));
-    let next = AtomicUsize::new(0);
-    let slots: Mutex<Vec<Option<T>>> = Mutex::new((0..count).map(|_| None).collect());
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                if index >= count {
-                    break;
-                }
-                let value = job(index);
-                slots.lock().expect("bench slots")[index] = Some(value);
-            });
-        }
-    });
-    slots
-        .into_inner()
-        .expect("bench slots")
-        .into_iter()
-        .map(|slot| slot.expect("every job ran"))
-        .collect()
+    // The shared pool marks its workers, so the library's own parallel
+    // phases (index build, frequencies) run sequentially inside a bench cell
+    // instead of oversubscribing every core per cell.
+    crate::parallel::map(count, job)
 }
 
 /// Keep the first `limit` functions by CRC-32 of the name (0 keeps all). The
