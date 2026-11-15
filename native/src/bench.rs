@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::elf::FileSource;
 use crate::generate::generate_in;
-use crate::matcher::{rank_key, scan_in, Match, ScanContext};
+use crate::matcher::{identified, rank_key, scan_in, Match, ScanContext};
 use crate::merge::{merge_in, MergeSample};
 use crate::sigfile::Signature;
 use crate::spec::SPEC_VERSION;
@@ -121,6 +121,38 @@ pub struct JointFalsePositiveCell {
     pub joint_with_hits: usize,
 }
 
+/// Top-1 answers labelled `identified` in one discovery mode (G3): the
+/// answers a user is told to trust, in images with and without the function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentifiedCell {
+    pub discovery: String,
+    /// Recall scans (the image holds the function) whose first match is
+    /// identified.
+    pub answers: usize,
+    /// Of those, answers at the expected start and strictly first; a tie for
+    /// first is not correct (PLAN.md rule 5), so precision is a lower bound.
+    pub correct: usize,
+    /// False-positive scans: images that do not hold the function.
+    pub unrelated_scans: usize,
+    /// False-positive scans whose first match is identified: always wrong.
+    pub unrelated_answers: usize,
+}
+
+impl IdentifiedCell {
+    /// Correct identified answers over every identified answer, including
+    /// those in images without the function.
+    pub fn precision(&self) -> f64 {
+        ratio(self.correct, self.answers + self.unrelated_answers)
+    }
+    /// Scans of images without the function that give no identified answer.
+    pub fn abstention(&self) -> f64 {
+        ratio(
+            self.unrelated_scans - self.unrelated_answers,
+            self.unrelated_scans,
+        )
+    }
+}
+
 /// The compact, reviewable metrics document (also the baseline format).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchReport {
@@ -152,6 +184,9 @@ pub struct BenchReport {
     pub joint: Vec<JointCell>,
     #[serde(default)]
     pub joint_false_positives: Vec<JointFalsePositiveCell>,
+    /// Identified precision and abstention per discovery mode (G3).
+    #[serde(default)]
+    pub identified: Vec<IdentifiedCell>,
 }
 
 /// One generated signature and where it came from.
@@ -558,20 +593,18 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         let matches = target.scan(&sample.signature, hints);
         let found = matches.iter().any(|m| m.address == expected);
         // Matches are sorted best first; a tie for first is ambiguous.
-        let top = matches.first().is_some_and(|m| m.address == expected)
-            && matches
-                .get(1)
-                .is_none_or(|next| rank_key(next) < rank_key(&matches[0]));
+        let top = top_is(&matches, expected);
+        let answer = matches.first().is_some_and(identified);
         let kept = if options.fp_report.is_some() && !hints {
             matches
         } else {
             Vec::new()
         };
-        (found, top, kept)
+        (found, top, kept, answer)
     });
     if let Some(path) = &options.fp_report {
         let mut out = String::new();
-        for ((s, t, hints), (_, _, matches)) in recall_jobs.iter().zip(&recall_hits) {
+        for ((s, t, hints), (_, _, matches, _)) in recall_jobs.iter().zip(&recall_hits) {
             if *hints {
                 continue;
             }
@@ -608,6 +641,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         std::fs::write(&recall_path, out).map_err(|error| format!("{error}"))?;
     }
     let mut cells: BTreeMap<CellKey, (usize, usize, usize)> = BTreeMap::new();
+    let mut answers: BTreeMap<&str, IdentifiedCell> = BTreeMap::new();
     for ((s, t, hints), hit) in recall_jobs.iter().zip(&recall_hits) {
         let sample = all[*s];
         let target = &targets[*t];
@@ -631,6 +665,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         }
         if hit.1 {
             cell.1 += 1;
+        }
+        let answer = identified_cell(&mut answers, discovery);
+        if hit.3 {
+            answer.answers += 1;
+            if hit.1 {
+                answer.correct += 1;
+            }
         }
     }
     let recall = cells
@@ -673,10 +714,14 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let hint_free_fp =
         !options.skip_false_positives && options.discovery.as_deref() != Some(HINTED);
     let (corpus_counts, negative_counts) = if hinted_fp {
-        (
-            false_positive_counts(&all, corpus_targets, true),
-            false_positive_counts(&all, negative_targets, true),
-        )
+        let (corpus_counts, corpus_scans, corpus_answers) =
+            false_positive_counts(&all, corpus_targets, true);
+        let (negative_counts, negative_scans, negative_answers) =
+            false_positive_counts(&all, negative_targets, true);
+        let cell = identified_cell(&mut answers, HINTED);
+        cell.unrelated_scans += corpus_scans + negative_scans;
+        cell.unrelated_answers += corpus_answers + negative_answers;
+        (corpus_counts, negative_counts)
     } else {
         (vec![0; all.len()], vec![0; all.len()])
     };
@@ -697,8 +742,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             write_fp_report(path, &all, &hits)?;
         }
         let mut counts = vec![0usize; all.len()];
+        let cell = identified_cell(&mut answers, HINT_FREE);
         for (index, _, matches) in &hits {
             counts[*index] += matches.len();
+            cell.unrelated_scans += 1;
+            if matches.first().is_some_and(identified) {
+                cell.unrelated_answers += 1;
+            }
         }
         false_positive_cells(&all, &counts, None)
     } else {
@@ -734,6 +784,21 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         any_negative_false_positives,
         joint,
         joint_false_positives,
+        identified: answers.into_values().collect(),
+    })
+}
+
+/// The [`IdentifiedCell`] of `discovery`, created empty on first use.
+fn identified_cell<'a>(
+    cells: &'a mut BTreeMap<&'static str, IdentifiedCell>,
+    discovery: &'static str,
+) -> &'a mut IdentifiedCell {
+    cells.entry(discovery).or_insert_with(|| IdentifiedCell {
+        discovery: discovery.to_string(),
+        answers: 0,
+        correct: 0,
+        unrelated_scans: 0,
+        unrelated_answers: 0,
     })
 }
 
@@ -835,8 +900,13 @@ fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveC
     (cells, false_positives)
 }
 
-/// Accepted matches per sample summed over the targets it must not match.
-fn false_positive_counts<'t, F>(samples: &[&Sample], targets_for: F, hints: bool) -> Vec<usize>
+/// Accepted matches per sample summed over the targets it must not match,
+/// plus the number of scans and of scans whose first match is identified.
+fn false_positive_counts<'t, F>(
+    samples: &[&Sample],
+    targets_for: F,
+    hints: bool,
+) -> (Vec<usize>, usize, usize)
 where
     F: Fn(&Sample) -> Vec<&'t Target> + Sync,
 {
@@ -847,13 +917,16 @@ where
         .collect();
     let hits = parallel(jobs.len(), |job| {
         let (index, target) = jobs[job];
-        target.scan(&samples[index].signature, hints).len()
+        let matches = target.scan(&samples[index].signature, hints);
+        (matches.len(), matches.first().is_some_and(identified))
     });
     let mut per_sample = vec![0usize; samples.len()];
-    for ((index, _), count) in jobs.iter().zip(hits) {
+    let mut answers = 0;
+    for ((index, _), (count, answer)) in jobs.iter().zip(hits) {
         per_sample[*index] += count;
+        answers += usize::from(answer);
     }
-    per_sample
+    (per_sample, jobs.len(), answers)
 }
 
 /// Every accepted match per `(sample, target)` pair, for reporting.
@@ -1094,6 +1167,39 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
             }
         }
     }
+    // Baselines from before identified cells existed have none: not compared.
+    for cell in &baseline.identified {
+        let Some(now) = current
+            .identified
+            .iter()
+            .find(|c| c.discovery == cell.discovery)
+        else {
+            failures.push(format!("missing identified cell {}", cell.discovery));
+            continue;
+        };
+        // Precision counts unrelated answers only when the FP scans ran, so a
+        // `--no-fp` run is compared only with another `--no-fp` run.
+        let same_scans = (cell.unrelated_scans > 0) == (now.unrelated_scans > 0);
+        if same_scans && now.precision() + tolerance < cell.precision() {
+            failures.push(format!(
+                "identified precision {}: {:.3} < baseline {:.3} - {tolerance:.2}",
+                cell.discovery,
+                now.precision(),
+                cell.precision()
+            ));
+        }
+        if cell.unrelated_scans > 0
+            && now.unrelated_scans > 0
+            && now.abstention() + tolerance < cell.abstention()
+        {
+            failures.push(format!(
+                "abstention {}: {:.3} < baseline {:.3} - {tolerance:.2}",
+                cell.discovery,
+                now.abstention(),
+                cell.abstention()
+            ));
+        }
+    }
     failures
 }
 
@@ -1190,6 +1296,15 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
         let value = ratio(with, total);
         out.push((label.to_string(), value, ceiling, value <= ceiling));
     }
+    for cell in &report.identified {
+        let value = cell.precision();
+        out.push((
+            format!("identified precision, {}", cell.discovery),
+            value,
+            0.98,
+            value >= 0.98,
+        ));
+    }
     out
 }
 
@@ -1278,6 +1393,29 @@ pub fn render(report: &BenchReport) -> String {
             );
         }
     }
+    if !report.identified.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nidentified top-1 answers (precision: correct / all identified; \
+             abstention: images without the function)"
+        );
+    }
+    for cell in &report.identified {
+        let _ = writeln!(
+            text,
+            "  {}: precision {}/{} = {:.3} ({} wrong where the function is, {} where it is not); \
+             abstention {}/{} = {:.3}",
+            cell.discovery,
+            cell.correct,
+            cell.answers + cell.unrelated_answers,
+            cell.precision(),
+            cell.answers - cell.correct,
+            cell.unrelated_answers,
+            cell.unrelated_scans - cell.unrelated_answers,
+            cell.unrelated_scans,
+            cell.abstention()
+        );
+    }
     let _ = writeln!(text, "\nv1.0 goals (PLAN.md §2)");
     for (name, value, goal, met) in targets(report) {
         let _ = writeln!(
@@ -1347,4 +1485,46 @@ fn phase(clock: &std::time::Instant, done: &str) {
 /// Default corpus location relative to the repository root.
 pub fn default_corpus(repo_root: &Path) -> PathBuf {
     repo_root.join("corpus").join("build")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed toy baseline predates the M8 keys.
+    fn old_baseline() -> BenchReport {
+        serde_json::from_str(include_str!("../../tests/baseline/native-bench.json"))
+            .expect("old baseline loads")
+    }
+
+    fn answers(discovery: &str, correct: usize, unrelated_answers: usize) -> IdentifiedCell {
+        IdentifiedCell {
+            discovery: discovery.to_string(),
+            answers: 100,
+            correct,
+            unrelated_scans: 100,
+            unrelated_answers,
+        }
+    }
+
+    #[test]
+    fn missing_identified_cells_are_not_compared() {
+        let baseline = old_baseline();
+        assert!(baseline.identified.is_empty());
+        let mut current = baseline.clone();
+        current.identified = vec![answers(HINT_FREE, 10, 90)];
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
+    }
+
+    #[test]
+    fn identified_precision_and_abstention_are_gated() {
+        let mut baseline = old_baseline();
+        baseline.identified = vec![answers(HINT_FREE, 100, 0)];
+        let mut current = baseline.clone();
+        current.identified = vec![answers(HINT_FREE, 90, 20)];
+        let failures = compare(&baseline, &current, DEFAULT_TOLERANCE);
+        assert_eq!(failures.len(), 2, "{failures:?}");
+        assert!(failures[0].starts_with("identified precision hint-free"));
+        assert!(failures[1].starts_with("abstention hint-free"));
+    }
 }
