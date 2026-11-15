@@ -401,12 +401,14 @@ impl Frequencies {
         if starts.len() < MIN_FREQUENCY_FUNCTIONS {
             return None;
         }
+        // Recovering every function is the expensive part and each start is
+        // independent; counting afterwards keeps the table order-free.
+        let recovered = crate::parallel::map(starts.len(), |index| {
+            cache.get_or_recover(source, starts[index], hints)
+        });
         let mut document_frequency: HashMap<String, u32> = HashMap::new();
         let mut functions = 0usize;
-        for start in starts {
-            let Some(candidate) = cache.get_or_recover(source, start, hints) else {
-                continue;
-            };
+        for candidate in recovered.into_iter().flatten() {
             functions += 1;
             for key in &candidate.keys {
                 *document_frequency.entry(key.clone()).or_insert(0) += 1;
@@ -605,16 +607,32 @@ impl ScanContext {
         ))
     }
 
+    /// Build the image's feature frequencies now instead of on the first
+    /// accepted match. A multi-signature scan calls this before scanning in
+    /// parallel, so the table is built across all cores once rather than by
+    /// whichever worker gets there first while the others wait on it.
+    pub fn prepare_frequencies<S: ByteSource + ?Sized>(&self, source: &S, hints: bool) {
+        self.frequencies[usize::from(hints)]
+            .get_or_init(|| Frequencies::build(source, &self.features, hints));
+    }
+
     pub fn build<S: ByteSource + ?Sized>(source: &S) -> ScanContext {
-        let mut references = ReferenceIndex::default();
-        for region in source.regions() {
-            if region.executable {
-                references.index_region(source, region);
-            }
-        }
+        // Two independent whole-image sweeps of similar cost.
+        let (references, code) = crate::parallel::join(
+            || {
+                let mut references = ReferenceIndex::default();
+                for region in source.regions() {
+                    if region.executable {
+                        references.index_region(source, region);
+                    }
+                }
+                references
+            },
+            || CodeIndex::build(source),
+        );
         ScanContext {
             references,
-            code: CodeIndex::build(source),
+            code,
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
         }

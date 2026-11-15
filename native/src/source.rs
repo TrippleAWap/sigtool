@@ -122,7 +122,10 @@ impl Module {
 }
 
 /// Read-only view of the bytes and metadata of one target image.
-pub trait ByteSource {
+///
+/// `Sync` so one image's whole-image indexes and many signatures can be
+/// worked on from several threads at once.
+pub trait ByteSource: Sync {
     fn arch(&self) -> Arch;
 
     /// Read `size` bytes at `addr` or return a [`ReadError`].

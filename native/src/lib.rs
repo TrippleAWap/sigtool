@@ -22,6 +22,7 @@ pub mod joint;
 pub mod matcher;
 pub mod merge;
 pub mod normalize;
+pub mod parallel;
 pub mod proc_win;
 pub mod recover;
 pub mod scanner;

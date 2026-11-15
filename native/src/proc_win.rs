@@ -753,6 +753,12 @@ mod os {
         handle: Handle,
     }
 
+    // SAFETY: a process handle is a kernel object reference that Windows
+    // lets any thread use; this type only issues query and read calls on it
+    // and keeps no other state.
+    unsafe impl Send for Process {}
+    unsafe impl Sync for Process {}
+
     impl Drop for Process {
         fn drop(&mut self) {
             // SAFETY: the handle came from OpenProcess and is closed once.

@@ -736,10 +736,14 @@ fn hint_free_hits(
     signatures: &[Signature],
 ) -> Result<Vec<ScanHit>, CliError> {
     let context = ScanContext::build(source);
-    let mut all: Vec<Vec<Match>> = signatures
-        .iter()
-        .map(|signature| scan_in(source, signature, &context, false))
-        .collect();
+    // Signatures share only the context's caches, so they scan in parallel;
+    // results keep signature order.
+    if signatures.len() > 1 {
+        context.prepare_frequencies(source, false);
+    }
+    let mut all: Vec<Vec<Match>> = sigtool_native::parallel::map(signatures.len(), |index| {
+        scan_in(source, &signatures[index], &context, false)
+    });
     sigtool_native::joint::resolve(source, &context, signatures, &mut all, false);
     let mut hits = Vec::new();
     for (signature, matches) in signatures.iter().zip(all) {
