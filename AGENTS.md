@@ -79,6 +79,7 @@ cargo run --release --example profile_scan                  # scan cost
 
 python corpus/build.py              # toy corpus + ground truth (clang + ld.lld + llvm-readelf)
 python corpus/real.py               # real libraries: clang on the host, gcc via corpus/docker
+python corpus/real.py --heldout     # held-out libraries into corpus/build-heldout (milestone exits only)
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld), then bless
 SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the extractor
 ```
@@ -90,6 +91,7 @@ SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the e
 - **Golden vectors** (`tests/vectors/`): bytes in, feature records out, for x64, x64 with CET, arm64, arm64 with PAC, arm32, and thumb at `-O0/-O2/-Os`, from real clang + lld output. Never hand-edit; regenerate and bless, and justify every record change in the commit or PR.
 - **Toy corpus gate** (`native/tests/corpus.rs`, `bench --baseline tests/baseline/native-bench.json`): recall per discovery mode and false-positive rates against the baseline with a 0.05 tolerance. The baseline is compiler-specific (currently LLVM 22.1.5, which CI installs from the pinned release archive), because even patch releases move small cells by more than the tolerance. Update the baseline only for an intentional improvement or a compiler change, with `--save-baseline`, and review the diff.
 - **Real corpus** (`corpus/build-real`, `tests/baseline/native-real-bench.json`): zlib, lz4, cJSON, Lua, and SQLite built with clang and gcc at `-O0/-O2/-Os` for all four architectures. This is the corpus the cross-arch and hint-free numbers are read from; run it before and after any matcher, feature, or normalization change and report the deltas. It is not in CI (it needs the gcc cross image).
+- **Held-out corpus** (`corpus/build-heldout`, `real.py --heldout`): zstd, libyaml, and mbedtls, same matrix. Never tune on it or read it while choosing a rule; run it only at milestone exits and record the numbers in `PLAN.md` §8.
 - **Property and robustness:** normalization is idempotent; the same code at two bases yields identical features; random bytes never crash recovery or start synthesis.
 - **Live tests** (`native/tests/live_proc_win.rs`, Windows): a spawned helper process with a known function; checks read-only access, WOW64 rejection, and that `gen`/`locate`/`scan --pid` find it.
 - New normalization rules need a vector or corpus case from real compiler output, not just a hand-written snippet.

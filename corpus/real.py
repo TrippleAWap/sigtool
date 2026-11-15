@@ -2,6 +2,7 @@
 
     python corpus/real.py                  # fetch (sha256-pinned), build, write ground truth
     python corpus/real.py --max-functions 0  # keep every common function
+    python corpus/real.py --heldout        # held-out libraries into corpus/build-heldout/
 
 Outputs, never committed:
 
@@ -9,6 +10,11 @@ Outputs, never committed:
     corpus/build-real/<arch>/<compiler>-<opt>/<library>.so
     corpus/build-real/stripped/<arch>/<compiler>-<opt>/<library>.so  (llvm-strip --strip-all)
     corpus/build-real/ground_truth.json   (same schema as corpus/build/, plus "stripped")
+
+--heldout swaps the library list (zstd, libyaml, mbedtls) and the output
+directory (corpus/build-heldout/, same layout) and keeps everything else, so
+the held-out numbers come from exactly the same build matrix. Those libraries
+are never used for tuning; they are measured at milestone exits only.
 
 Hint-free recall is measured on the stripped copies: `--strip-all` removes
 .symtab exactly as a distro strip does and keeps .dynsym, which dynamic
@@ -37,6 +43,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -52,6 +59,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "corpus"
 THIRD_PARTY = CORPUS / "third_party"
 BUILD = CORPUS / "build-real"
+HELDOUT_BUILD = CORPUS / "build-heldout"
 SHIM = CORPUS / "shim" / "include"
 
 TARGETS = {
@@ -138,6 +146,53 @@ LIBRARIES = (
     ),
 )
 
+# Held out from tuning (PLAN.md §5): measured only at milestone exits, so a
+# rule fitted to LIBRARIES cannot also have been fitted to these.
+HELDOUT = (
+    Library(
+        "zstd",
+        "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz",
+        "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1",
+        "zstd-1.5.6",
+        (
+            "lib/common/*.c",
+            "lib/compress/*.c",
+            "lib/decompress/*.c",
+            "lib/dictBuilder/*.c",
+        ),
+        includes=("lib", "lib/common"),
+        # The x86-64 Huffman decoder is hand-written assembly on that arch
+        # only; the C path keeps the function set the same on every target.
+        defines=("ZSTD_DISABLE_ASM=1",),
+    ),
+    Library(
+        "libyaml",
+        "https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz",
+        "c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4",
+        "yaml-0.2.5",
+        ("src/*.c",),
+        includes=("include", "src"),
+        # What configure would write to config.h.
+        defines=(
+            "YAML_VERSION_MAJOR=0",
+            "YAML_VERSION_MINOR=2",
+            "YAML_VERSION_PATCH=5",
+            'YAML_VERSION_STRING="0.2.5"',
+        ),
+    ),
+    Library(
+        "mbedtls",
+        "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2",
+        "8b54fb9bcf4d5a7078028e0520acddefb7900b3e66fec7f7175bb5b7d85ccdca",
+        "mbedtls-3.6.2",
+        ("library/*.c",),
+        includes=("include", "library"),
+        # The socket layer is OS glue (BSD sockets, not in the shim) and is
+        # irrelevant to function identity, as SQLite's VFS is.
+        exclude=("library/net_sockets.c",),
+    ),
+)
+
 
 def fetch(library: Library) -> Path:
     THIRD_PARTY.mkdir(parents=True, exist_ok=True)
@@ -170,8 +225,8 @@ def sources(library: Library, root: Path) -> list[Path]:
     return [path for path in found if path not in excluded]
 
 
-def output_path(library: Library, arch: str, compiler: str, opt: str) -> Path:
-    outdir = BUILD / arch / f"{compiler}-{opt.strip('-')}"
+def output_path(build: Path, library: Library, arch: str, compiler: str, opt: str) -> Path:
+    outdir = build / arch / f"{compiler}-{opt.strip('-')}"
     outdir.mkdir(parents=True, exist_ok=True)
     return outdir / f"{library.name}.so"
 
@@ -187,9 +242,11 @@ def up_to_date(output: Path, library: Library, root: Path) -> bool:
     return all(path.stat().st_mtime <= built for path in inputs)
 
 
-def build_clang(clang: str, library: Library, root: Path, arch: str, opt: str) -> Path | None:
+def build_clang(
+    clang: str, build: Path, library: Library, root: Path, arch: str, opt: str
+) -> Path | None:
     target, extra = TARGETS[arch]
-    output = output_path(library, arch, "clang", opt)
+    output = output_path(build, library, arch, "clang", opt)
     if up_to_date(output, library, root):
         return output
     command = [
@@ -219,13 +276,13 @@ def build_clang(clang: str, library: Library, root: Path, arch: str, opt: str) -
     return output
 
 
-def build_gcc(library: Library, root: Path) -> dict[tuple[str, str], Path]:
+def build_gcc(build: Path, library: Library, root: Path) -> dict[tuple[str, str], Path]:
     """Every GCC build of one library in a single container run."""
     lines = ["set -u"]
     outputs: dict[tuple[str, str], Path] = {}
     for arch, (driver, extra) in GCC.items():
         for opt in OPT_LEVELS:
-            output = output_path(library, arch, "gcc", opt)
+            output = output_path(build, library, arch, "gcc", opt)
             outputs[(arch, opt)] = output
             if up_to_date(output, library, root):
                 continue
@@ -235,8 +292,10 @@ def build_gcc(library: Library, root: Path) -> dict[tuple[str, str], Path]:
                 f"{container_root}/{path.relative_to(root).as_posix()}"
                 for path in sources(library, root)
             )
+            # Quoted: string-valued defines (libyaml's version) carry quotes.
             flags = " ".join(
-                [opt, *extra, "-fPIC", "-shared", "-w", "-Wl,--build-id=none"]
+                shlex.quote(flag)
+                for flag in [opt, *extra, "-fPIC", "-shared", "-w", "-Wl,--build-id=none"]
                 + [f"-I{container_root}/{include}" for include in library.includes]
                 + [f"-D{define}" for define in library.defines]
             )
@@ -248,20 +307,15 @@ def build_gcc(library: Library, root: Path) -> dict[tuple[str, str], Path]:
     if len(lines) == 1:
         return outputs
     lines.append("wait")
-    command = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        f"{CORPUS}:/work",
-        DOCKER_IMAGE,
-        "sh",
-        "-c",
-        "\n".join(lines),
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, errors="replace")
-    if result.returncode != 0 or "FAIL" in result.stdout:
-        print(result.stdout[-2000:], result.stderr[-3000:])
+    # The script goes in on stdin: with every source of zstd or mbedtls on
+    # twelve command lines it exceeds the Windows 32 KiB argv limit. Bytes,
+    # not text mode, so Windows does not turn the newlines into CRLF for sh.
+    command = ["docker", "run", "--rm", "-i", "-v", f"{CORPUS}:/work", DOCKER_IMAGE, "sh", "-s"]
+    script = ("\n".join(lines) + "\n").encode()
+    result = subprocess.run(command, input=script, capture_output=True)
+    stdout = result.stdout.decode(errors="replace")
+    if result.returncode != 0 or "FAIL" in stdout:
+        print(stdout[-2000:], result.stderr.decode(errors="replace")[-3000:])
     return {key: path for key, path in outputs.items() if path.exists()}
 
 
@@ -298,8 +352,8 @@ def function_symbols(readelf: str, binary: Path, arch: str) -> dict[str, tuple[i
     return symbols
 
 
-def strip(llvm_strip: str, binary: Path) -> Path:
-    stripped = BUILD / "stripped" / binary.relative_to(BUILD)
+def strip(llvm_strip: str, build: Path, binary: Path) -> Path:
+    stripped = build / "stripped" / binary.relative_to(build)
     stripped.parent.mkdir(parents=True, exist_ok=True)
     if not stripped.exists() or stripped.stat().st_mtime < binary.stat().st_mtime:
         subprocess.run([llvm_strip, "--strip-all", str(binary), "-o", str(stripped)], check=True)
@@ -319,8 +373,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--compiler", action="append", choices=COMPILERS, help="limit to one compiler family"
     )
+    parser.add_argument(
+        "--heldout",
+        action="store_true",
+        help=f"build the held-out libraries into {HELDOUT_BUILD.relative_to(ROOT).as_posix()}/",
+    )
     args = parser.parse_args(argv)
     args.compiler = tuple(args.compiler or COMPILERS)
+    catalog, build = (HELDOUT, HELDOUT_BUILD) if args.heldout else (LIBRARIES, BUILD)
 
     clang = shutil.which("clang")
     readelf = shutil.which("llvm-readelf")
@@ -328,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
     if clang is None or readelf is None or llvm_strip is None:
         raise SystemExit("clang, llvm-readelf, and llvm-strip must be on PATH")
 
-    libraries = [lib for lib in LIBRARIES if not args.library or lib.name in args.library]
+    libraries = [lib for lib in catalog if not args.library or lib.name in args.library]
     roots = {library.name: fetch(library) for library in libraries}
 
     # Every build is independent: clang jobs per (library, arch, opt) and one
@@ -340,12 +400,12 @@ def main(argv: list[str] | None = None) -> int:
         for library in libraries:
             root = roots[library.name]
             if "gcc" in args.compiler:
-                gcc_jobs[library.name] = pool.submit(build_gcc, library, root)
+                gcc_jobs[library.name] = pool.submit(build_gcc, build, library, root)
             if "clang" in args.compiler:
                 for arch in TARGETS:
                     for opt in OPT_LEVELS:
                         clang_jobs[(library.name, arch, opt)] = pool.submit(
-                            build_clang, clang, library, root, arch, opt
+                            build_clang, clang, build, library, root, arch, opt
                         )
 
     binaries: list[dict[str, object]] = []
@@ -365,11 +425,11 @@ def main(argv: list[str] | None = None) -> int:
         chosen = select(common, args.max_functions)
         print(f"{library.name}: {len(common)} common functions, {len(chosen)} selected")
         for (arch, opt), symbols in sorted(built.items()):
-            stripped = strip(llvm_strip, BUILD / arch / opt / f"{library.name}.so")
+            stripped = strip(llvm_strip, build, build / arch / opt / f"{library.name}.so")
             binaries.append(
                 {
                     "path": f"{arch}/{opt}/{library.name}.so",
-                    "stripped": stripped.relative_to(BUILD).as_posix(),
+                    "stripped": stripped.relative_to(build).as_posix(),
                     "arch": arch,
                     "library": library.name,
                     "functions": [
@@ -380,9 +440,9 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
 
-    BUILD.mkdir(parents=True, exist_ok=True)
+    build.mkdir(parents=True, exist_ok=True)
     document = {"binaries": binaries, "negative": []}
-    (BUILD / "ground_truth.json").write_text(
+    (build / "ground_truth.json").write_text(
         json.dumps(document, indent=1, sort_keys=True) + "\n", encoding="utf-8"
     )
     return 0
