@@ -1302,7 +1302,15 @@ pub fn similarity(signature: &Signature, candidate: &[(String, f64)]) -> f64 {
         .iter()
         .map(|feature| (feature.key(), feature.weight))
         .collect();
-    let total: f64 = wanted.values().sum();
+    // Summed in document order: a `HashMap` iterates in a per-process random
+    // order, and the last-bit difference flipped `round_to` at a .5 boundary,
+    // so two runs ranked tied lookalikes differently. Keys are unique
+    // (`Signature::validate`), so this is the same sum.
+    let total: f64 = signature
+        .features
+        .iter()
+        .map(|feature| feature.weight)
+        .sum();
     let mut shared = 0.0;
     let mut extra = 0.0;
     for (key, weight) in candidate {
