@@ -323,48 +323,84 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             return Vec::new();
         }
         let thumb = self.source.is_thumb(base);
-        let Some(cs) = arm_capstone(thumb) else {
+        let Some(cs) = self.arm32[usize::from(thumb)]
+            .get_or_init(|| arm_capstone(thumb))
+            .as_ref()
+        else {
             return Vec::new();
         };
-        let Ok(instructions) = cs.disasm_all(&data, base) else {
-            return Vec::new();
-        };
-
-        let mut state = ArmState::default();
-        let mut out: Vec<Insn> = Vec::new();
-        for raw in instructions.iter() {
-            let size = raw.len();
-            if size == 0 {
-                break;
-            }
-            let Ok(detail) = cs.insn_detail(raw) else {
-                break;
+        // A block ends at its first terminator, usually a few instructions
+        // in, while the span is up to a page. Disassembling the whole span
+        // with detail made whole-image sweeps ~100x slower on ARM32 and Thumb
+        // than on x64 and AArch64, so decode a growing prefix instead. Every
+        // attempt starts from `base` with `cs_disasm`, which resets the Thumb
+        // IT-block state the handle carries (`cs_disasm_iter` does not), so
+        // the result is the same instructions the full span would give.
+        let mut window = data.len().min(ARM32_FIRST_WINDOW);
+        loop {
+            let Ok(instructions) = cs.disasm_all(&data[..window], base) else {
+                return Vec::new();
             };
-            let cc = match detail.arch_detail() {
-                ArchDetail::ArmDetail(arm) => arm.cc(),
-                _ => ArmCC::ARM_CC_INVALID,
-            };
-            let (ops, vector) = arm_operands(&cs, &detail);
-            let insn = self.arm32(raw, &ops, cc, vector, thumb, &mut state, depth);
-            let terminating = insn.kind.is_terminating();
-            out.push(insn);
-            if terminating {
-                break;
+            let mut state = ArmState::default();
+            let mut out: Vec<Insn> = Vec::new();
+            let mut stopped = false;
+            let mut decoded_end = base;
+            for raw in instructions.iter() {
+                let size = raw.len();
+                if size == 0 {
+                    stopped = true;
+                    break;
+                }
+                let Ok(detail) = cs.insn_detail(raw) else {
+                    stopped = true;
+                    break;
+                };
+                decoded_end = raw.address() + size as u64;
+                let cc = match detail.arch_detail() {
+                    ArchDetail::ArmDetail(arm) => arm.cc(),
+                    _ => ArmCC::ARM_CC_INVALID,
+                };
+                let (ops, vector) = arm_operands(cs, &detail);
+                let insn = self.arm32(raw, &ops, cc, vector, thumb, &mut state, depth);
+                let terminating = insn.kind.is_terminating();
+                out.push(insn);
+                if terminating {
+                    stopped = true;
+                    break;
+                }
             }
-        }
-
-        let pending = state.take_consts();
-        if !pending.is_empty() {
-            if let Some(last) = out.last_mut() {
-                let mut consts = last.consts.clone();
-                consts.extend(pending);
-                last.consts = sorted_unique(consts);
+            // Decoding ran into the end of the prefix (an instruction may be
+            // cut there): retry with more bytes. Stopping earlier means an
+            // invalid instruction, which the full span would hit too.
+            let at_cut = base + window as u64 - decoded_end < 4;
+            if stopped || !at_cut || window == data.len() {
+                return finish_block(out, state);
             }
+            window = data.len().min(window * 4);
         }
-        state.clear();
-        out
     }
+}
 
+/// Instructions in the first ARM32 decode attempt, in bytes; most blocks end
+/// within it.
+const ARM32_FIRST_WINDOW: usize = 64;
+
+/// Fold constants still pending at the end of a block into its last
+/// instruction.
+fn finish_block(mut out: Vec<Insn>, mut state: ArmState) -> Vec<Insn> {
+    let pending = state.take_consts();
+    if !pending.is_empty() {
+        if let Some(last) = out.last_mut() {
+            let mut consts = last.consts.clone();
+            consts.extend(pending);
+            last.consts = sorted_unique(consts);
+        }
+    }
+    state.clear();
+    out
+}
+
+impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     #[allow(clippy::too_many_arguments)]
     fn arm32(
         &self,

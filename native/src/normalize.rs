@@ -289,6 +289,10 @@ enum Operand {
 pub struct Normalizer<'a, S: ByteSource + ?Sized> {
     pub(crate) source: &'a S,
     pub(crate) arm64: InstDecoder,
+    /// Capstone handles for ARM32 `[arm, thumb]`, opened on first use: opening
+    /// one allocates and initialises the decoder tables, which cost more than
+    /// decoding a typical basic block.
+    pub(crate) arm32: [std::cell::OnceCell<Option<capstone::Capstone>>; 2],
 }
 
 impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
@@ -296,6 +300,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         Normalizer {
             source,
             arm64: InstDecoder::default(),
+            arm32: [std::cell::OnceCell::new(), std::cell::OnceCell::new()],
         }
     }
 
