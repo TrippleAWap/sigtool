@@ -214,6 +214,8 @@ baselines.
   the toy bench against its baseline with tolerance 0.05.
 - Before merging matcher, feature, or normalization work: the real corpus
   with `--joint` against `tests/baseline/native-real-bench.json`.
+- Weekly (`.github/workflows/real-bench.yml`): the real corpus built with
+  both compilers and benched with `--joint` against its baseline.
 - Milestone exit: the held-out corpus, recorded in §8.
 
 ## 6. Milestones

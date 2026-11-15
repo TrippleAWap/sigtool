@@ -1,0 +1,83 @@
+name: real-bench
+
+# The real corpus needs the GCC cross image and takes far longer than the
+# per-push gate, so it runs weekly (and on demand) instead of in ci.yml.
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: real-bench-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Same pinned release as ci.yml; the real-corpus baseline is measured on it.
+  LLVM_VERSION: "22.1.5"
+  LLVM_SHA256: "04dfa3ab6f1c332dd73a057daeb8f48cdaacdef24178f8eccddf2cbfa8944aa4"
+
+jobs:
+  real-bench:
+    name: real corpus bench (clang + gcc, joint)
+    # Pinned for the same reason as ci.yml: the LLVM release binaries link
+    # libxml2.so.2, which newer Ubuntu images no longer ship.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install LLVM runtime libraries
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libxml2
+
+      - name: Cache LLVM ${{ env.LLVM_VERSION }}
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/llvm
+          key: llvm-${{ env.LLVM_VERSION }}-linux-x64-corpus-tools
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          archive="LLVM-$LLVM_VERSION-Linux-X64.tar.xz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$archive"
+          echo "$LLVM_SHA256  $archive" | sha256sum -c -
+          mkdir -p ~/llvm
+          tar -xJf "$archive" -C ~/llvm --strip-components=1 --wildcards \
+            "*/bin/clang" "*/bin/clang-[0-9]*" "*/bin/lld" "*/bin/ld.lld" \
+            "*/bin/llvm-readobj" "*/bin/llvm-readelf" "*/bin/llvm-nm" \
+            "*/bin/llvm-objcopy" "*/bin/llvm-strip" "*/lib/clang/*" "*/lib/lib*.so*" \
+            || test -x ~/llvm/bin/clang
+          rm "$archive"
+
+      - name: Use LLVM ${{ env.LLVM_VERSION }}
+        run: |
+          echo "$HOME/llvm/bin" >> "$GITHUB_PATH"
+          ~/llvm/bin/clang --version | head -1
+
+      - name: Cache library archives
+        uses: actions/cache@v4
+        with:
+          # Archives only; real.py verifies each against its pinned sha256.
+          path: corpus/third_party/dl
+          key: corpus-archives-${{ hashFiles('corpus/real.py') }}
+          restore-keys: corpus-archives-
+
+      - name: Build the GCC cross image
+        run: docker build -t sigtool-gcc-cross corpus/docker
+
+      - name: Build the real corpus
+        run: python corpus/real.py
+
+      - name: Real corpus bench
+        working-directory: native
+        run: >
+          cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4
+          --joint --baseline ../tests/baseline/native-real-bench.json
