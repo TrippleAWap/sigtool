@@ -89,6 +89,24 @@ fn load(arch: &str, build: &str, library: &str) -> Option<Starts> {
 }
 
 #[test]
+fn pic_function_addresses_are_function_starts() {
+    // Leaf callbacks referenced only by address, formed as
+    // `ldr rX, =sym-(.LPIC+pc); .LPIC: add rX, pc` (gcc, both modes).
+    for (arch, names) in [
+        ("thumb", ["sqlite3NoopDestructor", "renameTableExprCb"]),
+        ("arm32", ["sqlite3NoopDestructor", "renameTableExprCb"]),
+    ] {
+        let Some(starts) = load(arch, "gcc-O2", "sqlite.so") else {
+            return;
+        };
+        let misses = starts.misses();
+        for name in names {
+            assert!(!misses.contains(&name), "{arch}: {name} missed");
+        }
+    }
+}
+
+#[test]
 fn thumb_computed_goto_labels_are_not_function_starts() {
     // lua's `luaV_execute` dispatches through a table of `&&label`
     // addresses with `R_ARM_RELATIVE` relocations, like a function-pointer

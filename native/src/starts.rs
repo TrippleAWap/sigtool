@@ -8,6 +8,9 @@
 //!
 //! - pointers to code: `.dynsym` function values and relative relocations
 //!   (function-pointer tables, init arrays, vtables);
+//! - code addresses formed position-independently (`ldr rX, =off` or
+//!   `movw`/`movt`, then `add rX, pc`), how PIC code takes a function's
+//!   address for a callback;
 //! - direct call targets (`bl`/`blx`), decoded in the mode the image's
 //!   [`ModeMap`](crate::arm_mode::ModeMap) gives each address;
 //! - the first instruction after an unconditional terminator, past alignment
@@ -33,6 +36,12 @@ use crate::unwind::{UnwindEntry, MAX_UNWIND_ENTRIES};
 pub const MAX_START_SWEEP_BYTES: usize = 128 << 20;
 /// Upper bound on entries read from one inline jump table.
 const MAX_TABLE_ENTRIES: usize = 4096;
+/// Largest distance, in bytes, from the instruction that loads a PIC offset
+/// to the `add rX, pc` that uses it. Real corpus, stripped arm32 + thumb,
+/// recall by window (no window added a false start): 0 (rule off) 0.9836 /
+/// 0.9758, 8 bytes 0.9901 / 0.9841, 16 bytes 0.9936 / 0.9851, 32 bytes
+/// 0.9941 / 0.9853, and 64 or 256 bytes no further gain.
+const PIC_WINDOW: u64 = 32;
 
 /// What the sweep found, kept apart so each rule can be measured.
 #[derive(Debug, Clone, Default)]
@@ -41,6 +50,9 @@ pub struct Evidence {
     pub pointers: Vec<u64>,
     /// Direct call targets whose mode agrees with the map.
     pub calls: Vec<u64>,
+    /// Position-independent code addresses (`ldr rX, =off` or `movw`/`movt`,
+    /// then `add rX, pc`) whose mode agrees with the map.
+    pub pic_refs: Vec<u64>,
     /// First instruction after a terminator, padding, and pools.
     pub after_terminator: Vec<u64>,
     /// Start of each scanned code region (after padding).
@@ -107,6 +119,7 @@ pub fn evidence(
             data = merge_ranges(found_data);
             if pass == 1 {
                 found.calls = swept.calls;
+                found.pic_refs = swept.pic_refs;
                 found.after_terminator = swept.after_terminator;
                 found.region_starts = swept.region_starts;
                 found.branches = swept.branches;
@@ -124,10 +137,21 @@ pub fn evidence(
             .filter(|target| is_thumb(target & !1) == (target & 1 != 0))
             .map(|target| target & !1)
             .collect();
+        // A PIC address carries its target's mode bit like a function
+        // pointer (GCC and clang emit `sym - (.LPIC + 4)`, `sym` Thumb-marked),
+        // so it must agree with the map too.
+        let pic_refs = std::mem::take(&mut found.pic_refs);
+        found.pic_refs = pic_refs
+            .into_iter()
+            .filter(|target| in_code(*target & !1))
+            .filter(|target| is_thumb(target & !1) == (target & 1 != 0))
+            .map(|target| target & !1)
+            .collect();
         let data = found.data.clone();
         let outside_data = |address: &u64| !in_ranges(&data, *address);
         found.calls.retain(outside_data);
         found.pointers.retain(outside_data);
+        found.pic_refs.retain(outside_data);
     } else if arch == Arch::Arm64 {
         let mut budget = MAX_START_SWEEP_BYTES;
         for region in &code {
@@ -142,6 +166,7 @@ pub fn evidence(
     for list in [
         &mut found.pointers,
         &mut found.calls,
+        &mut found.pic_refs,
         &mut found.after_terminator,
         &mut found.region_starts,
         &mut found.prologues,
@@ -167,6 +192,7 @@ pub fn synthesize(found: &Evidence) -> Vec<u64> {
     let mut starts: Vec<u64> = Vec::new();
     starts.extend(&found.pointers);
     starts.extend(&found.calls);
+    starts.extend(&found.pic_refs);
     starts.extend(&found.region_starts);
     for address in &found.after_terminator {
         let prologue = found.prologues.binary_search(address).is_ok();
@@ -282,6 +308,13 @@ struct Step {
     pc_add: Option<usize>,
     /// Thumb `it`: instructions it predicates.
     it_count: u32,
+    /// `(rD, value)` written by a pc-relative literal load or a `movw`.
+    load: Option<(usize, u32)>,
+    /// `(rD, high half)` written by a `movt`.
+    movt: Option<(usize, u32)>,
+    /// `add rD, pc` forms: `(rD, rM, pc)`, the register holding the offset
+    /// and the pc value the add reads.
+    pc_relative: Option<(usize, usize, u64)>,
 }
 
 struct ArmWalk<'a> {
@@ -299,6 +332,8 @@ impl ArmWalk<'_> {
         let mut it_left = 0u32;
         let mut skip: Option<(u64, u64)> = None;
         let mut adr: [Option<(u64, u64)>; 16] = [None; 16];
+        // Offsets loaded for a later `add rX, pc`: `(value, address)`.
+        let mut offsets: [Option<(u32, u64)>; 16] = [None; 16];
         while let Some(address) = cursor {
             if let Some(end) = range_end(self.data, address) {
                 cursor = Some(end);
@@ -343,6 +378,24 @@ impl ArmWalk<'_> {
             if let Some((register, label)) = step.adr {
                 adr[register] = Some((label, address));
             }
+            if let Some((register, value)) = step.load {
+                offsets[register] = Some((value, address));
+            }
+            if let Some((register, high)) = step.movt {
+                offsets[register] = offsets[register]
+                    .filter(|(value, _)| *value <= 0xffff)
+                    .map(|(value, at)| (value | (high << 16), at));
+            }
+            if let Some((register, source, pc)) = step.pc_relative {
+                if let Some((value, at)) = offsets[source] {
+                    if address - at <= PIC_WINDOW {
+                        self.found
+                            .pic_refs
+                            .push(pc.wrapping_add(u64::from(value)) & 0xffff_ffff);
+                    }
+                }
+                offsets[register] = None;
+            }
             let mut step = step;
             if let Some(base) = step.pc_add {
                 // clang: `adr rB, table; ldr rX, [rB, rI, lsl #2]; add pc, rB,
@@ -386,6 +439,7 @@ impl ArmWalk<'_> {
             }
             if step.terminator && !predicated {
                 adr = [None; 16];
+                offsets = [None; 16];
                 thumb = is_thumb(next);
                 cursor = self.skip_gap(region, next, thumb);
                 if let Some(start) = cursor {
@@ -561,6 +615,28 @@ fn arm_step(region: &Region, address: u64) -> Option<Step> {
         step.terminator = always;
     } else if word & 0x0f7f_0000 == 0x051f_0000 {
         step.literal = literal(pc, word & 0xfff, word & (1 << 23) != 0, 4);
+        if let Some((start, _)) = step.literal {
+            step.load = word_at(region, start).map(|value| (((word >> 12) & 0xf) as usize, value));
+        }
+    } else if word & 0x0ff0_0000 == 0x0300_0000 || word & 0x0ff0_0000 == 0x0340_0000 {
+        // `movw`/`movt rD, #imm16`.
+        let register = ((word >> 12) & 0xf) as usize;
+        let imm = ((word >> 4) & 0xf000) | (word & 0xfff);
+        if word & 0x0040_0000 == 0 {
+            step.load = Some((register, imm));
+        } else {
+            step.movt = Some((register, imm));
+        }
+    } else if word & 0x0fff_0ff0 == 0x008f_0000 {
+        // `add rD, pc, rM`.
+        step.pc_relative = Some((((word >> 12) & 0xf) as usize, (word & 0xf) as usize, pc));
+    } else if word & 0x0ff0_0fff == 0x0080_000f {
+        // `add rD, rN, pc`.
+        step.pc_relative = Some((
+            ((word >> 12) & 0xf) as usize,
+            ((word >> 16) & 0xf) as usize,
+            pc,
+        ));
     } else if word & 0x0f7f_00f0 == 0x014f_00d0 {
         let offset = ((word >> 4) & 0xf0) | (word & 0xf);
         step.literal = literal(pc, offset, word & (1 << 23) != 0, 8);
@@ -710,6 +786,14 @@ fn thumb_step(region: &Region, address: u64) -> Option<Step> {
             step.terminator = true;
         } else if hw1 & 0xf800 == 0x4800 {
             step.literal = literal(aligned_pc, u32::from(hw1 & 0xff) * 4, true, 4);
+            if let Some((start, _)) = step.literal {
+                step.load =
+                    word_at(region, start).map(|value| (usize::from((hw1 >> 8) & 7), value));
+            }
+        } else if hw1 & 0xff78 == 0x4478 {
+            // `add rDN, pc`.
+            let register = usize::from((hw1 & 7) | ((hw1 >> 4) & 8));
+            step.pc_relative = Some((register, register, pc));
         } else if hw1 & 0xff00 == 0xb500 {
             step.prologue = true;
         }
@@ -762,6 +846,22 @@ fn thumb_step(region: &Region, address: u64) -> Option<Step> {
         step.terminator = true;
     } else if hw1 & 0xff7f == 0xf85f {
         step.literal = literal(aligned_pc, u32::from(hw2 & 0xfff), hw1 & 0x80 != 0, 4);
+        if let Some((start, _)) = step.literal {
+            step.load = word_at(region, start).map(|value| (usize::from(hw2 >> 12), value));
+        }
+    } else if hw1 & 0xfb70 == 0xf240 && hw2 & 0x8000 == 0 {
+        // `movw`/`movt rD, #imm16` (T3; bit 7 of the first halfword picks
+        // `movt`).
+        let register = usize::from((hw2 >> 8) & 0xf);
+        let imm = (u32::from(hw1 & 0xf) << 12)
+            | (u32::from((hw1 >> 10) & 1) << 11)
+            | (u32::from((hw2 >> 12) & 7) << 8)
+            | u32::from(hw2 & 0xff);
+        if hw1 & 0x0080 == 0 {
+            step.load = Some((register, imm));
+        } else {
+            step.movt = Some((register, imm));
+        }
     } else if hw1 & 0xff7f == 0xe95f {
         step.literal = literal(aligned_pc, u32::from(hw2 & 0xff) * 4, hw1 & 0x80 != 0, 8);
     } else if hw1 & 0xff3f == 0xed1f && hw2 & 0x0e00 == 0x0a00 {
