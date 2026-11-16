@@ -77,6 +77,10 @@ pub fn evidence(
     let mask = if arm { !1u64 } else { !0u64 };
     found.pointers = pointers
         .iter()
+        // A function pointer carries its callee's mode in bit 0; a
+        // computed-goto label (`&&label`) is relocated the same way but is
+        // always even, so in Thumb code its mode disagrees with the map.
+        .filter(|pointer| !arm || is_thumb(*pointer & !1) == (*pointer & 1 != 0))
         .map(|pointer| pointer & mask)
         .filter(|address| in_code(*address))
         .collect();

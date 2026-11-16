@@ -1,5 +1,16 @@
 # Spec changelog
 
+## Unreleased
+
+Not yet versioned; the integrator bumps `SPEC_VERSION` once for these.
+
+* Stripped ARM32 mode map: an even (ARM) relocated pointer into code whose
+  region votes Thumb marks ARM mode only when it is word-aligned and its own
+  words vote ARM. GCC computed-goto tables (lua's `luaV_execute`) are
+  relocated like function pointers but name even labels inside Thumb
+  functions; before, each one switched the rest of that function to ARM
+  decoding, so features of such functions in stripped Thumb images change.
+
 ## v1 — M1 extraction
 
 Initial spec, implementing docs/history/PLAN-v0.5.md section 4 for x86-64 and AArch64.

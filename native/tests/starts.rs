@@ -1,0 +1,109 @@
+//! Synthesized function starts on stripped real-corpus images (G4, M9).
+//!
+//! Each case loads a stripped copy, as hint-free discovery does, and labels
+//! its function list with the `.symtab` of the unstripped copy (labels only;
+//! the stripped image never sees them). The real corpus is generated, not
+//! committed: the tests read `SIGTOOL_REAL_CORPUS`, else `corpus/build-real`,
+//! and skip when the image is absent. `examples/start_recall.rs` gives the
+//! same measurement over the whole corpus.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use sigtool_native::elf::FileSource;
+use sigtool_native::source::ByteSource;
+
+fn corpus() -> PathBuf {
+    std::env::var_os("SIGTOOL_REAL_CORPUS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("repo root")
+                .join("corpus")
+                .join("build-real")
+        })
+}
+
+struct Starts {
+    /// `.symtab` FUNC symbols in scanned code (not the PLT), by address.
+    names: BTreeMap<u64, String>,
+    /// The stripped copy's function list.
+    found: BTreeSet<u64>,
+}
+
+impl Starts {
+    fn misses(&self) -> Vec<&str> {
+        self.names
+            .iter()
+            .filter(|(address, _)| !self.found.contains(address))
+            .map(|(_, name)| name.as_str())
+            .collect()
+    }
+
+    /// Starts that are no symbol, as `name+offset` of the symbol before them.
+    fn false_starts(&self) -> Vec<String> {
+        self.found
+            .iter()
+            .filter(|address| !self.names.contains_key(address))
+            .map(|address| match self.names.range(..*address).next_back() {
+                Some((start, name)) => format!("{name}+{:#x}", address - start),
+                None => format!("{address:#x}"),
+            })
+            .collect()
+    }
+}
+
+fn scanned(source: &FileSource, address: u64) -> bool {
+    source.regions().iter().any(|region| {
+        region.executable
+            && !region.name.starts_with(".plt")
+            && region.start <= address
+            && address < region.end()
+    })
+}
+
+fn load(arch: &str, build: &str, library: &str) -> Option<Starts> {
+    let root = corpus();
+    let full_path = root.join(arch).join(build).join(library);
+    let stripped_path = root.join("stripped").join(arch).join(build).join(library);
+    if !full_path.is_file() || !stripped_path.is_file() {
+        eprintln!("skip: {} is absent", stripped_path.display());
+        return None;
+    }
+    let full = FileSource::from_path(&full_path).expect("unstripped image");
+    let stripped = FileSource::from_path(&stripped_path).expect("stripped image");
+    let names = full.modules()[0]
+        .functions
+        .iter()
+        .filter(|(address, _)| scanned(&full, **address))
+        .map(|(address, name)| (*address, name.clone()))
+        .collect();
+    let found = stripped
+        .unwind_entries()
+        .iter()
+        .map(|(start, _)| *start)
+        .filter(|start| scanned(&stripped, *start))
+        .collect();
+    Some(Starts { names, found })
+}
+
+#[test]
+fn thumb_computed_goto_labels_are_not_function_starts() {
+    // lua's `luaV_execute` dispatches through a table of `&&label`
+    // addresses with `R_ARM_RELATIVE` relocations, like a function-pointer
+    // table, but the labels are even in Thumb code. Before the mode check,
+    // all 83 labels became starts and cut `luaV_execute` into pieces.
+    for build in ["gcc-O0", "gcc-O2", "clang-O2"] {
+        let Some(starts) = load("thumb", build, "lua.so") else {
+            return;
+        };
+        let inside: Vec<String> = starts
+            .false_starts()
+            .into_iter()
+            .filter(|start| start.starts_with("luaV_execute+"))
+            .collect();
+        assert!(inside.is_empty(), "thumb/{build}: {inside:?}");
+        assert!(!starts.misses().contains(&"luaV_execute"));
+    }
+}
