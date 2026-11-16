@@ -94,6 +94,16 @@
      "value": "loops:0"
     },
     {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
      "kind": "const",
      "value": "0xa"
     },
@@ -168,6 +178,16 @@
      "value": "0x1"
     },
     {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
      "kind": "ops",
      "value": "arith:4"
     },
@@ -216,6 +236,16 @@
     {
      "kind": "cfg",
      "value": "loops:0"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x5678"
     },
     {
      "kind": "const",

@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::errors::SelfTestError;
-use crate::features::{const_words, extract, Feature, FeatureKind};
+use crate::features::{const_words, extract, Feature, FeatureKind, INHERITED_PREFIX};
 use crate::normalize::{Kind, Normalizer};
 use crate::recover::{recover, RecoveryLimits};
 use crate::score::score_features;
@@ -141,12 +141,28 @@ pub fn compare(signature: &Signature, features: &[Feature]) -> MatchScore {
     compare_keys(signature, &present)
 }
 
+/// Fraction of a signature feature's weight earned when the candidate holds
+/// the key only through a small callee (SPEC.md §1.4). Below every match
+/// threshold (0.75), so a caller of a small function never matches that
+/// function's signature on inherited keys alone.
+pub const INHERITED_CREDIT: f64 = 0.5;
+
 /// [`compare`] against a candidate's precomputed key set.
 pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchScore {
     let matched: Vec<&crate::sigfile::SignatureFeature> = signature
         .features
         .iter()
         .filter(|feature| present.contains(&feature.key()))
+        .collect();
+    // Keys the candidate holds only through a small callee (SPEC.md §1.4):
+    // discounted, and never counted as distinct required evidence.
+    let inherited: Vec<&crate::sigfile::SignatureFeature> = signature
+        .features
+        .iter()
+        .filter(|feature| {
+            let key = feature.key();
+            !present.contains(&key) && present.contains(&format!("{INHERITED_PREFIX}{key}"))
+        })
         .collect();
     let mut required_weight: f64 = signature
         .features
@@ -169,9 +185,21 @@ pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchSc
             matched_required: 0,
         };
     }
-    let total: f64 = matched.iter().map(|feature| feature.weight).sum();
+    let total: f64 = matched.iter().map(|feature| feature.weight).sum::<f64>()
+        + inherited
+            .iter()
+            .map(|feature| feature.weight * INHERITED_CREDIT)
+            .sum::<f64>();
     let score = round_to((total / required_weight).min(1.0), SCORE_DECIMALS);
-    let mut matched_keys: Vec<String> = matched.iter().map(|feature| feature.key()).collect();
+    let mut matched_keys: Vec<String> = matched
+        .iter()
+        .map(|feature| feature.key())
+        .chain(
+            inherited
+                .iter()
+                .map(|feature| format!("{INHERITED_PREFIX}{}", feature.key())),
+        )
+        .collect();
     matched_keys.sort();
     MatchScore {
         score,
@@ -567,7 +595,9 @@ impl ScanContext {
                     else {
                         continue;
                     };
-                    for feature in &other.features {
+                    // Own evidence only: a neighbour's inherited callee
+                    // evidence (optional) is the next hop, not this one.
+                    for feature in other.features.iter().filter(|f| !f.inherited) {
                         let identifying = match feature.kind {
                             FeatureKind::Str => true,
                             FeatureKind::Const => !low_information_const(&feature.value),
@@ -1314,6 +1344,14 @@ pub fn similarity(signature: &Signature, candidate: &[(String, f64)]) -> f64 {
     let mut shared = 0.0;
     let mut extra = 0.0;
     for (key, weight) in candidate {
+        // An inherited key is the callee's, not extra weight of the
+        // candidate's own; it shares at the inherited discount.
+        if let Some(base) = key.strip_prefix(INHERITED_PREFIX) {
+            if let Some(signature_weight) = wanted.get(base) {
+                shared += signature_weight * INHERITED_CREDIT;
+            }
+            continue;
+        }
         match wanted.get(key) {
             Some(signature_weight) => shared += signature_weight,
             None => extra += weight,

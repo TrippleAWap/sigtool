@@ -60,7 +60,15 @@ pub struct Feature {
     pub kind: FeatureKind,
     pub value: String,
     pub required: bool,
+    /// Inherited from a small direct callee ([`inline_evidence`]), not the
+    /// function's own. Its key carries [`INHERITED_PREFIX`].
+    pub inherited: bool,
 }
+
+/// Key prefix of an inherited feature (`inl:str:...`): the matcher credits it
+/// against the signature's `str:...` at a discount, never as the function's
+/// own evidence.
+pub const INHERITED_PREFIX: &str = "inl:";
 
 impl Feature {
     pub fn new(kind: FeatureKind, value: impl Into<String>) -> Feature {
@@ -68,16 +76,134 @@ impl Feature {
             kind,
             value: value.into(),
             required: true,
+            inherited: false,
         }
     }
 
     pub fn key(&self) -> String {
+        let prefix = if self.inherited { INHERITED_PREFIX } else { "" };
+        format!("{prefix}{}:{}", self.kind.as_str(), self.value)
+    }
+
+    /// The key without the inherited prefix: what a signature names.
+    pub fn base_key(&self) -> String {
         format!("{}:{}", self.kind.as_str(), self.value)
     }
 }
 
-/// Extract the full feature set for a recovered function.
+/// Extract the full feature set for a recovered function: its own features
+/// plus the inline-invariant evidence of its small direct callees
+/// ([`inline_evidence`]).
 pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> Vec<Feature> {
+    let mut features = extract_own(source, func);
+    let own: HashSet<String> = features.iter().map(Feature::key).collect();
+    let mut inherited: Vec<Feature> = inline_evidence(source, func)
+        .into_iter()
+        .filter(|feature| !own.contains(&feature.base_key()))
+        .collect();
+    inherited.sort();
+    inherited.dedup_by(|left, right| left.key() == right.key());
+    features.extend(inherited);
+    features.sort();
+    features
+}
+
+/// A direct callee is "small", and lends its evidence to its callers, when
+/// it has at most this many instructions.
+pub const MAX_INLINE_CALLEE_INSTRUCTIONS: usize = 80;
+
+/// Direct callees recovered per function for [`inline_evidence`], lowest
+/// address first: bounds the cost on functions that call everything.
+pub const MAX_INLINE_CALLEES: usize = 32;
+
+/// The `str`, `const`, and `callee` features of `func`'s small direct
+/// callees in the image, marked inherited and optional.
+///
+/// Whether a helper is inlined differs between compilers and optimization
+/// levels (gcc -O2 keeps `deflateStateCheck` out of line where clang inlines
+/// it; -O0 inlines nothing), and inlining moves the helper's strings,
+/// constants, and calls into its caller. A signature taken where the helper
+/// was inlined demands those keys; a target that kept the call out of line
+/// still carries them, inherited. Inherited keys are candidate-side
+/// evidence only: generation signs own features, and the matcher credits an
+/// inherited key at a discount, so a caller of a small function does not
+/// look like the function itself. Callees are recovered without symbol hints
+/// (unwind bounds only), so a signed image and its stripped copy see the same
+/// callee bodies.
+pub fn inline_evidence<S: ByteSource + ?Sized>(
+    source: &S,
+    func: &RecoveredFunction,
+) -> Vec<Feature> {
+    let (start, end) = (func.start(), func.end());
+    let mut targets: Vec<u64> = func
+        .blocks
+        .iter()
+        .flat_map(|block| block.insns.iter())
+        .filter(|insn| matches!(insn.kind, Kind::Call | Kind::NoreturnCall | Kind::Jump))
+        .filter_map(|insn| {
+            let target = callee_definition(source, insn.target?, insn.callee.as_deref())?;
+            let outside = target < start || target >= end;
+            (outside && source.is_executable(target)).then_some(target)
+        })
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    targets.truncate(MAX_INLINE_CALLEES);
+    // Every block holds at least one instruction, so the block cap stops the
+    // walk of a large callee early instead of decoding it whole.
+    let limits = crate::recover::RecoveryLimits {
+        max_instructions: MAX_INLINE_CALLEE_INSTRUCTIONS,
+        max_blocks: MAX_INLINE_CALLEE_INSTRUCTIONS,
+        ..Default::default()
+    };
+    let mut inherited = Vec::new();
+    for target in targets {
+        let Ok(callee) = crate::recover::recover(source, target, Some(limits), false) else {
+            continue;
+        };
+        if callee.degraded || callee.instruction_count() > MAX_INLINE_CALLEE_INSTRUCTIONS {
+            continue;
+        }
+        for mut feature in extract_own(source, &callee) {
+            if matches!(
+                feature.kind,
+                FeatureKind::Str | FeatureKind::Const | FeatureKind::Callee
+            ) {
+                feature.required = false;
+                feature.inherited = true;
+                inherited.push(feature);
+            }
+        }
+    }
+    inherited
+}
+
+/// The function a direct call reaches: `None` for an import the image does
+/// not define, the export's definition for a call through the PLT to the
+/// image's own export (`-fPIC` shared objects call their exports that way),
+/// otherwise the call target.
+fn callee_definition<S: ByteSource + ?Sized>(
+    source: &S,
+    target: u64,
+    callee: Option<&str>,
+) -> Option<u64> {
+    let Some(name) = callee else {
+        return Some(target);
+    };
+    for module in source.modules() {
+        if let Some((_, address)) = module.exports.iter().find(|(export, _)| export == name) {
+            return Some(*address);
+        }
+    }
+    let imported = source
+        .modules()
+        .iter()
+        .any(|module| module.imports.values().any(|import| import == name));
+    (!imported).then_some(target)
+}
+
+/// The function's own features, without inherited callee evidence.
+pub fn extract_own<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> Vec<Feature> {
     let mut strings: HashSet<String> = HashSet::new();
     let mut consts: HashSet<u64> = HashSet::new();
     let mut callees: HashSet<String> = HashSet::new();
@@ -403,7 +529,8 @@ mod tests {
             0xC3, // 0x1015: ret
         ];
         body.resize(0x40, 0xCC);
-        body.push(0xC3); // 0x1040: helper
+        // 0x1040: helper: mov eax, 0x12345; ret
+        body.extend_from_slice(&[0xB8, 0x45, 0x23, 0x01, 0x00, 0xC3]);
         body.resize(0x50, 0xCC);
         body.push(0xC3); // 0x1050: api
         body.resize(0x60, 0xCC);
@@ -472,6 +599,25 @@ mod tests {
                 ("helper".to_string(), false),
             ]
         );
+    }
+
+    #[test]
+    fn small_callees_lend_their_evidence_as_optional_features() {
+        let source = call_fixture();
+        let func = recover(&source, 0x1000, None, true).expect("recover");
+        let features = extract(&source, &func);
+        // `helper`'s constant is inherited, optional; the helper itself
+        // keeps it required.
+        assert!(features
+            .iter()
+            .any(|f| f.key() == "inl:const:0x12345" && !f.required));
+        assert!(!extract_own(&source, &func)
+            .iter()
+            .any(|f| f.value == "0x12345"));
+        let helper = recover(&source, 0x1040, None, true).expect("helper");
+        assert!(extract(&source, &helper)
+            .iter()
+            .any(|f| f.key() == "const:0x12345" && f.required));
     }
 
     fn words(value: u64) -> Vec<u64> {

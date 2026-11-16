@@ -91,7 +91,16 @@ fn bless_vector(vector: &mut Value) {
             recover(&source, entry, None, true).unwrap_or_else(|error| panic!("{name}: {error}"));
         let features: Vec<Value> = extract(&source, &recovered)
             .iter()
-            .map(|feature| serde_json::json!({"kind": feature.kind.as_str(), "value": feature.value}))
+            .map(|feature| {
+                // Inherited callee evidence (SPEC.md §1.4) is marked; own
+                // records keep their two-field form.
+                let mut record =
+                    serde_json::json!({"kind": feature.kind.as_str(), "value": feature.value});
+                if feature.inherited {
+                    record["inherited"] = true.into();
+                }
+                record
+            })
             .collect();
         info["features"] = Value::Array(features);
         info["blocks"] = recovered.block_count().into();
@@ -138,11 +147,17 @@ fn golden_vectors_match_reference_features() {
             let recovered = recover(&source, entry, None, true)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
             let features = extract(&source, &recovered);
-            let actual: Vec<(String, String)> = features
+            let actual: Vec<(String, String, bool)> = features
                 .iter()
-                .map(|feature| (feature.kind.as_str().to_string(), feature.value.clone()))
+                .map(|feature| {
+                    (
+                        feature.kind.as_str().to_string(),
+                        feature.value.clone(),
+                        feature.inherited,
+                    )
+                })
                 .collect();
-            let expected: Vec<(String, String)> = info["features"]
+            let expected: Vec<(String, String, bool)> = info["features"]
                 .as_array()
                 .expect("features")
                 .iter()
@@ -150,6 +165,7 @@ fn golden_vectors_match_reference_features() {
                     (
                         item["kind"].as_str().expect("kind").to_string(),
                         item["value"].as_str().expect("value").to_string(),
+                        item["inherited"].as_bool().unwrap_or(false),
                     )
                 })
                 .collect();
