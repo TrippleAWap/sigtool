@@ -1,5 +1,22 @@
 # Spec changelog
 
+## Unreleased
+
+* Joint resolution weighs (signature, function) pairs by the scan's
+  similarity (§8), inherited keys included at `INHERITED_CREDIT`. Its own
+  copy of the formula predated inherited evidence and counted every `inl:`
+  key of a candidate as extra weight, so callers of small helpers (the true
+  function among them) lost similarity and fell below the 0.2 pair floor.
+  Real corpus, hint-free, `--max-functions 4 --joint`, G2 rows (v4 baseline
+  -> now): other arch same build 0.763 -> 0.777, other arch other compiler
+  0.493 -> 0.571, other arch cross opt 0.402 -> 0.466, same arch other
+  compiler 0.633 -> 0.702, same arch cross opt 0.469 -> 0.540; joint false
+  hits in unrelated libraries unchanged and equal to scanned-alone. Lost:
+  own-feature similarity only (inherited keys ignored on both sides) reached
+  0.777 / 0.536 / 0.434 / 0.671; the 0.2 floor re-measured (0.15 joint false
+  hits cjson 0.049 -> 0.407, lz4 0.015 -> 0.128, zlib 0.017 -> 0.158; 0.25
+  0.760 / 0.497 / 0.416 / 0.683).
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,

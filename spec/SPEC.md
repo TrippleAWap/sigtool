@@ -512,7 +512,9 @@ scanned.
 
 1. Candidates are the target's unwind entries (hint-free) or function starts
    (hinted) and their direct call targets. A (signature, function) pair is
-   weighed when its similarity is at least 0.2; the full acceptance gate is
+   weighed when its similarity (as in the scan, inherited `inl:` keys
+   credited at `INHERITED_CREDIT` and not counted as extra weight, §1.4) is
+   at least 0.2; the full acceptance gate is
    not required, because across compilers the required features are exactly
    what changed and the call graph checks the placement instead. Its base
    weight is the similarity plus `0.2 × (1/(1+|Δout|) + 1/(1+|Δin|)) / 2`,

@@ -1567,41 +1567,60 @@ fn weigh(features: &[Feature]) -> Vec<(String, f64)> {
 /// larger function that merely contains the same strings or constants pays for
 /// everything else it holds.
 pub fn similarity(signature: &Signature, candidate: &[(String, f64)]) -> f64 {
-    let wanted: HashMap<String, f64> = signature
-        .features
-        .iter()
-        .map(|feature| (feature.key(), feature.weight))
-        .collect();
-    // Summed in document order: a `HashMap` iterates in a per-process random
-    // order, and the last-bit difference flipped `round_to` at a .5 boundary,
-    // so two runs ranked tied lookalikes differently. Keys are unique
-    // (`Signature::validate`), so this is the same sum.
-    let total: f64 = signature
-        .features
-        .iter()
-        .map(|feature| feature.weight)
-        .sum();
-    let mut shared = 0.0;
-    let mut extra = 0.0;
-    for (key, weight) in candidate {
-        // An inherited key is the callee's, not extra weight of the
-        // candidate's own; it shares at the inherited discount.
-        if let Some(base) = key.strip_prefix(INHERITED_PREFIX) {
-            if let Some(signature_weight) = wanted.get(base) {
-                shared += signature_weight * INHERITED_CREDIT;
-            }
-            continue;
-        }
-        match wanted.get(key) {
-            Some(signature_weight) => shared += signature_weight,
-            None => extra += weight,
+    SimilarityKeys::new(signature).similarity(candidate)
+}
+
+/// A signature's key weights for [`similarity`], built once so a caller
+/// comparing one signature with many candidates (joint resolution) does not
+/// rebuild the map per candidate, and cannot drift from the scan's rule.
+pub struct SimilarityKeys {
+    wanted: HashMap<String, f64>,
+    total: f64,
+}
+
+impl SimilarityKeys {
+    pub fn new(signature: &Signature) -> SimilarityKeys {
+        SimilarityKeys {
+            wanted: signature
+                .features
+                .iter()
+                .map(|feature| (feature.key(), feature.weight))
+                .collect(),
+            // Summed in document order: a `HashMap` iterates in a per-process
+            // random order, and the last-bit difference flipped `round_to` at
+            // a .5 boundary, so two runs ranked tied lookalikes differently.
+            // Keys are unique (`Signature::validate`), so this is the same sum.
+            total: signature
+                .features
+                .iter()
+                .map(|feature| feature.weight)
+                .sum(),
         }
     }
-    let denominator = total + extra;
-    if denominator <= 0.0 {
-        0.0
-    } else {
-        round_to(shared / denominator, SCORE_DECIMALS)
+
+    pub fn similarity(&self, candidate: &[(String, f64)]) -> f64 {
+        let mut shared = 0.0;
+        let mut extra = 0.0;
+        for (key, weight) in candidate {
+            // An inherited key is the callee's, not extra weight of the
+            // candidate's own; it shares at the inherited discount.
+            if let Some(base) = key.strip_prefix(INHERITED_PREFIX) {
+                if let Some(signature_weight) = self.wanted.get(base) {
+                    shared += signature_weight * INHERITED_CREDIT;
+                }
+                continue;
+            }
+            match self.wanted.get(key) {
+                Some(signature_weight) => shared += signature_weight,
+                None => extra += weight,
+            }
+        }
+        let denominator = self.total + extra;
+        if denominator <= 0.0 {
+            0.0
+        } else {
+            round_to(shared / denominator, SCORE_DECIMALS)
+        }
     }
 }
 

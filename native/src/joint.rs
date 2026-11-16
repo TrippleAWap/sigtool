@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use crate::matcher::{
     compare_keys, identified, identified_answer, rank_key, Candidate, Match, ScanContext,
+    SimilarityKeys,
 };
 use crate::sigfile::{parse_link, Signature};
 use crate::source::ByteSource;
@@ -33,6 +34,9 @@ pub const JOINT_PREFIX: &str = "joint:";
 /// 0.1 lets the mapping preserve enough links by chance in unrelated
 /// libraries to pass the module gate (joint false hits 46 -> 259 or 639 of
 /// 2862 signatures), 0.25 loses 0.04-0.05 recall in the cross-compiler rows.
+/// Re-measured with inherited keys credited as in the scan (v4 corpus,
+/// hint-free): 0.15 raises cjson/lz4/zlib joint false hits 0.049/0.015/0.017
+/// -> 0.407/0.128/0.158; 0.25 loses 0.02-0.07 on every G2 row.
 pub const JOINT_MIN_SIMILARITY: f64 = 0.2;
 
 /// Weight added to the pair a signature's scan identified (its untied
@@ -186,50 +190,6 @@ fn universe<S: ByteSource + ?Sized>(
     .into_iter()
     .flatten()
     .collect()
-}
-
-/// Weighted Jaccard of one signature against many candidates, with the
-/// signature's key map built once ([`crate::matcher::similarity`] rebuilds it
-/// per call). Sums in the same order and rounds the same way, so the values
-/// are equal.
-struct Prepared {
-    wanted: HashMap<String, f64>,
-    total: f64,
-}
-
-impl Prepared {
-    fn new(signature: &Signature) -> Prepared {
-        Prepared {
-            wanted: signature
-                .features
-                .iter()
-                .map(|feature| (feature.key(), feature.weight))
-                .collect(),
-            total: signature
-                .features
-                .iter()
-                .map(|feature| feature.weight)
-                .sum(),
-        }
-    }
-
-    fn similarity(&self, candidate: &[(String, f64)]) -> f64 {
-        let mut shared = 0.0;
-        let mut extra = 0.0;
-        for (key, weight) in candidate {
-            match self.wanted.get(key) {
-                Some(signature_weight) => shared += signature_weight,
-                None => extra += weight,
-            }
-        }
-        let denominator = self.total + extra;
-        if denominator <= 0.0 {
-            0.0
-        } else {
-            let value = shared / denominator;
-            format!("{value:.6}").parse::<f64>().unwrap_or(value)
-        }
-    }
 }
 
 /// One signature's weighable pairs, sorted by address: `(address,
@@ -412,9 +372,9 @@ fn resolve_group<S: ByteSource + ?Sized>(
     functions: &[Arc<Candidate>],
     degrees: &[(usize, usize)],
 ) {
-    let prepared: Vec<Prepared> = group
+    let prepared: Vec<SimilarityKeys> = group
         .iter()
-        .map(|index| Prepared::new(&signatures[*index]))
+        .map(|index| SimilarityKeys::new(&signatures[*index]))
         .collect();
     let mut rows: Vec<Row> = crate::parallel::map(group.len(), |local| {
         let signature = &signatures[group[local]];
@@ -566,7 +526,7 @@ pub fn report<S: ByteSource + ?Sized>(
             "n": candidate.as_ref().map_or(0, |c| c.calls.len()),
         })
     });
-    let prepared: Vec<Prepared> = signatures.iter().map(Prepared::new).collect();
+    let prepared: Vec<SimilarityKeys> = signatures.iter().map(SimilarityKeys::new).collect();
     let pairs: Vec<serde_json::Value> = crate::parallel::map(signatures.len(), |index| {
         let signature = &signatures[index];
         let mut row = Vec::new();
