@@ -102,6 +102,11 @@
      "value": "loops:0"
     },
     {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
      "kind": "ops",
      "value": "arith:3"
     },
@@ -164,6 +169,11 @@
      "value": "0x1"
     },
     {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x5678"
+    },
+    {
      "kind": "ops",
      "value": "arith:3"
     },
@@ -208,6 +218,11 @@
     {
      "kind": "cfg",
      "value": "loops:0"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x5678"
     },
     {
      "kind": "const",

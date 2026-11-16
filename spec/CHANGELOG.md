@@ -21,6 +21,28 @@ Not yet versioned; the integrator bumps `SPEC_VERSION` once for these.
   tail calls) record the callee the slot names (an import, else the
   pointer it holds), like x86-64 `call [rip+slot]`. Any other use of the
   register in between, or a control transfer, drops the slot.
+## Unreleased — M10 cross-build robustness
+
+Not yet versioned: `SPEC_VERSION` stays `3` until the integrator bumps it.
+Feature records change (inherited records), so the bump is required.
+
+* Inline-invariant evidence (SPEC.md §1.4): a function's features also carry
+  the `str`, `const`, and `callee` features of its small direct callees (at
+  most 80 instructions, at most 32 callees), as *inherited* records with
+  keys prefixed `inl:`. Signatures are still generated from own features
+  only; the matcher credits a signature feature the candidate holds only as
+  inherited at 0.5 of its weight (score and similarity), never as distinct
+  required evidence, never as identifying or a named callee. Neighbour keys
+  use own features only. Measured hint-free on the stripped real corpus
+  (x64 + arm64): with `--max-functions 4`, other compiler 0.400 -> 0.408,
+  cross opt 0.302 -> 0.307, other arch other compiler 0.292 -> 0.296, merged
+  cross opt 0.353 -> 0.363, FP rate 0.125 unchanged, identified precision
+  0.891 -> 0.888; with `--max-functions 24` (recall only), other compiler
+  0.460 -> 0.467, cross opt 0.353 -> 0.365, other arch other compiler
+  0.368 -> 0.379, other arch cross opt 0.301 -> 0.312, identified precision
+  0.878 -> 0.876. Full credit (inherited keys matched like own ones) gained
+  4-6 points of top-1 but cost 0.03 FP rate and 0.025-0.05 identified
+  precision: every caller of a small function then matched its signature.
 
 ## v1 — M1 extraction
 

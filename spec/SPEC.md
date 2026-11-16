@@ -61,6 +61,37 @@ class; a conditional return (`bxeq lr`, `popeq {..., pc}`) is a conditional
 exit with fall-through, never an unconditional terminator. PE images use the
 container mode (`0x01c0` ARM, `0x01c2`/`0x01c4` Thumb).
 
+### 1.4 Inline-invariant evidence
+
+Whether a helper is inlined differs between compilers and optimization
+levels, and inlining moves the helper's strings, constants, and calls into
+its caller. A signature taken where the helper was inlined demands those
+keys; a target that kept the call out of line holds them one call away. The
+extracted features therefore also carry the `str`, `const`, and `callee`
+features of the function's *small direct callees*, as *inherited* records
+(optional, key prefixed `inl:`, e.g. `inl:const:0x5678`):
+
+* A direct callee is the target of a call or tail call that leaves the
+  function and lands in executable code of the image. A call through a PLT
+  stub to an export the image defines reaches the export's definition; an
+  import the image does not define is no callee here. At most
+  `MAX_INLINE_CALLEES` (32) callees are read, lowest address first.
+* A callee is small when its recovery, without symbol hints (unwind bounds
+  only, so a signed image and its stripped copy agree), completes within
+  `MAX_INLINE_CALLEE_INSTRUCTIONS` (80) instructions and as many blocks.
+* Only the callee's own features are inherited (one hop). A key the function
+  has itself is not inherited again.
+* Inherited records are candidate-side evidence. Generation signs own
+  features only, so a signature never carries `inl:` keys; neighbour keys
+  (§7) are built from own features only.
+* In matching (§8), a signature feature the candidate holds only as
+  inherited earns `INHERITED_CREDIT` (0.5) of its weight in the score and in
+  similarity. It does not count toward `min_distinct`, is reported in
+  `matched` with its `inl:` prefix, and is neither identifying nor a named
+  callee. 0.5 is below every match threshold, so a caller of a small function
+  cannot match that function's signature on inherited keys alone; at full
+  credit every such caller did, and the hint-free FP rate rose by 0.03.
+
 ## 2. Address normalization
 
 Rule 4 of AGENTS.md: **no absolute address may appear in a feature.**
@@ -426,6 +457,10 @@ Score definition, rounded to six decimals:
 ```
 score = min(1, (matched_required_weight + matched_optional_weight) / required_weight)
 ```
+
+A feature matched only through an inherited `inl:` key (§1.4) contributes
+`0.5 * weight` to the matched weight and is not counted in
+`matched_required`.
 
 Optional features can only add evidence: the denominator is the required
 weight, so a candidate that lost a required feature scores below the threshold

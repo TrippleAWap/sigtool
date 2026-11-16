@@ -373,4 +373,49 @@ As of 2026-11-15, `native-first` branch, spec v3.
   Identified precision hint-free 0.981, hinted 0.987; FP hint-free 0.163 ->
   0.156, hinted any-verdict 0.196 -> 0.113, strong 0.072 -> 0.042; top-1
   unchanged hint-free, +10 hits hinted. Not yet run on held-out.
+    yet; the 150-signature hint-free scan cost (G5) is not measured.
+- M10 (started 2026-11-16, `m10-cross-build` branch):
+  - Miss diagnosis (`examples/diagnose_cross`: the bench's signatures
+    compared with the stripped target's true function, hint-free; 20
+    functions x 24 builds at `--max-functions 4`). The true function is
+    almost never outranked (0.5-2.7%) or missing from the candidates
+    (0.8-1.9%); it fails acceptance. Other compiler / cross opt / other arch
+    / other arch other compiler / other arch cross opt: score below threshold
+    0.18 / 0.25 / 0.17 / 0.26 / 0.31, `min_distinct` or shape gate 0.42 /
+    0.42 / 0.45 / 0.47 / 0.45, hint-free gates 0.04.
+  - 62% of those signatures (45% at `--max-functions 24`) have no
+    identifying required feature, and only 49% have neighbour keys. Their
+    shape gate cannot pass cross-build: on true pairs each `ops` bucket
+    disagrees 55-98% of the time, `cfg:blocks`/`edges` 48%, `cfg:loops`
+    30-34%. Coarser buckets (±1) simulated +0.05-0.07 acceptance, but these
+    signatures are where every false positive comes from; not built.
+  - Inlining: when a signature with identifying evidence fails a cross-opt
+    target (x64+arm64, 24 functions per image), 65% of its missing required
+    strings sit in one of the target's direct callees (callee names 57%,
+    distinctive constants 27%). Built as
+    inherited evidence at half credit (SPEC.md §1.4): full real bench G1
+    hint-free other compiler 0.304 -> 0.312, cross opt 0.249 -> 0.253, other
+    arch 0.300 -> 0.301, other arch other compiler 0.210 -> 0.211, other
+    arch cross opt 0.181 -> 0.180; G2 joint other arch other compiler 0.313
+    -> 0.338, other arch cross opt 0.266 -> 0.296, same arch other compiler
+    0.437 -> 0.478, other arch same build 0.537 -> 0.534; FP rates
+    unchanged, identified precision hint-free 0.848 -> 0.843. Cells below
+    tolerance: arm64 clang-O2 -> gcc-Os hint-free top-1 0.400 -> 0.350 (one
+    function of 20), joint lua x64 -> arm32 clang-O2 -> gcc-O2 0.373 ->
+    0.320 (84 joint cells up, 11 down). Full credit gained 4-6 points on
+    the x64+arm64 slice but raised the hint-free FP rate 0.125 -> 0.155.
+  - Lost: near-zero constants optional beside identifying evidence (+0.03-
+    0.05 cross-opt top-1 on x64+arm64, lower FP rates) fails the toy gate:
+    hint-free identified precision 0.938 -> 0.876 and x64->arm64 Os cells
+    -0.06, because inliners of a helper then match its signature. Strings-
+    only condition simulated no gain.
+  - Open, needs a rule decision: the pointer test drops every constant
+    inside the module span, and a shared object maps at 0, so in-range
+    numbers (zlib's 0xfff1, LZ4 sizes) vanish, and differently per build
+    (image sizes differ) and per base (a live process maps high). 22% of
+    signatures lose such a constant; keeping non-pointer values simulated
+    +0.04-0.08 acceptance. AGENTS.md hard rule 4 forbids it as written.
+  - Recovery is not the cause: hint-free coverage of ground-truth bodies is
+    0.94-1.00 per image and indirect (switch) jumps occur in 0-9% of
+    functions (`examples/recovery_coverage`).
 - Next: finish M8, then M9.

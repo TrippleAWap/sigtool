@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::errors::{DecodeError, SelfTestError, SignatureError};
-use crate::features::extract;
+use crate::features::extract_own;
 use crate::matcher::{self_test, self_test_in, Match, ScanContext, MAX_CANDIDATE_STARTS};
 use crate::recover::{recover, RecoveryLimits};
 use crate::score::{
@@ -103,7 +103,10 @@ pub fn generate_in<S: ByteSource + ?Sized>(
     context: Option<&ScanContext>,
 ) -> Result<GenerationResult, GenerateError> {
     let recovered = recover(source, addr, limits, true)?;
-    let features = extract(source, &recovered);
+    // A signature describes the function's own evidence. Inherited callee
+    // evidence (SPEC.md §1.4) is matched on the candidate side only: signing
+    // it would make every caller of a small helper carry the helper's keys.
+    let features = extract_own(source, &recovered);
     let scored = score_features(&features, idf);
     let anchors = select_anchors(&scored, MAX_ANCHORS);
     let required_count = scored.iter().filter(|item| item.required).count();
