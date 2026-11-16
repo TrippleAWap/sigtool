@@ -444,7 +444,24 @@ unwind-table functions), a hint-free match must also pass:
   `str`, a `callee` without `!`, or a `const` at least `0x100` from zero), need
   at least 6 matched features, unless they share a neighbour key;
 * a shape-only match that shares none of the signature's neighbour keys is
-  rejected when the signature has at least 2 of them.
+  rejected when the signature has at least 2 of them;
+* a shape-only match needs similarity at least 0.3.
+
+**Hinted acceptance.** On an image with at least 32 known function starts, a
+hinted match that is shape-only needs at least 6 matched features and
+similarity at least 0.3, as in hint-free mode; the chance and neighbour gates
+are hint-free only.
+
+**Evidence labels.** Each match in a ranked list carries one label:
+
+* `identified`: the first match, not tied with the second, with an
+  identifying key, and with similarity at least 0.3 when no `str` matched
+  but a direct neighbour key (`near:in:`, `near:out:`) or a `joint:` vote
+  did, or at least 0.7 when only callees, constants, or two-hop neighbour
+  keys identify it (a matched `str` needs no floor);
+* `candidate`: identifying keys, but not the answer (not first, tied, or
+  below its floor);
+* `shape-only`: no identifying key.
 
 The candidate's neighbour keys are computed the same way as at generation, on
 the target. Shared keys are reported in `matched` as `near:HOP:KIND:VALUE` and
