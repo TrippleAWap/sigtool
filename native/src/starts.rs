@@ -294,6 +294,122 @@ pub fn label_tables(slots: &[(u64, u64)], slot_size: u64, known: &[u64]) -> Vec<
     labels
 }
 
+/// Bytes one x86-64 function walk decodes when its end is not known.
+const MAX_X64_WALK_BYTES: u64 = 1 << 16;
+
+/// Starts for x86-64 PE images that `.pdata` does not list.
+///
+/// Windows x64 requires a `RUNTIME_FUNCTION` only for functions that move
+/// the stack pointer or save registers, so leaf functions (no frame, no
+/// calls) have none, and an image may carry no `.pdata` at all. A function
+/// that is a direct call target is a function, so each `table` entry is
+/// decoded over its exact extent, and each export in `roots` until a
+/// terminator no forward branch jumps past, collecting `call rel32` targets,
+/// and `jmp rel32` tail calls out of an exact extent, that land in code
+/// outside every table extent. New targets are walked too
+/// (bounded), so a table-less image is discovered from its exports.
+pub fn x64_call_targets(regions: &[Region], table: &[UnwindEntry], roots: &[u64]) -> Vec<u64> {
+    use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction};
+
+    let code: Vec<&Region> = regions.iter().filter(|r| r.executable).collect();
+    let region_of = |address: u64| {
+        code.iter()
+            .find(|region| region.start <= address && address < region.end())
+    };
+    let inside_table = |address: u64| {
+        let index = table.partition_point(|(start, _)| *start <= address);
+        index > 0 && address < table[index - 1].1
+    };
+    let mut found: Vec<u64> = Vec::new();
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // `(start, end)`; `end == 0` walks to the first unjumped terminator.
+    let mut work: Vec<(u64, u64)> = table.to_vec();
+    work.extend(roots.iter().map(|root| (*root, 0)));
+    let mut budget = MAX_START_SWEEP_BYTES as u64;
+    let mut cursor = 0usize;
+    while cursor < work.len() {
+        let (start, end) = work[cursor];
+        cursor += 1;
+        if !seen.insert(start) {
+            continue;
+        }
+        let Some(region) = region_of(start) else {
+            continue;
+        };
+        let limit = if end > start {
+            end.min(region.end())
+        } else {
+            region.end().min(start.saturating_add(MAX_X64_WALK_BYTES))
+        };
+        if limit <= start || budget < limit - start {
+            continue;
+        }
+        budget -= limit - start;
+        let offset = (start - region.start) as usize;
+        let bytes = &region.data[offset..offset + (limit - start) as usize];
+        let mut decoder = Decoder::with_ip(64, bytes, start, DecoderOptions::NONE);
+        let mut instruction = Instruction::default();
+        let mut reach = start;
+        while decoder.can_decode() {
+            decoder.decode_out(&mut instruction);
+            if instruction.is_invalid() {
+                break;
+            }
+            let next = instruction.next_ip();
+            match instruction.flow_control() {
+                FlowControl::Call => {
+                    let target = instruction.near_branch_target();
+                    if instruction.is_call_near()
+                        && region_of(target).is_some()
+                        && !inside_table(target)
+                        && found.len() < MAX_UNWIND_ENTRIES
+                    {
+                        found.push(target);
+                        if work.len() < MAX_UNWIND_ENTRIES {
+                            work.push((target, 0));
+                        }
+                    }
+                }
+                FlowControl::ConditionalBranch => {
+                    let target = instruction.near_branch_target();
+                    if target > reach && target < limit {
+                        reach = target;
+                    }
+                }
+                FlowControl::UnconditionalBranch => {
+                    let target = instruction.near_branch_target();
+                    // A `jmp` out of an exact extent is a tail call.
+                    let tail = end > start && (target < start || target >= end);
+                    if tail
+                        && region_of(target).is_some()
+                        && !inside_table(target)
+                        && found.len() < MAX_UNWIND_ENTRIES
+                    {
+                        found.push(target);
+                        if work.len() < MAX_UNWIND_ENTRIES {
+                            work.push((target, 0));
+                        }
+                    }
+                    if end == 0 && target > next && target < limit && target > reach {
+                        reach = target;
+                    } else if end == 0 && next > reach {
+                        break;
+                    }
+                }
+                FlowControl::Return | FlowControl::IndirectBranch | FlowControl::Interrupt
+                    if end == 0 && next > reach =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
 /// Merge `synthesized` starts into unwind `table` entries.
 ///
 /// Table entries always win. With `exact_ends` (`.eh_frame`, `.pdata`) each
@@ -979,6 +1095,29 @@ mod tests {
 
     fn words(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn x64_call_targets_never_panic_on_random_bytes() {
+        let mut state = 0x2545_f491u32;
+        for size in [0usize, 1, 5, 64, 4097, 1 << 16] {
+            let data: Vec<u8> = (0..size)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                })
+                .collect();
+            let regions = vec![region(".text", 0x1000, data, true)];
+            let table = vec![(0x1000, 0x1000 + size as u64 / 2), (0x1003, 0x0fff)];
+            let roots = [0x1000 + size as u64 / 3, 0x0fff, u64::MAX];
+            let first = x64_call_targets(&regions, &table, &roots);
+            assert_eq!(first, x64_call_targets(&regions, &table, &roots));
+            assert!(first
+                .iter()
+                .all(|t| (0x1000..0x1000 + size as u64).contains(t)));
+        }
     }
 
     #[test]
