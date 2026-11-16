@@ -172,6 +172,33 @@ do not. Not yet versioned: whether this needs a `SPEC_VERSION` bump is open
   unchanged, hinted 4127 -> 4137 hits; hinted found-anywhere 4903 -> 4637
   (shape-only lookalikes below the top removed).
 
+### Joint resolution 2.0 (M11)
+
+Joint resolution's output semantics change; feature records, the signature
+document, and single-signature acceptance do not (SPEC.md §8).
+
+* Greedy pinning rounds are replaced by a one-to-one assignment of each
+  module's signatures to every target function with similarity at least
+  0.2, weighed by similarity, call-graph degree agreement, and the scan's
+  `identified` answer, refined by preserved links, and trusted only when it
+  preserves at least 6 link ends and a fifth of those it could.
+* `joint:N` now counts links the mapping preserves; `joint:0` (placed without
+  a preserved link) ranks first but is not identifying. Seeds use
+  `identified_answer`; the release step is gone (no measurable effect).
+* Real corpus, hint-free, `bench --joint` (x64 clang-O2 module sets): other
+  arch same build 0.537 -> 0.771, other arch other compiler 0.313 -> 0.527,
+  other arch other opt 0.265 -> 0.430, same arch other compiler 0.437 ->
+  0.670, same arch other opt 0.346 -> 0.499. Joint false hits in unrelated
+  libraries equal scanned-alone in every library (zlib 10 -> 8 of 480).
+* Rejected in simulation (`bench --joint-report`): global best-first pinning
+  (+0.002), Hungarian instead of greedy (within 0.003), sibling relations
+  through a shared unsigned neighbour as a bonus (-0.02 to -0.05) or as
+  acceptance (zlib false hits 8 -> 18), pair floors 0.15 / 0.1 (false hits
+  46 -> 259 / 639), accepting graph-supported placements without the module
+  gate (zlib 8 -> 10), and breaking weight ties by address (+0.005, but a
+  guess). Call order is not in the signature (`links` are sorted sets), so
+  only order-free degrees are used.
+
 ## v2 — portable features
 
 `SPEC_VERSION` is `2`. Constant words and portable callees change feature

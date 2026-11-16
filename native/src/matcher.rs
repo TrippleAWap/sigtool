@@ -838,12 +838,12 @@ pub fn corroboration(found: &Match) -> usize {
         .count()
 }
 
-/// How matches are ordered, best first: call-graph votes from joint
-/// resolution ([`crate::joint`]), shared neighbour evidence, similarity, then
-/// score. Two matches with equal keys are a tie.
+/// How matches are ordered, best first: placement by joint resolution and
+/// the links it preserves ([`crate::joint::rank`]), shared neighbour
+/// evidence, similarity, then score. Two matches with equal keys are a tie.
 pub fn rank_key(found: &Match) -> (usize, usize, f64, f64) {
     (
-        crate::joint::votes(found),
+        crate::joint::rank(found),
         corroboration(found),
         found.similarity,
         found.score,
@@ -856,7 +856,9 @@ pub fn identifying_key(key: &str) -> bool {
     match key.split_once(':') {
         Some(("str", _)) => true,
         Some(("near", _)) => true,
-        Some(("joint", _)) => true,
+        // `joint:0` is a placement by similarity and the one-to-one mapping
+        // alone; only preserved call-graph links identify.
+        Some(("joint", votes)) => votes != "0",
         Some(("callee", value)) => !low_information_callee(value),
         Some(("const", value)) => !low_information_const(value),
         _ => false,
@@ -959,11 +961,12 @@ pub fn identified_answer(matches: &[Match]) -> bool {
     let named_by_string = first.matched.iter().any(|key| key.starts_with("str:"));
     let floor = if named_by_string {
         0.0
-    } else if first.matched.iter().any(|key| {
-        key.starts_with("near:in:")
-            || key.starts_with("near:out:")
-            || key.starts_with(crate::joint::JOINT_PREFIX)
-    }) {
+    } else if first
+        .matched
+        .iter()
+        .any(|key| key.starts_with("near:in:") || key.starts_with("near:out:"))
+        || crate::joint::votes(first) > 0
+    {
         MIN_ANSWER_SIMILARITY_NEIGHBOUR
     } else {
         MIN_ANSWER_SIMILARITY
