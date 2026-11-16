@@ -169,8 +169,20 @@ fn thumb_computed_goto_labels_are_not_function_starts() {
     // addresses with `R_ARM_RELATIVE` relocations, like a function-pointer
     // table, but the labels are even in Thumb code. Before the mode check,
     // all 83 labels became starts and cut `luaV_execute` into pieces.
+    labels_stay_inside_luav_execute("thumb");
+}
+
+#[test]
+fn arm_computed_goto_tables_are_not_function_starts() {
+    // In ARM code the labels are even like functions, so the mode check
+    // cannot tell them apart; `starts::label_tables` does, because all 83
+    // targets fall between the same two known starts.
+    labels_stay_inside_luav_execute("arm32");
+}
+
+fn labels_stay_inside_luav_execute(arch: &str) {
     for build in ["gcc-O0", "gcc-O2", "clang-O2"] {
-        let Some(starts) = load("thumb", build, "lua.so") else {
+        let Some(starts) = load(arch, build, "lua.so") else {
             return;
         };
         let inside: Vec<String> = starts
@@ -178,7 +190,7 @@ fn thumb_computed_goto_labels_are_not_function_starts() {
             .into_iter()
             .filter(|start| start.starts_with("luaV_execute+"))
             .collect();
-        assert!(inside.is_empty(), "thumb/{build}: {inside:?}");
+        assert!(inside.is_empty(), "{arch}/{build}: {inside:?}");
         assert!(!starts.misses().contains(&"luaV_execute"));
     }
 }

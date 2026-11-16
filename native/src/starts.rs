@@ -43,6 +43,13 @@ const MAX_TABLE_ENTRIES: usize = 4096;
 /// 0.9758, 8 bytes 0.9901 / 0.9841, 16 bytes 0.9936 / 0.9851, 32 bytes
 /// 0.9941 / 0.9853, and 64 or 256 bytes no further gain.
 const PIC_WINDOW: u64 = 32;
+/// Distinct targets in one gap that make a pointer run a label table
+/// ([`label_tables`]). Real corpus, stripped arm32 recall/precision by
+/// value: rule off 0.9941/0.9735 (lua's 83-label `luaV_execute` table in
+/// every build), 2: 0.9873/0.9995, 4: 0.9918, 8: 0.9933 (function tables
+/// with 8-15 adjacent pointer-only callbacks lose them), 16 and 32:
+/// 0.9941/0.9995. 32 keeps a margin over the largest such callback group.
+pub const MIN_LABEL_RUN: usize = 32;
 
 /// What the sweep found, kept apart so each rule can be measured.
 #[derive(Debug, Clone, Default)]
@@ -217,6 +224,62 @@ pub fn synthesize(found: &Evidence) -> Vec<u64> {
     starts.dedup();
     starts.truncate(MAX_UNWIND_ENTRIES);
     starts
+}
+
+/// Pointer targets that are code labels, not functions: GCC computed-goto
+/// tables (`static void *disptab[] = { &&L_OP_MOVE, ... }`, lua's
+/// `luaV_execute`) are relocated exactly like function-pointer tables, but
+/// every entry lands inside one function. Within one run of consecutive
+/// `slots` (`(slot, pointer)`, `slot_size` apart), at least
+/// [`MIN_LABEL_RUN`] distinct targets that fall between the same two
+/// consecutive `known` starts (evidence other than pointers, and unwind
+/// entries), and are not known themselves, are returned as labels. A real
+/// function-pointer table spans functions that have starts of their own.
+pub fn label_tables(slots: &[(u64, u64)], slot_size: u64, known: &[u64]) -> Vec<u64> {
+    let mut known = known.to_vec();
+    known.sort_unstable();
+    known.dedup();
+    let mut slots = slots.to_vec();
+    slots.sort_unstable();
+    slots.dedup_by_key(|(slot, _)| *slot);
+    let mut labels = Vec::new();
+    let mut flush = |run: &[(u64, u64)]| {
+        if run.len() < MIN_LABEL_RUN {
+            return;
+        }
+        // Group the run's targets by the gap between known starts they fall
+        // in; adjacent tables share a run, so a gap rather than the whole
+        // run must hold them.
+        let mut gaps: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+        for (_, pointer) in run {
+            let target = pointer & !1;
+            if known.binary_search(&target).is_err() {
+                let gap = known.partition_point(|start| *start <= target);
+                gaps.entry(gap).or_default().push(target);
+            }
+        }
+        for mut targets in gaps.into_values() {
+            // A table repeating one callback (`{noop, noop, ...}`) names one
+            // function, so only distinct targets count.
+            targets.sort_unstable();
+            targets.dedup();
+            if targets.len() >= MIN_LABEL_RUN {
+                labels.extend(targets);
+            }
+        }
+    };
+    let mut begin = 0usize;
+    for index in 1..=slots.len() {
+        let continues =
+            index < slots.len() && slots[index].0 == slots[index - 1].0.wrapping_add(slot_size);
+        if !continues {
+            flush(&slots[begin..index]);
+            begin = index;
+        }
+    }
+    labels.sort_unstable();
+    labels.dedup();
+    labels
 }
 
 /// Merge `synthesized` starts into unwind `table` entries.
@@ -901,6 +964,26 @@ mod tests {
 
     fn words(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn label_tables_need_many_distinct_targets_in_one_gap() {
+        let known = [0x1000, 0x9000, 0xa000];
+        // 40 labels inside the function at 0x1000, then a function table
+        // whose targets each have a start, all in one run of slots.
+        let mut slots: Vec<(u64, u64)> =
+            (0..40).map(|i| (0x20000 + i * 4, 0x1100 + i * 8)).collect();
+        slots.push((0x20000 + 40 * 4, 0x9000));
+        slots.push((0x20000 + 41 * 4, 0xa000));
+        let labels = label_tables(&slots, 4, &known);
+        assert_eq!(labels.len(), 40);
+        assert!(!labels.contains(&0x9000));
+        // One callback repeated is one function, not a table of labels.
+        let repeated: Vec<(u64, u64)> = (0..40).map(|i| (0x30000 + i * 4, 0x1100)).collect();
+        assert!(label_tables(&repeated, 4, &known).is_empty());
+        // Labels spread over gaps, or slots that are not consecutive, stay.
+        let spread: Vec<(u64, u64)> = (0..40).map(|i| (0x30000 + i * 8, 0x1100 + i * 8)).collect();
+        assert!(label_tables(&spread, 4, &known).is_empty());
     }
 
     #[test]

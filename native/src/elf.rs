@@ -130,7 +130,24 @@ impl FileSource {
         };
         if let Some(pointers) = parsed.start_pointers {
             // Decoding needs the finished mode map, so this runs last.
-            let found = starts::evidence(arch, &source.regions, &pointers, &|a| source.is_thumb(a));
+            let mut found =
+                starts::evidence(arch, &source.regions, &pointers, &|a| source.is_thumb(a));
+            if !parsed.pointer_slots.is_empty() {
+                // Starts known without relocated pointers: every other rule,
+                // the unwind table, and exported function values.
+                let mut others = found.clone();
+                let relocated: std::collections::HashSet<u64> =
+                    parsed.pointer_slots.iter().map(|(_, p)| p & !1).collect();
+                others
+                    .pointers
+                    .retain(|pointer| !relocated.contains(pointer));
+                let mut known = starts::synthesize(&others);
+                known.extend(source.unwind.iter().map(|(start, _)| *start));
+                let labels = starts::label_tables(&parsed.pointer_slots, 4, &known);
+                found
+                    .pointers
+                    .retain(|pointer| labels.binary_search(pointer).is_err());
+            }
             let mut synthesized = starts::synthesize(&found);
             // With no table, a few synthesized starts (a section start, a
             // couple of call targets) are not a function list: hint-free
@@ -282,6 +299,8 @@ struct ParsedImage {
     /// Linked ELF images: code pointers that survive stripping, the evidence
     /// for synthesized function starts. `None` disables synthesis.
     start_pointers: Option<Vec<u64>>,
+    /// `(slot, pointer)` for relocated pointers (ARM32 only).
+    pointer_slots: Vec<(u64, u64)>,
 }
 
 // -- little-endian readers ----------------------------------------------------
@@ -673,14 +692,21 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     // `.ARM.exidx` ends are only the next entry's start; `.eh_frame` lengths
     // are exact.
     let unwind_exact_ends = !regions.iter().any(|region| region.name == ".ARM.exidx");
+    // `(slot, pointer)` per relocated pointer, so tables can be told apart
+    // (`starts::label_tables`). Only ARM needs it: `.eh_frame` extents
+    // already drop starts inside x64/arm64 functions.
+    let mut pointer_slots: Vec<(u64, u64)> = Vec::new();
     if arch == Arch::Arm32 && e_type != ELF_ET_REL {
-        start_pointers.extend(
-            relative_slots
-                .iter()
-                .take(crate::unwind::MAX_UNWIND_ENTRIES)
-                .filter_map(|slot| read_regions(&regions, *slot, 4).ok())
-                .map(|word| u64::from(u32::from_le_bytes([word[0], word[1], word[2], word[3]]))),
-        );
+        pointer_slots = relative_slots
+            .iter()
+            .take(crate::unwind::MAX_UNWIND_ENTRIES)
+            .filter_map(|slot| {
+                let word = read_regions(&regions, *slot, 4).ok()?;
+                let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+                Some((*slot, u64::from(value)))
+            })
+            .collect();
+        start_pointers.extend(pointer_slots.iter().map(|(_, value)| *value));
     }
     let start_pointers = (e_type != ELF_ET_REL).then_some(start_pointers);
     // Stripping removes `.symtab` (local functions and mapping symbols), so
@@ -709,6 +735,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         unwind,
         unwind_exact_ends,
         start_pointers,
+        pointer_slots,
     })
 }
 
@@ -1068,6 +1095,7 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         // `.pdata` lengths are exact; PE start synthesis is not measured yet.
         unwind_exact_ends: true,
         start_pointers: None,
+        pointer_slots: Vec::new(),
     })
 }
 
