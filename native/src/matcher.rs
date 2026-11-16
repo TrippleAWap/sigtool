@@ -695,6 +695,14 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
+    // Hint-free candidates are the image's unwind entries, which the
+    // frequency table below recovers anyway. Building it first recovers
+    // them on every core; the candidate loop then finds them cached instead
+    // of recovering each in turn (single-signature `locate` on stripped
+    // Thumb sqlite spent most of its scan there).
+    if !hints {
+        context.prepare_frequencies(source, hints);
+    }
     let hits = anchor_hits(source, signature);
     let matches = scan_candidates_with(
         source,
