@@ -68,6 +68,10 @@ pub struct Evidence {
     /// end of `.text`, reached only by `b.w` tail calls, and open with no
     /// prologue.
     pub stubs: Vec<u64>,
+    /// First instruction after a literal pool that the sweep reached by
+    /// falling through: code before a pool never falls into it, so the
+    /// instruction before was a call that does not return.
+    pub after_pool: Vec<u64>,
     /// Start of each scanned code region (after padding).
     pub region_starts: Vec<u64>,
     /// Non-call branch targets: target -> (conditional, unconditional) count.
@@ -135,6 +139,7 @@ pub fn evidence(
                 found.pic_refs = swept.pic_refs;
                 found.after_terminator = swept.after_terminator;
                 found.stubs = swept.stubs;
+                found.after_pool = swept.after_pool;
                 found.region_starts = swept.region_starts;
                 found.branches = swept.branches;
                 found.prologues = swept.prologues;
@@ -183,6 +188,7 @@ pub fn evidence(
         &mut found.pic_refs,
         &mut found.after_terminator,
         &mut found.stubs,
+        &mut found.after_pool,
         &mut found.region_starts,
         &mut found.prologues,
     ] {
@@ -210,7 +216,13 @@ pub fn synthesize(found: &Evidence) -> Vec<u64> {
     starts.extend(&found.pic_refs);
     starts.extend(&found.region_starts);
     starts.extend(&found.stubs);
-    for address in &found.after_terminator {
+    // A pool reached by falling through follows a call that never returns
+    // (`bl luaG_typeerror`), so the next function opens there with no
+    // terminator before it. Real corpus, stripped arm32 / thumb recall:
+    // 0.9941 / 0.9942 -> 0.9947 / 0.9948 with no false start. The same
+    // test after every call found one function fewer than this and admits
+    // positions that do return, so it was not kept.
+    for address in found.after_terminator.iter().chain(&found.after_pool) {
         let prologue = found.prologues.binary_search(address).is_ok();
         let conditional = found
             .branches
@@ -408,6 +420,9 @@ impl ArmWalk<'_> {
         let mut offsets: [Option<(u32, u64)>; 16] = [None; 16];
         while let Some(address) = cursor {
             if let Some(end) = range_end(self.data, address) {
+                if let Some(start) = self.skip_gap(region, end, is_thumb(end)) {
+                    self.found.after_pool.push(start);
+                }
                 cursor = Some(end);
                 continue;
             }

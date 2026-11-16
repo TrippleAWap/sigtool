@@ -146,6 +146,22 @@ fn lld_thumb_thunks_are_function_starts() {
 }
 
 #[test]
+fn functions_after_a_noreturn_call_and_its_pool_are_starts() {
+    // gcc: luaV_objlen ends `bl luaG_typeerror` (noreturn, local), its
+    // literal pool follows, then `luaV_idiv` opens with `push`; luaV_idiv is
+    // reached only by a `b.w` tail call, and no terminator precedes it.
+    for arch in ["thumb", "arm32"] {
+        let Some(starts) = load(arch, "gcc-O2", "lua.so") else {
+            return;
+        };
+        assert!(
+            !starts.misses().contains(&"luaV_idiv"),
+            "{arch}: luaV_idiv missed"
+        );
+    }
+}
+
+#[test]
 fn pic_function_addresses_are_function_starts() {
     // Leaf callbacks referenced only by address, formed as
     // `ldr rX, =sym-(.LPIC+pc); .LPIC: add rX, pc` (gcc, both modes).
