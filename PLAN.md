@@ -51,10 +51,10 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Other arch, same build settings | 0.537 | 0.85 |
-| Other arch, other compiler | 0.313 | 0.65 |
-| Other arch, other optimization level | 0.266 | 0.50 |
-| Same arch, other compiler | 0.437 | 0.70 |
+| Other arch, same build settings | 0.771 | 0.85 |
+| Other arch, other compiler | 0.527 | 0.65 |
+| Other arch, other optimization level | 0.430 | 0.50 |
+| Same arch, other compiler | 0.670 | 0.70 |
 
 ### G3. Trust
 
@@ -373,4 +373,18 @@ As of 2026-11-15, `native-first` branch, spec v3.
   Identified precision hint-free 0.981, hinted 0.987; FP hint-free 0.163 ->
   0.156, hinted any-verdict 0.196 -> 0.113, strong 0.072 -> 0.042; top-1
   unchanged hint-free, +10 hits hinted. Not yet run on held-out.
+- M11, joint resolution 2.0 (2026-11-16, tuning corpus only): a global
+  one-to-one assignment over every (signature, function) pair with
+  similarity >= 0.2, weighed by similarity, call-graph degree, and the scan's
+  identified answer, refined by preserved links, and trusted only when it
+  preserves >= 6 link ends and a fifth of those it could (SPEC.md §8).
+  Simulated first on a `bench --joint-report` dump; losing variants in
+  `spec/CHANGELOG.md`. G2 hint-free: other arch same build 0.537 -> 0.771,
+  other compiler 0.313 -> 0.527, other opt 0.265 -> 0.430, same arch other
+  compiler 0.437 -> 0.670; joint false hits equal to scanned-alone in every
+  library (zlib 10 -> 8). `joint:0` answers (no preserved link) are about
+  half right and are not identifying; `joint:N>=1` answers 0.84. G2 targets
+  not met: 7% of true functions are below the 0.2 pair floor in the same
+  build and 30% across compilers, so the rest is feature work (M10).
+  Not yet run on held-out.
 - Next: finish M8, then M9.
