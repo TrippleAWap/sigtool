@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 
 use crate::arch::Arch;
 use crate::source::Region;
+use crate::stubs::{arm32_stub, MAX_STUB_BYTES};
 use crate::unwind::{UnwindEntry, MAX_UNWIND_ENTRIES};
 
 /// Upper bound on bytes examined by all sweeps of one image (two passes).
@@ -55,6 +56,11 @@ pub struct Evidence {
     pub pic_refs: Vec<u64>,
     /// First instruction after a terminator, padding, and pools.
     pub after_terminator: Vec<u64>,
+    /// After-terminator positions holding a linker thunk or veneer
+    /// (`stubs::arm32_stub`): lld's Thumb-2 thunks sit back to back at the
+    /// end of `.text`, reached only by `b.w` tail calls, and open with no
+    /// prologue.
+    pub stubs: Vec<u64>,
     /// Start of each scanned code region (after padding).
     pub region_starts: Vec<u64>,
     /// Non-call branch targets: target -> (conditional, unconditional) count.
@@ -121,6 +127,7 @@ pub fn evidence(
                 found.calls = swept.calls;
                 found.pic_refs = swept.pic_refs;
                 found.after_terminator = swept.after_terminator;
+                found.stubs = swept.stubs;
                 found.region_starts = swept.region_starts;
                 found.branches = swept.branches;
                 found.prologues = swept.prologues;
@@ -168,6 +175,7 @@ pub fn evidence(
         &mut found.calls,
         &mut found.pic_refs,
         &mut found.after_terminator,
+        &mut found.stubs,
         &mut found.region_starts,
         &mut found.prologues,
     ] {
@@ -194,6 +202,7 @@ pub fn synthesize(found: &Evidence) -> Vec<u64> {
     starts.extend(&found.calls);
     starts.extend(&found.pic_refs);
     starts.extend(&found.region_starts);
+    starts.extend(&found.stubs);
     for address in &found.after_terminator {
         let prologue = found.prologues.binary_search(address).is_ok();
         let conditional = found
@@ -445,6 +454,11 @@ impl ArmWalk<'_> {
                 if let Some(start) = cursor {
                     thumb = is_thumb(start);
                     self.found.after_terminator.push(start);
+                    let offset = (start - region.start) as usize;
+                    let end = region.data.len().min(offset + MAX_STUB_BYTES);
+                    if arm32_stub(start, &region.data[offset..end]).is_some() {
+                        self.found.stubs.push(start);
+                    }
                 }
                 it_left = 0;
             } else {

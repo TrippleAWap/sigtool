@@ -127,6 +127,25 @@ fn thumb_calls_through_lld_thunks_name_their_callee() {
 }
 
 #[test]
+fn lld_thumb_thunks_are_function_starts() {
+    // lld places `__ThumbV7PILongThunk_*` back to back at the end of
+    // `.text`; they open with `movw ip` (no prologue) and are reached only
+    // by `b.w`, so before the stub rule none of them was a start.
+    for build in ["clang-O2", "clang-Os"] {
+        let Some(starts) = load("thumb", build, "lua.so") else {
+            return;
+        };
+        let thunks: Vec<&str> = starts
+            .misses()
+            .into_iter()
+            .filter(|name| name.contains("Thunk_"))
+            .collect();
+        assert!(thunks.is_empty(), "thumb/{build}: {thunks:?}");
+        assert!(starts.names.values().any(|name| name.contains("Thunk_")));
+    }
+}
+
+#[test]
 fn pic_function_addresses_are_function_starts() {
     // Leaf callbacks referenced only by address, formed as
     // `ldr rX, =sym-(.LPIC+pc); .LPIC: add rX, pc` (gcc, both modes).
