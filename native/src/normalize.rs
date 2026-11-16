@@ -167,6 +167,10 @@ pub(crate) struct PendingValue {
 #[derive(Default)]
 pub(crate) struct ArmState {
     values: Vec<(u16, PendingValue)>,
+    /// Registers loaded from a page-relative pointer slot (`adrp` + `ldr`),
+    /// with the slot: `-fno-plt` calls go `ldr x8, [x8, :got_lo12:f]; blr
+    /// x8`, so the slot names the callee.
+    slots: Vec<(u16, u64)>,
 }
 
 impl ArmState {
@@ -224,6 +228,26 @@ impl ArmState {
 
     pub(crate) fn clear(&mut self) {
         self.values.clear();
+        self.slots.clear();
+    }
+
+    pub(crate) fn insert_slot(&mut self, register: u16, slot: u64) {
+        self.forget_slots(&[register]);
+        self.slots.push((register, slot));
+    }
+
+    pub(crate) fn take_slot(&mut self, register: u16) -> Option<u64> {
+        let index = self.slots.iter().position(|(held, _)| *held == register)?;
+        Some(self.slots.swap_remove(index).1)
+    }
+
+    pub(crate) fn clear_slots(&mut self) {
+        self.slots.clear();
+    }
+
+    /// Any other use of a register may overwrite it, so its slot is dropped.
+    pub(crate) fn forget_slots(&mut self, registers: &[u16]) {
+        self.slots.retain(|(held, _)| !registers.contains(held));
     }
 }
 
@@ -386,7 +410,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     }
 
     /// Resolve a callee through an IAT/GOT slot or a pointer cell.
-    fn slot_callee(&self, slot: Option<u64>, depth: usize) -> Option<String> {
+    pub(crate) fn slot_callee(&self, slot: Option<u64>, depth: usize) -> Option<String> {
         let slot = slot?;
         if let Some(name) = self.import_name(slot) {
             return Some(name);

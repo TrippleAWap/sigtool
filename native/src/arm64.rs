@@ -269,6 +269,16 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             }
         }
 
+        // A register loaded from a GOT slot (`-fno-plt`: `adrp x8, :got:f;
+        // ldr x8, [x8, :got_lo12:f]; blr x8`) names the callee through the
+        // slot, as the PLT stub it replaces would; through `br` it is a tail
+        // call.
+        let slot = (mnemonic.starts_with("br") || mnemonic.starts_with("blr"))
+            .then(|| reg_ref(&ops[0]))
+            .flatten()
+            .and_then(|register| state.take_slot(register.number));
+        state.forget_slots(&mentioned_registers(ops));
+
         if mnemonic.starts_with("br") && mnemonic != "brk" {
             // `br x16` after a literal load is a veneer; follow it when possible.
             let call = mnemonic.starts_with("blr");
@@ -281,14 +291,17 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 }
             }
             let op = if call { OpClass::Call } else { OpClass::Branch };
+            let callee = if call {
+                self.callee_name(target, depth)
+            } else if target.is_none() {
+                self.slot_callee(slot, depth)
+            } else {
+                None
+            };
             return Insn {
                 consts: state.take_consts(),
                 kind: if call { Kind::Call } else { Kind::Jump },
-                callee: if call {
-                    self.callee_name(target, depth)
-                } else {
-                    None
-                },
+                callee,
                 target,
                 ..Insn::normal(addr, size, op)
             };
@@ -326,10 +339,11 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             if let Some(page) = state.get(base) {
                 if page.is_page {
                     state.take(base);
-                    refs.push(DataRef {
-                        addr: page.value.wrapping_add_signed(offset),
-                        width,
-                    });
+                    let slot = page.value.wrapping_add_signed(offset);
+                    refs.push(DataRef { addr: slot, width });
+                    if mnemonic == "ldr" && width == 8 {
+                        state.insert_slot(destination.number, slot);
+                    }
                 }
             } else if base == 31
                 && ARM64_LITERAL_LOADS.contains(&mnemonic)
@@ -377,6 +391,8 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             target = branch_target(addr, ops);
             if target.is_some() {
                 callee = self.callee_name(target, depth);
+            } else {
+                callee = self.slot_callee(slot, depth);
             }
             if self.noreturn(callee.as_deref()) {
                 kind = Kind::NoreturnCall;
@@ -391,6 +407,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             // Control transfers end the window in which a partial chain can
             // still be completed; calls also clobber the argument registers.
             pending.extend(state.take_consts());
+            state.clear_slots();
         }
         let mut consts = pending;
         if kind == Kind::Normal {
