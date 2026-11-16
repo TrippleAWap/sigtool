@@ -491,8 +491,8 @@ are hint-free only.
 
 * `identified`: the first match, not tied with the second, with an
   identifying key, and with similarity at least 0.3 when no `str` matched
-  but a direct neighbour key (`near:in:`, `near:out:`) or a `joint:` vote
-  did, or at least 0.7 when only callees, constants, or two-hop neighbour
+  but a direct neighbour key (`near:in:`, `near:out:`) or a `joint:N` key
+  with `N ≥ 1` did, or at least 0.7 when only callees, constants, or two-hop neighbour
   keys identify it (a matched `str` needs no floor);
 * `candidate`: identifying keys, but not the answer (not first, tied, or
   below its floor);
@@ -504,26 +504,43 @@ count as identifying. Hint-free matches are ranked by the number of shared
 neighbour keys, then similarity, then score.
 
 **Joint resolution.** Signatures from one module scanned together
-(`scan` with several signatures, hint-free) are resolved through their
-`links` (`native/src/joint.rs`):
+(`scan` with several signatures, hint-free) are resolved as a one-to-one
+assignment of the module's signatures to the target's functions
+(`native/src/joint.rs`). Signatures are grouped by the module of their first
+sample; a group with no link between two of its signatures is left as
+scanned.
 
-1. A signature *pins* its best match when that match is identified and no
-   other match ties with it.
-2. A pinned signature whose links to other pinned signatures all disagree
-   with the target's call graph (the other signature's match is not among
-   this match's callers or callees) and none agree is released: it is a
-   confident lookalike.
-3. For each unpinned signature, every link to a pinned signature votes for
-   that pin's callers (`out:` links) or callees (`in:` links) in the target.
-   Candidates already pinned by another signature are excluded. A candidate
-   needs similarity at least 0.2 but not the full acceptance gate: across
-   compilers the required features are exactly what changed, and the call
-   graph already narrows the choice to a handful of functions. The best
-   candidate by votes, then neighbour keys, similarity, and score is pinned
-   and reported first with `joint:VOTES` in `matched`; a tie pins nothing.
-4. Step 3 repeats, at most 8 rounds, until nothing changes.
+1. Candidates are the target's unwind entries (hint-free) or function starts
+   (hinted) and their direct call targets. A (signature, function) pair is
+   weighed when its similarity is at least 0.2; the full acceptance gate is
+   not required, because across compilers the required features are exactly
+   what changed and the call graph checks the placement instead. Its base
+   weight is the similarity plus `0.2 × (1/(1+|Δout|) + 1/(1+|Δin|)) / 2`,
+   where `Δout` and `Δin` compare the signature's `out:` and `in:` link
+   counts with the function's callees and callers in the target. The pair
+   holding a signature's scan answer (its `identified` first match) gains
+   0.3.
+2. The mapping is built greedily: pairs by weight, highest first (ties by
+   signature order, then address), each taken when neither its signature nor
+   its function is taken yet.
+3. Refinement, at most 4 rounds until the mapping stops changing: every pair
+   gains 0.3 per link of its signature that the current placement of the
+   linked signature would preserve (an `out:` link is preserved when the
+   function calls the neighbour's placement, an `in:` link when it is called
+   by it), and the mapping is rebuilt from the new weights.
+4. Module gate: the mapping is used only when it preserves at least 6 link
+   ends (each link counts once per signature recording it) and at least 0.2
+   of the link ends whose two signatures it placed. Otherwise every match
+   list is left as scanned.
+5. A placed signature whose function outweighs every function no other
+   signature took is reported with that function first, marked `joint:N` in
+   `matched`, where `N` is the number of its links the mapping preserves. A
+   free function of equal weight is a tie and leaves the list as scanned.
 
-Joint votes rank above every other key and count as identifying.
+A joint placement ranks above every other match (`joint:N` ranks by `1 + N`
+before neighbour keys). `joint:N` with `N ≥ 1` counts as identifying, with
+the 0.3 answer floor of direct neighbour keys; `joint:0` (placed by
+similarity and the one-to-one constraint alone) does not.
 
 **Self-test.** Generation runs the matcher on the same source and requires an
 accepted match at the recovered function start; a signature that cannot be

@@ -75,6 +75,8 @@ cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --d
     --fp-report fp.jsonl                                  # log FP hits and recall scans for offline simulation
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --discovery hint-free \
     --arch x64 --arch arm64 --no-fp                         # quick hint-free slice
+cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --joint --discovery hint-free \
+    --no-fp --joint-report joint.jsonl                    # log joint cells (pairs, call graph) for offline simulation
 cargo run --release --example profile_scan                  # scan cost
 cargo run --release --example profile_gen -- IMAGE ADDR [TARGET]   # gen / hint-free phase timings
 cargo run --release --example profile_g5 -- gen IMAGE SIGS.db [COUNT]   # then: scan STRIPPED SIGS.db (G5 cost)

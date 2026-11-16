@@ -453,6 +453,9 @@ pub struct BenchOptions {
     pub fp_report: Option<PathBuf>,
     /// Also measure joint resolution of whole-module signature sets.
     pub joint: bool,
+    /// Write what joint resolution saw in each joint cell here, one JSON
+    /// object per line (see [`crate::joint::report`]).
+    pub joint_report: Option<PathBuf>,
 }
 
 /// [`run`] with explicit [`BenchOptions`].
@@ -841,7 +844,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
 
     phases.done("false positives");
     let (joint, joint_false_positives) = if options.joint {
-        measure_joint(&targets)
+        measure_joint(&targets, options.joint_report.as_deref())?
     } else {
         (Vec::new(), Vec::new())
     };
@@ -910,7 +913,39 @@ fn top_is(matches: &[Match], expected: u64) -> bool {
 /// build of the library, alone and resolved together. The same set scanned
 /// in the other libraries' `JOINT_SOURCE` builds measures what joint
 /// resolution adds to false positives.
-fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveCell>) {
+fn measure_joint(
+    targets: &[Target],
+    report: Option<&Path>,
+) -> Result<(Vec<JointCell>, Vec<JointFalsePositiveCell>), String> {
+    let mut lines: Vec<String> = Vec::new();
+    // One line per joint scan. Expected addresses come from the unstripped
+    // ground truth and are for offline scoring only; resolution never sees them.
+    let mut log = |kind: &str,
+                   library: &str,
+                   target: &Target,
+                   signatures: &[Signature],
+                   expected: &[Option<u64>],
+                   matches: &[Vec<Match>],
+                   resolved: &[Vec<Match>]| {
+        if report.is_none() {
+            return;
+        }
+        let (image, image_context) = target.scan_source(false);
+        let mut line = crate::joint::report(image, image_context, signatures, matches, false);
+        line["kind"] = serde_json::json!(kind);
+        line["library"] = serde_json::json!(library);
+        line["target"] = serde_json::json!(format!(
+            "{}/{}/{}",
+            target.arch, target.opt, target.source_file
+        ));
+        line["names"] = serde_json::json!(signatures.iter().map(|s| &s.name).collect::<Vec<_>>());
+        line["expected"] = serde_json::json!(expected);
+        line["resolved"] = serde_json::json!(resolved
+            .iter()
+            .map(|found| found.first().map(|m| m.address))
+            .collect::<Vec<_>>());
+        lines.push(line.to_string());
+    };
     let mut cells = Vec::new();
     let mut false_positives = Vec::new();
     let sources: Vec<&Target> = targets
@@ -959,8 +994,20 @@ fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveC
                     .count()
             };
             let independent_top = score(&matches);
+            let scanned = report.is_some().then(|| matches.clone());
             let (image, image_context) = target.scan_source(false);
             crate::joint::resolve(image, image_context, &signatures, &mut matches, false);
+            if let Some(scanned) = &scanned {
+                log(
+                    "recall",
+                    &source.source_file,
+                    target,
+                    &signatures,
+                    &expected,
+                    scanned,
+                    &matches,
+                );
+            }
             cells.push(JointCell {
                 library: source.source_file.clone(),
                 arch: format!("{}->{}", source.arch, target.arch),
@@ -984,13 +1031,30 @@ fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveC
             let mut matches = scan_all(other);
             cell.signatures += signatures.len();
             cell.independent_with_hits += matches.iter().filter(|m| !m.is_empty()).count();
+            let scanned = report.is_some().then(|| matches.clone());
             let (image, image_context) = other.scan_source(false);
             crate::joint::resolve(image, image_context, &signatures, &mut matches, false);
+            if let Some(scanned) = &scanned {
+                log(
+                    "fp",
+                    &source.source_file,
+                    other,
+                    &signatures,
+                    &vec![None; signatures.len()],
+                    scanned,
+                    &matches,
+                );
+            }
             cell.joint_with_hits += matches.iter().filter(|m| !m.is_empty()).count();
         }
         false_positives.push(cell);
     }
-    (cells, false_positives)
+    if let Some(path) = report {
+        let mut text = lines.join("\n");
+        text.push('\n');
+        std::fs::write(path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    Ok((cells, false_positives))
 }
 
 /// Accepted matches per sample summed over the targets it must not match,

@@ -250,6 +250,10 @@ struct BenchArgs {
     /// Also measure joint resolution of whole-module signature sets (slow)
     #[arg(long)]
     joint: bool,
+    /// With --joint, write what joint resolution saw per joint scan as JSON
+    /// lines to this file (offline simulation of assignment rules)
+    #[arg(long = "joint-report", requires = "joint")]
+    joint_report: Option<PathBuf>,
     /// Allowed recall drop / false-positive increase
     #[arg(long, default_value_t = sigtool_native::bench::DEFAULT_TOLERANCE)]
     tolerance: f64,
@@ -1027,6 +1031,7 @@ fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
         skip_false_positives: args.no_fp,
         fp_report: args.fp_report.clone(),
         joint: args.joint,
+        joint_report: args.joint_report.clone(),
     };
     let report = bench::run_with(&args.corpus, &options).map_err(CliError::input)?;
     print!("{}", bench::render(&report));
