@@ -144,10 +144,31 @@ pub fn compare(signature: &Signature, features: &[Feature]) -> MatchScore {
 
 /// [`compare`] against a candidate's precomputed key set.
 pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchScore {
-    let matched: Vec<&crate::sigfile::SignatureFeature> = signature
+    compare_with_keys(signature, &feature_keys(signature), present)
+}
+
+/// The signature's feature keys, in document order.
+fn feature_keys(signature: &Signature) -> Vec<String> {
+    signature
         .features
         .iter()
-        .filter(|feature| present.contains(&feature.key()))
+        .map(|feature| feature.key())
+        .collect()
+}
+
+/// [`compare_keys`] with the signature's keys (from [`feature_keys`]) built
+/// once: a hint-free scan compares one signature with every function in the
+/// image, and formatting each key again per candidate was most of the cost.
+fn compare_with_keys(
+    signature: &Signature,
+    keys: &[String],
+    present: &HashSet<String>,
+) -> MatchScore {
+    let matched: Vec<(&crate::sigfile::SignatureFeature, &String)> = signature
+        .features
+        .iter()
+        .zip(keys)
+        .filter(|(_, key)| present.contains(*key))
         .collect();
     let mut required_weight: f64 = signature
         .features
@@ -162,7 +183,10 @@ pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchSc
             .map(|feature| feature.weight)
             .sum();
     }
-    let matched_required = matched.iter().filter(|feature| feature.required).count();
+    let matched_required = matched
+        .iter()
+        .filter(|(feature, _)| feature.required)
+        .count();
     if required_weight <= 0.0 {
         return MatchScore {
             score: 0.0,
@@ -170,9 +194,9 @@ pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchSc
             matched_required: 0,
         };
     }
-    let total: f64 = matched.iter().map(|feature| feature.weight).sum();
+    let total: f64 = matched.iter().map(|(feature, _)| feature.weight).sum();
     let score = round_to((total / required_weight).min(1.0), SCORE_DECIMALS);
-    let mut matched_keys: Vec<String> = matched.iter().map(|feature| feature.key()).collect();
+    let mut matched_keys: Vec<String> = matched.iter().map(|(_, key)| (*key).clone()).collect();
     matched_keys.sort();
     MatchScore {
         score,
@@ -947,6 +971,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
+    let keys = feature_keys(signature);
     for start in candidate_starts(source, signature, hits, max_candidates, hints, index, code) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
@@ -961,7 +986,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
         let Some(candidate) = candidate else {
             continue;
         };
-        let result = compare_keys(signature, &candidate.keys);
+        let result = compare_with_keys(signature, &keys, &candidate.keys);
         if accepts(signature, &result) {
             matches.push(Match {
                 address: candidate.start,
@@ -1427,11 +1452,26 @@ fn find_all(data: &[u8], needle: &[u8], limit: usize) -> Vec<usize> {
     found
 }
 
+/// First occurrence of `needle` in `data` at or after `start`.
+///
+/// Every signature searches the whole image for each anchor needle, so this
+/// skips ahead to the next occurrence of the needle's first byte and only
+/// compares the rest there; comparing the full needle at every offset made
+/// Tier 0 most of a hint-free multi-signature scan.
 fn find_at(data: &[u8], needle: &[u8], start: usize) -> Option<usize> {
-    if needle.len() > data.len() {
-        return None;
+    let last = data.len().checked_sub(needle.len())?;
+    let Some((first, rest)) = needle.split_first() else {
+        return (start <= last).then_some(start);
+    };
+    let mut index = start;
+    while index <= last {
+        index += data[index..=last].iter().position(|byte| byte == first)?;
+        if data[index + 1..index + needle.len()] == *rest {
+            return Some(index);
+        }
+        index += 1;
     }
-    (start..=data.len() - needle.len()).find(|index| &data[*index..*index + needle.len()] == needle)
+    None
 }
 
 fn const_needles(value: &str) -> Vec<Vec<u8>> {
@@ -1956,6 +1996,36 @@ mod tests {
     #[test]
     fn small_constants_are_not_searchable() {
         assert!(const_needles("0xff").is_empty());
+    }
+
+    #[test]
+    fn find_all_agrees_with_a_naive_search() {
+        // Few distinct bytes, so needles overlap and recur everywhere.
+        let mut state = 0x2545_f491_u32;
+        let data: Vec<u8> = (0..4096)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state % 3) as u8
+            })
+            .collect();
+        let naive = |needle: &[u8], limit: usize| -> Vec<usize> {
+            (0..=data.len().saturating_sub(needle.len()))
+                .filter(|index| data[*index..].starts_with(needle))
+                .take(limit)
+                .collect()
+        };
+        for length in 1..=6 {
+            for offset in [0usize, 17, 1000, data.len() - length] {
+                let needle = &data[offset..offset + length];
+                for limit in [1, MAX_HITS_PER_ANCHOR, usize::MAX] {
+                    assert_eq!(find_all(&data, needle, limit), naive(needle, limit));
+                }
+            }
+        }
+        assert_eq!(find_at(&data, &data[4090..], 4091), None);
+        assert_eq!(find_at(b"ab", b"abc", 0), None);
     }
 
     #[test]
