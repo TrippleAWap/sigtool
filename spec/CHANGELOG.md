@@ -1,5 +1,27 @@
 # Spec changelog
 
+## Unreleased
+
+Not yet versioned; the integrator bumps `SPEC_VERSION` once for these.
+
+* Stripped ARM32 mode map: an even (ARM) relocated pointer into code whose
+  region votes Thumb marks ARM mode only when it is word-aligned and its own
+  words vote ARM. GCC computed-goto tables (lua's `luaV_execute`) are
+  relocated like function pointers but name even labels inside Thumb
+  functions; before, each one switched the rest of that function to ARM
+  decoding, so features of such functions in stripped Thumb images change.
+* Callees through lld Thumb-2 and ARM PI thunks (`movw`/`movt ip`, `add ip,
+  pc`, `bx ip`) resolve to what the thunk reaches (usually a PLT entry, so
+  the import name). Before, a stripped image recorded the thunk's address
+  and an unstripped one its `.symtab` name (`__ThumbV7PILongThunk_f`);
+  linker thunk and veneer names no longer stop thunk following. Affects
+  `callee` records of clang/lld ARM32 and Thumb shared objects.
+* AArch64 calls through a register loaded from a page-relative pointer slot
+  (`adrp xN; ldr xN, [xN, #lo]; blr xN`, the `-fno-plt` form, and `br xN`
+  tail calls) record the callee the slot names (an import, else the
+  pointer it holds), like x86-64 `call [rip+slot]`. Any other use of the
+  register in between, or a control transfer, drops the slot.
+
 ## v1 — M1 extraction
 
 Initial spec, implementing docs/history/PLAN-v0.5.md section 4 for x86-64 and AArch64.

@@ -8,6 +8,9 @@
 //!
 //! - pointers to code: `.dynsym` function values and relative relocations
 //!   (function-pointer tables, init arrays, vtables);
+//! - code addresses formed position-independently (`ldr rX, =off` or
+//!   `movw`/`movt`, then `add rX, pc`), how PIC code takes a function's
+//!   address for a callback;
 //! - direct call targets (`bl`/`blx`), decoded in the mode the image's
 //!   [`ModeMap`](crate::arm_mode::ModeMap) gives each address;
 //! - the first instruction after an unconditional terminator, past alignment
@@ -27,12 +30,26 @@ use std::collections::BTreeMap;
 
 use crate::arch::Arch;
 use crate::source::Region;
+use crate::stubs::{arm32_stub, MAX_STUB_BYTES};
 use crate::unwind::{UnwindEntry, MAX_UNWIND_ENTRIES};
 
 /// Upper bound on bytes examined by all sweeps of one image (two passes).
 pub const MAX_START_SWEEP_BYTES: usize = 128 << 20;
 /// Upper bound on entries read from one inline jump table.
 const MAX_TABLE_ENTRIES: usize = 4096;
+/// Largest distance, in bytes, from the instruction that loads a PIC offset
+/// to the `add rX, pc` that uses it. Real corpus, stripped arm32 + thumb,
+/// recall by window (no window added a false start): 0 (rule off) 0.9836 /
+/// 0.9758, 8 bytes 0.9901 / 0.9841, 16 bytes 0.9936 / 0.9851, 32 bytes
+/// 0.9941 / 0.9853, and 64 or 256 bytes no further gain.
+const PIC_WINDOW: u64 = 32;
+/// Distinct targets in one gap that make a pointer run a label table
+/// ([`label_tables`]). Real corpus, stripped arm32 recall/precision by
+/// value: rule off 0.9941/0.9735 (lua's 83-label `luaV_execute` table in
+/// every build), 2: 0.9873/0.9995, 4: 0.9918, 8: 0.9933 (function tables
+/// with 8-15 adjacent pointer-only callbacks lose them), 16 and 32:
+/// 0.9941/0.9995. 32 keeps a margin over the largest such callback group.
+pub const MIN_LABEL_RUN: usize = 32;
 
 /// What the sweep found, kept apart so each rule can be measured.
 #[derive(Debug, Clone, Default)]
@@ -41,8 +58,20 @@ pub struct Evidence {
     pub pointers: Vec<u64>,
     /// Direct call targets whose mode agrees with the map.
     pub calls: Vec<u64>,
+    /// Position-independent code addresses (`ldr rX, =off` or `movw`/`movt`,
+    /// then `add rX, pc`) whose mode agrees with the map.
+    pub pic_refs: Vec<u64>,
     /// First instruction after a terminator, padding, and pools.
     pub after_terminator: Vec<u64>,
+    /// After-terminator positions holding a linker thunk or veneer
+    /// (`stubs::arm32_stub`): lld's Thumb-2 thunks sit back to back at the
+    /// end of `.text`, reached only by `b.w` tail calls, and open with no
+    /// prologue.
+    pub stubs: Vec<u64>,
+    /// First instruction after a literal pool that the sweep reached by
+    /// falling through: code before a pool never falls into it, so the
+    /// instruction before was a call that does not return.
+    pub after_pool: Vec<u64>,
     /// Start of each scanned code region (after padding).
     pub region_starts: Vec<u64>,
     /// Non-call branch targets: target -> (conditional, unconditional) count.
@@ -77,6 +106,10 @@ pub fn evidence(
     let mask = if arm { !1u64 } else { !0u64 };
     found.pointers = pointers
         .iter()
+        // A function pointer carries its callee's mode in bit 0; a
+        // computed-goto label (`&&label`) is relocated the same way but is
+        // always even, so in Thumb code its mode disagrees with the map.
+        .filter(|pointer| !arm || is_thumb(*pointer & !1) == (*pointer & 1 != 0))
         .map(|pointer| pointer & mask)
         .filter(|address| in_code(*address))
         .collect();
@@ -103,7 +136,10 @@ pub fn evidence(
             data = merge_ranges(found_data);
             if pass == 1 {
                 found.calls = swept.calls;
+                found.pic_refs = swept.pic_refs;
                 found.after_terminator = swept.after_terminator;
+                found.stubs = swept.stubs;
+                found.after_pool = swept.after_pool;
                 found.region_starts = swept.region_starts;
                 found.branches = swept.branches;
                 found.prologues = swept.prologues;
@@ -120,10 +156,21 @@ pub fn evidence(
             .filter(|target| is_thumb(target & !1) == (target & 1 != 0))
             .map(|target| target & !1)
             .collect();
+        // A PIC address carries its target's mode bit like a function
+        // pointer (GCC and clang emit `sym - (.LPIC + 4)`, `sym` Thumb-marked),
+        // so it must agree with the map too.
+        let pic_refs = std::mem::take(&mut found.pic_refs);
+        found.pic_refs = pic_refs
+            .into_iter()
+            .filter(|target| in_code(*target & !1))
+            .filter(|target| is_thumb(target & !1) == (target & 1 != 0))
+            .map(|target| target & !1)
+            .collect();
         let data = found.data.clone();
         let outside_data = |address: &u64| !in_ranges(&data, *address);
         found.calls.retain(outside_data);
         found.pointers.retain(outside_data);
+        found.pic_refs.retain(outside_data);
     } else if arch == Arch::Arm64 {
         let mut budget = MAX_START_SWEEP_BYTES;
         for region in &code {
@@ -138,7 +185,10 @@ pub fn evidence(
     for list in [
         &mut found.pointers,
         &mut found.calls,
+        &mut found.pic_refs,
         &mut found.after_terminator,
+        &mut found.stubs,
+        &mut found.after_pool,
         &mut found.region_starts,
         &mut found.prologues,
     ] {
@@ -163,8 +213,16 @@ pub fn synthesize(found: &Evidence) -> Vec<u64> {
     let mut starts: Vec<u64> = Vec::new();
     starts.extend(&found.pointers);
     starts.extend(&found.calls);
+    starts.extend(&found.pic_refs);
     starts.extend(&found.region_starts);
-    for address in &found.after_terminator {
+    starts.extend(&found.stubs);
+    // A pool reached by falling through follows a call that never returns
+    // (`bl luaG_typeerror`), so the next function opens there with no
+    // terminator before it. Real corpus, stripped arm32 / thumb recall:
+    // 0.9941 / 0.9942 -> 0.9947 / 0.9948 with no false start. The same
+    // test after every call found one function fewer than this and admits
+    // positions that do return, so it was not kept.
+    for address in found.after_terminator.iter().chain(&found.after_pool) {
         let prologue = found.prologues.binary_search(address).is_ok();
         let conditional = found
             .branches
@@ -178,6 +236,178 @@ pub fn synthesize(found: &Evidence) -> Vec<u64> {
     starts.dedup();
     starts.truncate(MAX_UNWIND_ENTRIES);
     starts
+}
+
+/// Pointer targets that are code labels, not functions: GCC computed-goto
+/// tables (`static void *disptab[] = { &&L_OP_MOVE, ... }`, lua's
+/// `luaV_execute`) are relocated exactly like function-pointer tables, but
+/// every entry lands inside one function. Within one run of consecutive
+/// `slots` (`(slot, pointer)`, `slot_size` apart), at least
+/// [`MIN_LABEL_RUN`] distinct targets that fall between the same two
+/// consecutive `known` starts (evidence other than pointers, and unwind
+/// entries), and are not known themselves, are returned as labels. A real
+/// function-pointer table spans functions that have starts of their own.
+pub fn label_tables(slots: &[(u64, u64)], slot_size: u64, known: &[u64]) -> Vec<u64> {
+    let mut known = known.to_vec();
+    known.sort_unstable();
+    known.dedup();
+    let mut slots = slots.to_vec();
+    slots.sort_unstable();
+    slots.dedup_by_key(|(slot, _)| *slot);
+    let mut labels = Vec::new();
+    let mut flush = |run: &[(u64, u64)]| {
+        if run.len() < MIN_LABEL_RUN {
+            return;
+        }
+        // Group the run's targets by the gap between known starts they fall
+        // in; adjacent tables share a run, so a gap rather than the whole
+        // run must hold them.
+        let mut gaps: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+        for (_, pointer) in run {
+            let target = pointer & !1;
+            if known.binary_search(&target).is_err() {
+                let gap = known.partition_point(|start| *start <= target);
+                gaps.entry(gap).or_default().push(target);
+            }
+        }
+        for mut targets in gaps.into_values() {
+            // A table repeating one callback (`{noop, noop, ...}`) names one
+            // function, so only distinct targets count.
+            targets.sort_unstable();
+            targets.dedup();
+            if targets.len() >= MIN_LABEL_RUN {
+                labels.extend(targets);
+            }
+        }
+    };
+    let mut begin = 0usize;
+    for index in 1..=slots.len() {
+        let continues =
+            index < slots.len() && slots[index].0 == slots[index - 1].0.wrapping_add(slot_size);
+        if !continues {
+            flush(&slots[begin..index]);
+            begin = index;
+        }
+    }
+    labels.sort_unstable();
+    labels.dedup();
+    labels
+}
+
+/// Bytes one x86-64 function walk decodes when its end is not known.
+const MAX_X64_WALK_BYTES: u64 = 1 << 16;
+
+/// Starts for x86-64 PE images that `.pdata` does not list.
+///
+/// Windows x64 requires a `RUNTIME_FUNCTION` only for functions that move
+/// the stack pointer or save registers, so leaf functions (no frame, no
+/// calls) have none, and an image may carry no `.pdata` at all. A function
+/// that is a direct call target is a function, so each `table` entry is
+/// decoded over its exact extent, and each export in `roots` until a
+/// terminator no forward branch jumps past, collecting `call rel32` targets,
+/// and `jmp rel32` tail calls out of an exact extent, that land in code
+/// outside every table extent. New targets are walked too
+/// (bounded), so a table-less image is discovered from its exports.
+pub fn x64_call_targets(regions: &[Region], table: &[UnwindEntry], roots: &[u64]) -> Vec<u64> {
+    use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction};
+
+    let code: Vec<&Region> = regions.iter().filter(|r| r.executable).collect();
+    let region_of = |address: u64| {
+        code.iter()
+            .find(|region| region.start <= address && address < region.end())
+    };
+    let inside_table = |address: u64| {
+        let index = table.partition_point(|(start, _)| *start <= address);
+        index > 0 && address < table[index - 1].1
+    };
+    let mut found: Vec<u64> = Vec::new();
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // `(start, end)`; `end == 0` walks to the first unjumped terminator.
+    let mut work: Vec<(u64, u64)> = table.to_vec();
+    work.extend(roots.iter().map(|root| (*root, 0)));
+    let mut budget = MAX_START_SWEEP_BYTES as u64;
+    let mut cursor = 0usize;
+    while cursor < work.len() {
+        let (start, end) = work[cursor];
+        cursor += 1;
+        if !seen.insert(start) {
+            continue;
+        }
+        let Some(region) = region_of(start) else {
+            continue;
+        };
+        let limit = if end > start {
+            end.min(region.end())
+        } else {
+            region.end().min(start.saturating_add(MAX_X64_WALK_BYTES))
+        };
+        if limit <= start || budget < limit - start {
+            continue;
+        }
+        budget -= limit - start;
+        let offset = (start - region.start) as usize;
+        let bytes = &region.data[offset..offset + (limit - start) as usize];
+        let mut decoder = Decoder::with_ip(64, bytes, start, DecoderOptions::NONE);
+        let mut instruction = Instruction::default();
+        let mut reach = start;
+        while decoder.can_decode() {
+            decoder.decode_out(&mut instruction);
+            if instruction.is_invalid() {
+                break;
+            }
+            let next = instruction.next_ip();
+            match instruction.flow_control() {
+                FlowControl::Call => {
+                    let target = instruction.near_branch_target();
+                    if instruction.is_call_near()
+                        && region_of(target).is_some()
+                        && !inside_table(target)
+                        && found.len() < MAX_UNWIND_ENTRIES
+                    {
+                        found.push(target);
+                        if work.len() < MAX_UNWIND_ENTRIES {
+                            work.push((target, 0));
+                        }
+                    }
+                }
+                FlowControl::ConditionalBranch => {
+                    let target = instruction.near_branch_target();
+                    if target > reach && target < limit {
+                        reach = target;
+                    }
+                }
+                FlowControl::UnconditionalBranch => {
+                    let target = instruction.near_branch_target();
+                    // A `jmp` out of an exact extent is a tail call.
+                    let tail = end > start && (target < start || target >= end);
+                    if tail
+                        && region_of(target).is_some()
+                        && !inside_table(target)
+                        && found.len() < MAX_UNWIND_ENTRIES
+                    {
+                        found.push(target);
+                        if work.len() < MAX_UNWIND_ENTRIES {
+                            work.push((target, 0));
+                        }
+                    }
+                    if end == 0 && target > next && target < limit && target > reach {
+                        reach = target;
+                    } else if end == 0 && next > reach {
+                        break;
+                    }
+                }
+                FlowControl::Return | FlowControl::IndirectBranch | FlowControl::Interrupt
+                    if end == 0 && next > reach =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
 }
 
 /// Merge `synthesized` starts into unwind `table` entries.
@@ -278,6 +508,13 @@ struct Step {
     pc_add: Option<usize>,
     /// Thumb `it`: instructions it predicates.
     it_count: u32,
+    /// `(rD, value)` written by a pc-relative literal load or a `movw`.
+    load: Option<(usize, u32)>,
+    /// `(rD, high half)` written by a `movt`.
+    movt: Option<(usize, u32)>,
+    /// `add rD, pc` forms: `(rD, rM, pc)`, the register holding the offset
+    /// and the pc value the add reads.
+    pc_relative: Option<(usize, usize, u64)>,
 }
 
 struct ArmWalk<'a> {
@@ -295,8 +532,13 @@ impl ArmWalk<'_> {
         let mut it_left = 0u32;
         let mut skip: Option<(u64, u64)> = None;
         let mut adr: [Option<(u64, u64)>; 16] = [None; 16];
+        // Offsets loaded for a later `add rX, pc`: `(value, address)`.
+        let mut offsets: [Option<(u32, u64)>; 16] = [None; 16];
         while let Some(address) = cursor {
             if let Some(end) = range_end(self.data, address) {
+                if let Some(start) = self.skip_gap(region, end, is_thumb(end)) {
+                    self.found.after_pool.push(start);
+                }
                 cursor = Some(end);
                 continue;
             }
@@ -338,6 +580,24 @@ impl ArmWalk<'_> {
             }
             if let Some((register, label)) = step.adr {
                 adr[register] = Some((label, address));
+            }
+            if let Some((register, value)) = step.load {
+                offsets[register] = Some((value, address));
+            }
+            if let Some((register, high)) = step.movt {
+                offsets[register] = offsets[register]
+                    .filter(|(value, _)| *value <= 0xffff)
+                    .map(|(value, at)| (value | (high << 16), at));
+            }
+            if let Some((register, source, pc)) = step.pc_relative {
+                if let Some((value, at)) = offsets[source] {
+                    if address - at <= PIC_WINDOW {
+                        self.found
+                            .pic_refs
+                            .push(pc.wrapping_add(u64::from(value)) & 0xffff_ffff);
+                    }
+                }
+                offsets[register] = None;
             }
             let mut step = step;
             if let Some(base) = step.pc_add {
@@ -382,11 +642,17 @@ impl ArmWalk<'_> {
             }
             if step.terminator && !predicated {
                 adr = [None; 16];
+                offsets = [None; 16];
                 thumb = is_thumb(next);
                 cursor = self.skip_gap(region, next, thumb);
                 if let Some(start) = cursor {
                     thumb = is_thumb(start);
                     self.found.after_terminator.push(start);
+                    let offset = (start - region.start) as usize;
+                    let end = region.data.len().min(offset + MAX_STUB_BYTES);
+                    if arm32_stub(start, &region.data[offset..end]).is_some() {
+                        self.found.stubs.push(start);
+                    }
                 }
                 it_left = 0;
             } else {
@@ -557,6 +823,28 @@ fn arm_step(region: &Region, address: u64) -> Option<Step> {
         step.terminator = always;
     } else if word & 0x0f7f_0000 == 0x051f_0000 {
         step.literal = literal(pc, word & 0xfff, word & (1 << 23) != 0, 4);
+        if let Some((start, _)) = step.literal {
+            step.load = word_at(region, start).map(|value| (((word >> 12) & 0xf) as usize, value));
+        }
+    } else if word & 0x0ff0_0000 == 0x0300_0000 || word & 0x0ff0_0000 == 0x0340_0000 {
+        // `movw`/`movt rD, #imm16`.
+        let register = ((word >> 12) & 0xf) as usize;
+        let imm = ((word >> 4) & 0xf000) | (word & 0xfff);
+        if word & 0x0040_0000 == 0 {
+            step.load = Some((register, imm));
+        } else {
+            step.movt = Some((register, imm));
+        }
+    } else if word & 0x0fff_0ff0 == 0x008f_0000 {
+        // `add rD, pc, rM`.
+        step.pc_relative = Some((((word >> 12) & 0xf) as usize, (word & 0xf) as usize, pc));
+    } else if word & 0x0ff0_0fff == 0x0080_000f {
+        // `add rD, rN, pc`.
+        step.pc_relative = Some((
+            ((word >> 12) & 0xf) as usize,
+            ((word >> 16) & 0xf) as usize,
+            pc,
+        ));
     } else if word & 0x0f7f_00f0 == 0x014f_00d0 {
         let offset = ((word >> 4) & 0xf0) | (word & 0xf);
         step.literal = literal(pc, offset, word & (1 << 23) != 0, 8);
@@ -706,6 +994,14 @@ fn thumb_step(region: &Region, address: u64) -> Option<Step> {
             step.terminator = true;
         } else if hw1 & 0xf800 == 0x4800 {
             step.literal = literal(aligned_pc, u32::from(hw1 & 0xff) * 4, true, 4);
+            if let Some((start, _)) = step.literal {
+                step.load =
+                    word_at(region, start).map(|value| (usize::from((hw1 >> 8) & 7), value));
+            }
+        } else if hw1 & 0xff78 == 0x4478 {
+            // `add rDN, pc`.
+            let register = usize::from((hw1 & 7) | ((hw1 >> 4) & 8));
+            step.pc_relative = Some((register, register, pc));
         } else if hw1 & 0xff00 == 0xb500 {
             step.prologue = true;
         }
@@ -758,6 +1054,22 @@ fn thumb_step(region: &Region, address: u64) -> Option<Step> {
         step.terminator = true;
     } else if hw1 & 0xff7f == 0xf85f {
         step.literal = literal(aligned_pc, u32::from(hw2 & 0xfff), hw1 & 0x80 != 0, 4);
+        if let Some((start, _)) = step.literal {
+            step.load = word_at(region, start).map(|value| (usize::from(hw2 >> 12), value));
+        }
+    } else if hw1 & 0xfb70 == 0xf240 && hw2 & 0x8000 == 0 {
+        // `movw`/`movt rD, #imm16` (T3; bit 7 of the first halfword picks
+        // `movt`).
+        let register = usize::from((hw2 >> 8) & 0xf);
+        let imm = (u32::from(hw1 & 0xf) << 12)
+            | (u32::from((hw1 >> 10) & 1) << 11)
+            | (u32::from((hw2 >> 12) & 7) << 8)
+            | u32::from(hw2 & 0xff);
+        if hw1 & 0x0080 == 0 {
+            step.load = Some((register, imm));
+        } else {
+            step.movt = Some((register, imm));
+        }
     } else if hw1 & 0xff7f == 0xe95f {
         step.literal = literal(aligned_pc, u32::from(hw2 & 0xff) * 4, hw1 & 0x80 != 0, 8);
     } else if hw1 & 0xff3f == 0xed1f && hw2 & 0x0e00 == 0x0a00 {
@@ -783,6 +1095,49 @@ mod tests {
 
     fn words(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn x64_call_targets_never_panic_on_random_bytes() {
+        let mut state = 0x2545_f491u32;
+        for size in [0usize, 1, 5, 64, 4097, 1 << 16] {
+            let data: Vec<u8> = (0..size)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                })
+                .collect();
+            let regions = vec![region(".text", 0x1000, data, true)];
+            let table = vec![(0x1000, 0x1000 + size as u64 / 2), (0x1003, 0x0fff)];
+            let roots = [0x1000 + size as u64 / 3, 0x0fff, u64::MAX];
+            let first = x64_call_targets(&regions, &table, &roots);
+            assert_eq!(first, x64_call_targets(&regions, &table, &roots));
+            assert!(first
+                .iter()
+                .all(|t| (0x1000..0x1000 + size as u64).contains(t)));
+        }
+    }
+
+    #[test]
+    fn label_tables_need_many_distinct_targets_in_one_gap() {
+        let known = [0x1000, 0x9000, 0xa000];
+        // 40 labels inside the function at 0x1000, then a function table
+        // whose targets each have a start, all in one run of slots.
+        let mut slots: Vec<(u64, u64)> =
+            (0..40).map(|i| (0x20000 + i * 4, 0x1100 + i * 8)).collect();
+        slots.push((0x20000 + 40 * 4, 0x9000));
+        slots.push((0x20000 + 41 * 4, 0xa000));
+        let labels = label_tables(&slots, 4, &known);
+        assert_eq!(labels.len(), 40);
+        assert!(!labels.contains(&0x9000));
+        // One callback repeated is one function, not a table of labels.
+        let repeated: Vec<(u64, u64)> = (0..40).map(|i| (0x30000 + i * 4, 0x1100)).collect();
+        assert!(label_tables(&repeated, 4, &known).is_empty());
+        // Labels spread over gaps, or slots that are not consecutive, stay.
+        let spread: Vec<(u64, u64)> = (0..40).map(|i| (0x30000 + i * 8, 0x1100 + i * 8)).collect();
+        assert!(label_tables(&spread, 4, &known).is_empty());
     }
 
     #[test]

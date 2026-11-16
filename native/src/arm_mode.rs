@@ -83,11 +83,35 @@ impl ModeMap {
         let mut exact: BTreeMap<u64, bool> = BTreeMap::new();
         for pointer in &pointers {
             let address = pointer & !1;
-            if in_code(address) && exact.len() < MAX_MODE_MARKS {
-                // A table naming one address in both modes is malformed; the
-                // lower pointer (ARM) wins, deterministically.
-                exact.entry(address).or_insert(pointer & 1 != 0);
+            if !in_code(address) || exact.len() >= MAX_MODE_MARKS {
+                continue;
             }
+            // GCC's computed-goto tables (`&&label`, lua's `luaV_execute`
+            // dispatch) are relocated like function pointers, but a label
+            // address never carries the Thumb bit. An even pointer into Thumb
+            // code therefore claims ARM mode for a label inside a Thumb
+            // function; it is believed only when the target is word-aligned
+            // and its own words vote ARM, as a call target must.
+            let claims_arm = pointer & 1 == 0;
+            let region_thumb = votes
+                .iter()
+                .find(|(start, end, _)| *start <= address && address < *end)
+                .is_some_and(|(_, _, thumb)| *thumb);
+            if claims_arm && region_thumb {
+                let local_arm = code
+                    .iter()
+                    .find(|r| r.start <= address && address < r.end())
+                    .is_some_and(|region| {
+                        let offset = (address - region.start) as usize;
+                        mostly_arm(&region.data[offset..], TARGET_VOTE_WORDS)
+                    });
+                if address & 3 != 0 || !local_arm {
+                    continue;
+                }
+            }
+            // A table naming one address in both modes is malformed; the
+            // lower pointer (ARM) wins, deterministically.
+            exact.entry(address).or_insert(pointer & 1 != 0);
         }
 
         let mut map = ModeMap {
@@ -292,6 +316,15 @@ mod tests {
         assert!(map.is_thumb(0x107e));
         assert!(!map.is_thumb(0x1080));
         assert!(!map.is_thumb(0x9000), "outside code");
+    }
+
+    #[test]
+    fn even_pointer_into_thumb_code_is_a_label_not_arm() {
+        let data = halfwords(&[0xb510, 0x4604, 0xbd10, 0xbf00].repeat(16));
+        // 0x1022 is not word-aligned; 0x1040 is, but its words vote Thumb.
+        let map = ModeMap::build(&[code(0x1000, data)], &[0x1001, 0x1022, 0x1040]);
+        assert!(map.is_thumb(0x1022));
+        assert!(map.is_thumb(0x1040));
     }
 
     #[test]
