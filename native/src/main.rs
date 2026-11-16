@@ -242,7 +242,9 @@ struct BenchArgs {
     /// Skip the false-positive scans (recall-only iteration)
     #[arg(long = "no-fp")]
     no_fp: bool,
-    /// Write each hint-free false-positive hit as a JSON line to this file
+    /// Write each hint-free false-positive hit as a JSON line to this file;
+    /// hinted hits go to `<file>.hinted`, recall scans to `<file>.recall` and
+    /// `<file>.recall-hinted`
     #[arg(long = "fp-report")]
     fp_report: Option<PathBuf>,
     /// Also measure joint resolution of whole-module signature sets (slow)

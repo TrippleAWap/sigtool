@@ -653,7 +653,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         // Matches are sorted best first; a tie for first is ambiguous.
         let top = top_is(&matches, expected);
         let answer = matches.first().is_some_and(identified);
-        let kept = if options.fp_report.is_some() && !hints {
+        let kept = if options.fp_report.is_some() {
             matches
         } else {
             Vec::new()
@@ -661,11 +661,11 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         (found, top, kept, answer)
     });
     if let Some(path) = &options.fp_report {
+        // Hint-free scans go to `<path>.recall`, hinted ones to
+        // `<path>.recall-hinted`, so either mode can be simulated offline.
         let mut out = String::new();
+        let mut out_hinted = String::new();
         for ((s, t, hints), (_, _, matches, _)) in recall_jobs.iter().zip(&recall_hits) {
-            if *hints {
-                continue;
-            }
             let sample = all[*s];
             let target = &targets[*t];
             let expected = target.functions[&sample.name];
@@ -677,6 +677,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                         "score": m.score,
                         "similarity": m.similarity,
                         "logp": target.scan_source(false).1.key_frequencies(&m.matched),
+                        "carriers": target.scan_source(false).1.key_carriers(&m.matched),
                         "matched": m.matched,
                     })
                 })
@@ -687,16 +688,20 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 "source": sample.source_file,
                 "opt": sample.opt,
                 "verdict": sample.verdict,
+                "features": feature_labels(&sample.signature),
                 "neighbours": sample.signature.neighbours,
                 "target": format!("{}/{}/{}", target.arch, target.opt, target.source_file),
                 "matches": found,
             });
-            out.push_str(&line.to_string());
-            out.push('\n');
+            let sink = if *hints { &mut out_hinted } else { &mut out };
+            sink.push_str(&line.to_string());
+            sink.push('\n');
         }
-        let mut recall_path = path.as_os_str().to_owned();
-        recall_path.push(".recall");
-        std::fs::write(&recall_path, out).map_err(|error| format!("{error}"))?;
+        for (suffix, text) in [(".recall", out), (".recall-hinted", out_hinted)] {
+            let mut recall_path = path.as_os_str().to_owned();
+            recall_path.push(suffix);
+            std::fs::write(&recall_path, text).map_err(|error| format!("{error}"))?;
+        }
     }
     let mut cells: BTreeMap<CellKey, (usize, usize, usize)> = BTreeMap::new();
     let mut answers: BTreeMap<&str, IdentifiedCell> = BTreeMap::new();
@@ -780,10 +785,18 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let hint_free_fp =
         !options.skip_false_positives && options.discovery.as_deref() != Some(HINTED);
     let (corpus_counts, negative_counts) = if hinted_fp {
+        let corpus_hits = false_positive_hits(&all, corpus_targets, true);
+        let negative_hits = false_positive_hits(&all, negative_targets, true);
+        if let Some(path) = &options.fp_report {
+            let mut hinted_path = path.as_os_str().to_owned();
+            hinted_path.push(".hinted");
+            let both: Vec<_> = corpus_hits.iter().chain(&negative_hits).cloned().collect();
+            write_fp_report(Path::new(&hinted_path), &all, &both)?;
+        }
         let (corpus_counts, corpus_scans, corpus_answers) =
-            false_positive_counts(&all, corpus_targets, true);
+            false_positive_counts(all.len(), &corpus_hits);
         let (negative_counts, negative_scans, negative_answers) =
-            false_positive_counts(&all, negative_targets, true);
+            false_positive_counts(all.len(), &negative_hits);
         let cell = identified_cell(&mut answers, HINTED);
         cell.unrelated_scans += corpus_scans + negative_scans;
         cell.unrelated_answers += corpus_answers + negative_answers;
@@ -982,31 +995,17 @@ fn measure_joint(targets: &[Target]) -> (Vec<JointCell>, Vec<JointFalsePositiveC
 
 /// Accepted matches per sample summed over the targets it must not match,
 /// plus the number of scans and of scans whose first match is identified.
-fn false_positive_counts<'t, F>(
-    samples: &[&Sample],
-    targets_for: F,
-    hints: bool,
-) -> (Vec<usize>, usize, usize)
-where
-    F: Fn(&Sample) -> Vec<&'t Target> + Sync,
-{
-    let jobs: Vec<(usize, &'t Target)> = samples
-        .iter()
-        .enumerate()
-        .flat_map(|(index, sample)| targets_for(sample).into_iter().map(move |t| (index, t)))
-        .collect();
-    let hits = parallel(jobs.len(), |job| {
-        let (index, target) = jobs[job];
-        let matches = target.scan(&samples[index].signature, hints);
-        (matches.len(), matches.first().is_some_and(identified))
-    });
-    let mut per_sample = vec![0usize; samples.len()];
+fn false_positive_counts(
+    samples: usize,
+    hits: &[(usize, &Target, Vec<Match>)],
+) -> (Vec<usize>, usize, usize) {
+    let mut per_sample = vec![0usize; samples];
     let mut answers = 0;
-    for ((index, _), (count, answer)) in jobs.iter().zip(hits) {
-        per_sample[*index] += count;
-        answers += usize::from(answer);
+    for (index, _, matches) in hits {
+        per_sample[*index] += matches.len();
+        answers += usize::from(matches.first().is_some_and(identified));
     }
-    (per_sample, jobs.len(), answers)
+    (per_sample, hits.len(), answers)
 }
 
 /// Every accepted match per `(sample, target)` pair, for reporting.
@@ -1033,6 +1032,22 @@ where
         .collect()
 }
 
+/// A signature's features as `!key@weight` (`!` marks required), for reports.
+fn feature_labels(signature: &Signature) -> Vec<String> {
+    signature
+        .features
+        .iter()
+        .map(|f| {
+            format!(
+                "{}{}@{:.2}",
+                if f.required { "!" } else { "" },
+                f.key(),
+                f.weight
+            )
+        })
+        .collect()
+}
+
 /// One JSON line per false-positive hit. The hit is labelled from the
 /// unstripped ground truth, which the scan itself never saw.
 fn write_fp_report(
@@ -1049,19 +1064,7 @@ fn write_fp_report(
                 .iter()
                 .find(|(_, start)| **start == found.address)
                 .map(|(name, _)| name.clone());
-            let features: Vec<String> = sample
-                .signature
-                .features
-                .iter()
-                .map(|f| {
-                    format!(
-                        "{}{}@{:.2}",
-                        if f.required { "!" } else { "" },
-                        f.key(),
-                        f.weight
-                    )
-                })
-                .collect();
+            let features = feature_labels(&sample.signature);
             let line = serde_json::json!({
                 "sample": sample.name,
                 "arch": sample.arch,
@@ -1079,6 +1082,7 @@ fn write_fp_report(
                 "score": found.score,
                 "similarity": found.similarity,
                 "logp": target.scan_source(false).1.key_frequencies(&found.matched),
+                "carriers": target.scan_source(false).1.key_carriers(&found.matched),
                 "matched": found.matched,
                 "label": label,
                 "neighbours": sample.signature.neighbours,

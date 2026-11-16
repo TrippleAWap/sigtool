@@ -374,6 +374,8 @@ pub struct ScanContext {
 pub struct Frequencies {
     pub functions: usize,
     pub document_frequency: HashMap<String, u32>,
+    /// Per key, the ordinals of the functions carrying it, ascending.
+    pub postings: HashMap<String, Vec<u32>>,
 }
 
 /// Images with fewer known functions give no usable frequency estimate.
@@ -407,17 +409,45 @@ impl Frequencies {
             cache.get_or_recover(source, starts[index], hints)
         });
         let mut document_frequency: HashMap<String, u32> = HashMap::new();
+        let mut postings: HashMap<String, Vec<u32>> = HashMap::new();
         let mut functions = 0usize;
         for candidate in recovered.into_iter().flatten() {
+            let ordinal = functions as u32;
             functions += 1;
             for key in &candidate.keys {
                 *document_frequency.entry(key.clone()).or_insert(0) += 1;
+                postings.entry(key.clone()).or_default().push(ordinal);
             }
         }
         (functions >= MIN_FREQUENCY_FUNCTIONS).then_some(Frequencies {
             functions,
             document_frequency,
+            postings,
         })
+    }
+
+    /// How many of the image's functions carry every one of the candidate's
+    /// own keys in `matched` (neighbour and joint keys are not the
+    /// candidate's own and are skipped): the exact count the independence
+    /// estimate of [`Frequencies::chance_matches`] approximates.
+    pub fn carriers(&self, matched: &[String]) -> usize {
+        let mut lists: Vec<&Vec<u32>> = Vec::new();
+        for key in matched {
+            if key.starts_with(NEIGHBOUR_PREFIX) || key.starts_with("joint:") {
+                continue;
+            }
+            match self.postings.get(key) {
+                Some(list) => lists.push(list),
+                None => return 0,
+            }
+        }
+        let Some((first, rest)) = lists.split_first() else {
+            return self.functions;
+        };
+        first
+            .iter()
+            .filter(|ordinal| rest.iter().all(|list| list.binary_search(ordinal).is_ok()))
+            .count()
     }
 
     /// Expected number of the image's functions that contain every key in
@@ -605,6 +635,12 @@ impl ScanContext {
                 })
                 .collect(),
         ))
+    }
+
+    /// Hint-free [`Frequencies::carriers`] of `matched`, when frequencies were
+    /// built. Diagnostic for the bench report.
+    pub fn key_carriers(&self, matched: &[String]) -> Option<usize> {
+        Some(self.frequencies[0].get()?.as_ref()?.carriers(matched))
     }
 
     /// Build the image's feature frequencies now instead of on the first
