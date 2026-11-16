@@ -22,6 +22,7 @@ use crate::recover::{recover, RecoveryLimits};
 use crate::score::score_features;
 use crate::sigfile::Signature;
 use crate::source::{ByteSource, Region};
+use crate::sweep::{RegionSweep, Step};
 
 pub const MAX_HITS_PER_ANCHOR: usize = 16;
 pub const MAX_CANDIDATE_STARTS: usize = 256;
@@ -143,10 +144,31 @@ pub fn compare(signature: &Signature, features: &[Feature]) -> MatchScore {
 
 /// [`compare`] against a candidate's precomputed key set.
 pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchScore {
-    let matched: Vec<&crate::sigfile::SignatureFeature> = signature
+    compare_with_keys(signature, &feature_keys(signature), present)
+}
+
+/// The signature's feature keys, in document order.
+fn feature_keys(signature: &Signature) -> Vec<String> {
+    signature
         .features
         .iter()
-        .filter(|feature| present.contains(&feature.key()))
+        .map(|feature| feature.key())
+        .collect()
+}
+
+/// [`compare_keys`] with the signature's keys (from [`feature_keys`]) built
+/// once: a hint-free scan compares one signature with every function in the
+/// image, and formatting each key again per candidate was most of the cost.
+fn compare_with_keys(
+    signature: &Signature,
+    keys: &[String],
+    present: &HashSet<String>,
+) -> MatchScore {
+    let matched: Vec<(&crate::sigfile::SignatureFeature, &String)> = signature
+        .features
+        .iter()
+        .zip(keys)
+        .filter(|(_, key)| present.contains(*key))
         .collect();
     let mut required_weight: f64 = signature
         .features
@@ -161,7 +183,10 @@ pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchSc
             .map(|feature| feature.weight)
             .sum();
     }
-    let matched_required = matched.iter().filter(|feature| feature.required).count();
+    let matched_required = matched
+        .iter()
+        .filter(|(feature, _)| feature.required)
+        .count();
     if required_weight <= 0.0 {
         return MatchScore {
             score: 0.0,
@@ -169,9 +194,9 @@ pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchSc
             matched_required: 0,
         };
     }
-    let total: f64 = matched.iter().map(|feature| feature.weight).sum();
+    let total: f64 = matched.iter().map(|(feature, _)| feature.weight).sum();
     let score = round_to((total / required_weight).min(1.0), SCORE_DECIMALS);
-    let mut matched_keys: Vec<String> = matched.iter().map(|feature| feature.key()).collect();
+    let mut matched_keys: Vec<String> = matched.iter().map(|(_, key)| (*key).clone()).collect();
     matched_keys.sort();
     MatchScore {
         score,
@@ -653,22 +678,44 @@ impl ScanContext {
     }
 
     pub fn build<S: ByteSource + ?Sized>(source: &S) -> ScanContext {
-        // Two independent whole-image sweeps of similar cost.
-        let (references, code) = crate::parallel::join(
-            || {
-                let mut references = ReferenceIndex::default();
-                for region in source.regions() {
-                    if region.executable {
-                        references.index_region(source, region);
+        // The reference and code indexes are the same linear sweep read two
+        // ways, so one decode of each region feeds both. Each keeps its own
+        // budgets and stops exactly where its own sweep would have.
+        let mut references = ReferenceIndex::default();
+        let mut code = CodeIndexBuild::default();
+        for region in source.regions().iter().filter(|region| region.executable) {
+            let mut reference_build = references.begin_region(region);
+            if reference_build.is_none() && code.done {
+                continue;
+            }
+            let mut sweep = RegionSweep::new(source, region);
+            while !sweep.at_end() {
+                let reference_active = reference_build.as_mut().is_some_and(|build| build.wants());
+                let code_active = code.wants();
+                if !reference_active && !code_active {
+                    break;
+                }
+                let Some(step) = sweep.next_step() else {
+                    break;
+                };
+                if reference_active {
+                    if let Some(build) = reference_build.as_mut() {
+                        build.feed(&step);
                     }
                 }
-                references
-            },
-            || CodeIndex::build(source),
-        );
+                if code_active {
+                    code.feed(source, &step);
+                }
+            }
+            if let Some(build) = reference_build {
+                references.finish_region(region, build);
+            }
+            code.finish_region(region);
+        }
+        references.rebuild_merged();
         ScanContext {
             references,
-            code,
+            code: code.finish(),
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
         }
@@ -684,6 +731,14 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
+    // Hint-free candidates are the image's unwind entries, which the
+    // frequency table below recovers anyway. Building it first recovers
+    // them on every core; the candidate loop then finds them cached instead
+    // of recovering each in turn (single-signature `locate` on stripped
+    // Thumb sqlite spent most of its scan there).
+    if !hints {
+        context.prepare_frequencies(source, hints);
+    }
     let hits = anchor_hits(source, signature);
     let matches = scan_candidates_with(
         source,
@@ -1067,6 +1122,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
+    let keys = feature_keys(signature);
     for start in candidate_starts(source, signature, hits, max_candidates, hints, index, code) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
@@ -1081,7 +1137,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
         let Some(candidate) = candidate else {
             continue;
         };
-        let result = compare_keys(signature, &candidate.keys);
+        let result = compare_with_keys(signature, &keys, &candidate.keys);
         if accepts(signature, &result) {
             matches.push(Match {
                 address: candidate.start,
@@ -1127,6 +1183,39 @@ pub struct ReferenceIndex {
     pub truncated: bool,
 }
 
+/// One region of a [`ReferenceIndex`] being swept.
+struct ReferenceBuild {
+    budget: usize,
+    count: usize,
+    resyncs: usize,
+    truncated: bool,
+    refs: HashMap<u64, Vec<u64>>,
+}
+
+impl ReferenceBuild {
+    /// Whether the region's sweep may take another step.
+    fn wants(&mut self) -> bool {
+        if self.count >= self.budget || self.resyncs >= MAX_INDEX_RESYNCS {
+            self.truncated = true;
+            return false;
+        }
+        true
+    }
+
+    fn feed(&mut self, step: &Step) {
+        let Some(insns) = step else {
+            self.resyncs += 1;
+            return;
+        };
+        for insn in insns {
+            self.count += 1;
+            for reference in &insn.refs {
+                self.refs.entry(reference.addr).or_default().push(insn.addr);
+            }
+        }
+    }
+}
+
 impl Default for ReferenceIndex {
     fn default() -> Self {
         ReferenceIndex::new(MAX_INDEX_INSTRUCTIONS)
@@ -1152,48 +1241,51 @@ impl ReferenceIndex {
 
     /// (Re)index one executable region; returns the instructions indexed.
     pub fn index_region<S: ByteSource + ?Sized>(&mut self, source: &S, region: &Region) -> usize {
+        let Some(mut build) = self.begin_region(region) else {
+            self.rebuild_merged();
+            return 0;
+        };
+        let mut sweep = RegionSweep::new(source, region);
+        while !sweep.at_end() && build.wants() {
+            let Some(step) = sweep.next_step() else {
+                break;
+            };
+            build.feed(&step);
+        }
+        let count = build.count;
+        self.finish_region(region, build);
+        self.rebuild_merged();
+        count
+    }
+
+    /// Forget `region`'s old entry and start indexing it, or `None` when it
+    /// is not executable or the budget is spent.
+    fn begin_region(&mut self, region: &Region) -> Option<ReferenceBuild> {
         self.by_region.remove(&region.start);
         self.instructions -= self.region_counts.remove(&region.start).unwrap_or(0);
         if !region.executable {
-            self.rebuild_merged();
-            return 0;
+            return None;
         }
         let budget = self.max_instructions.saturating_sub(self.instructions);
         if budget == 0 {
             self.truncated = true;
-            self.rebuild_merged();
-            return 0;
+            return None;
         }
+        Some(ReferenceBuild {
+            budget,
+            count: 0,
+            resyncs: 0,
+            truncated: false,
+            refs: HashMap::new(),
+        })
+    }
 
-        let normalizer = Normalizer::new(source);
-        let mut refs: HashMap<u64, Vec<u64>> = HashMap::new();
-        let mut count = 0usize;
-        let mut resyncs = 0usize;
-        let mut cursor = region.start;
-        while cursor < region.end() {
-            if count >= budget || resyncs >= MAX_INDEX_RESYNCS {
-                self.truncated = true;
-                break;
-            }
-            let span = (region.end() - cursor).min(0x1000) as usize;
-            let insns = normalizer.decode_block(cursor, span);
-            if insns.is_empty() {
-                cursor += 1;
-                resyncs += 1;
-                continue;
-            }
-            for insn in &insns {
-                count += 1;
-                for reference in &insn.refs {
-                    refs.entry(reference.addr).or_default().push(insn.addr);
-                }
-            }
-            let last = insns.last().expect("non-empty");
-            cursor = last.addr + last.size as u64;
-        }
-        self.instructions += count;
-        self.region_counts.insert(region.start, count);
-        let region_refs = refs
+    fn finish_region(&mut self, region: &Region, build: ReferenceBuild) {
+        self.truncated |= build.truncated;
+        self.instructions += build.count;
+        self.region_counts.insert(region.start, build.count);
+        let region_refs = build
+            .refs
             .into_iter()
             .map(|(addr, mut addrs)| {
                 addrs.sort_unstable();
@@ -1202,8 +1294,6 @@ impl ReferenceIndex {
             })
             .collect();
         self.by_region.insert(region.start, region_refs);
-        self.rebuild_merged();
-        count
     }
 
     /// Forget one region (the scanner calls this when it is freed).
@@ -1513,11 +1603,26 @@ fn find_all(data: &[u8], needle: &[u8], limit: usize) -> Vec<usize> {
     found
 }
 
+/// First occurrence of `needle` in `data` at or after `start`.
+///
+/// Every signature searches the whole image for each anchor needle, so this
+/// skips ahead to the next occurrence of the needle's first byte and only
+/// compares the rest there; comparing the full needle at every offset made
+/// Tier 0 most of a hint-free multi-signature scan.
 fn find_at(data: &[u8], needle: &[u8], start: usize) -> Option<usize> {
-    if needle.len() > data.len() {
-        return None;
+    let last = data.len().checked_sub(needle.len())?;
+    let Some((first, rest)) = needle.split_first() else {
+        return (start <= last).then_some(start);
+    };
+    let mut index = start;
+    while index <= last {
+        index += data[index..=last].iter().position(|byte| byte == first)?;
+        if data[index + 1..index + needle.len()] == *rest {
+            return Some(index);
+        }
+        index += 1;
     }
-    (start..=data.len() - needle.len()).find(|index| &data[*index..*index + needle.len()] == needle)
+    None
 }
 
 fn const_needles(value: &str) -> Vec<Vec<u8>> {
@@ -1819,62 +1924,97 @@ pub struct CodeIndex {
     const_refs: HashMap<u64, Vec<u64>>,
 }
 
-impl CodeIndex {
-    pub fn build<S: ByteSource + ?Sized>(source: &S) -> CodeIndex {
-        let normalizer = Normalizer::new(source);
-        let mut index = CodeIndex::default();
-        let mut decoded = 0usize;
-        let mut resyncs = 0usize;
-        'regions: for region in source.regions() {
-            if !region.executable {
-                continue;
-            }
-            let mut boundaries: Vec<u64> = Vec::new();
-            let mut cursor = region.start;
-            while cursor < region.end() {
-                if decoded >= MAX_DISCOVERY_INSTRUCTIONS || resyncs >= MAX_INDEX_RESYNCS {
-                    break 'regions;
-                }
-                let span = (region.end() - cursor).min(0x1000) as usize;
-                let insns = normalizer.decode_block(cursor, span);
-                if insns.is_empty() {
-                    cursor += 1;
-                    resyncs += 1;
-                    continue;
-                }
-                for insn in &insns {
-                    decoded += 1;
-                    if !insn.padding {
-                        boundaries.push(insn.addr);
-                    }
-                    if matches!(insn.kind, Kind::Call | Kind::NoreturnCall) {
-                        if let Some(target) = insn.target {
-                            if source.is_executable(target) {
-                                index.call_targets.insert(target);
-                            }
-                            if let Some(callee) =
-                                call_destination(source, target, insn.callee.as_deref())
-                            {
-                                index.callers.entry(callee).or_default().push(insn.addr);
-                            }
-                        }
-                    }
-                    for value in insn.consts.iter().flat_map(|value| const_words(*value)) {
-                        index.const_refs.entry(value).or_default().push(insn.addr);
-                    }
-                }
-                let last = insns.last().expect("non-empty");
-                cursor = last.addr + last.size as u64;
-            }
-            boundaries.sort_unstable();
-            boundaries.dedup();
-            index.boundaries.insert(region.start, boundaries);
+/// A [`CodeIndex`] being swept. Its budgets are global across regions:
+/// once one runs out, the pass ends and the region it stopped in keeps no
+/// boundaries, as the swept fallback in [`CodeIndex::swept_starts`] expects.
+#[derive(Default)]
+struct CodeIndexBuild {
+    index: CodeIndex,
+    boundaries: Vec<u64>,
+    decoded: usize,
+    resyncs: usize,
+    done: bool,
+}
+
+impl CodeIndexBuild {
+    fn wants(&mut self) -> bool {
+        if self.decoded >= MAX_DISCOVERY_INSTRUCTIONS || self.resyncs >= MAX_INDEX_RESYNCS {
+            self.done = true;
         }
+        !self.done
+    }
+
+    fn feed<S: ByteSource + ?Sized>(&mut self, source: &S, step: &Step) {
+        let Some(insns) = step else {
+            self.resyncs += 1;
+            return;
+        };
+        for insn in insns {
+            self.decoded += 1;
+            if !insn.padding {
+                self.boundaries.push(insn.addr);
+            }
+            if matches!(insn.kind, Kind::Call | Kind::NoreturnCall) {
+                if let Some(target) = insn.target {
+                    if source.is_executable(target) {
+                        self.index.call_targets.insert(target);
+                    }
+                    if let Some(callee) = call_destination(source, target, insn.callee.as_deref()) {
+                        self.index
+                            .callers
+                            .entry(callee)
+                            .or_default()
+                            .push(insn.addr);
+                    }
+                }
+            }
+            for value in insn.consts.iter().flat_map(|value| const_words(*value)) {
+                self.index
+                    .const_refs
+                    .entry(value)
+                    .or_default()
+                    .push(insn.addr);
+            }
+        }
+    }
+
+    fn finish_region(&mut self, region: &Region) {
+        let mut boundaries = std::mem::take(&mut self.boundaries);
+        if self.done {
+            return;
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        self.index.boundaries.insert(region.start, boundaries);
+    }
+
+    fn finish(self) -> CodeIndex {
+        let mut index = self.index;
         for references in index.const_refs.values_mut() {
             references.sort_unstable();
             references.dedup();
         }
         index
+    }
+}
+
+impl CodeIndex {
+    pub fn build<S: ByteSource + ?Sized>(source: &S) -> CodeIndex {
+        let mut build = CodeIndexBuild::default();
+        for region in source.regions().iter().filter(|region| region.executable) {
+            if build.done {
+                break;
+            }
+            let mut sweep = RegionSweep::new(source, region);
+            while !sweep.at_end() && build.wants() {
+                let Some(step) = sweep.next_step() else {
+                    break;
+                };
+                build.feed(source, &step);
+            }
+            build.finish_region(region);
+        }
+        build.finish()
     }
 
     /// Instructions that materialize `value`, sorted and deduplicated.
@@ -2007,6 +2147,36 @@ mod tests {
     #[test]
     fn small_constants_are_not_searchable() {
         assert!(const_needles("0xff").is_empty());
+    }
+
+    #[test]
+    fn find_all_agrees_with_a_naive_search() {
+        // Few distinct bytes, so needles overlap and recur everywhere.
+        let mut state = 0x2545_f491_u32;
+        let data: Vec<u8> = (0..4096)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state % 3) as u8
+            })
+            .collect();
+        let naive = |needle: &[u8], limit: usize| -> Vec<usize> {
+            (0..=data.len().saturating_sub(needle.len()))
+                .filter(|index| data[*index..].starts_with(needle))
+                .take(limit)
+                .collect()
+        };
+        for length in 1..=6 {
+            for offset in [0usize, 17, 1000, data.len() - length] {
+                let needle = &data[offset..offset + length];
+                for limit in [1, MAX_HITS_PER_ANCHOR, usize::MAX] {
+                    assert_eq!(find_all(&data, needle, limit), naive(needle, limit));
+                }
+            }
+        }
+        assert_eq!(find_at(&data, &data[4090..], 4091), None);
+        assert_eq!(find_at(b"ab", b"abc", 0), None);
     }
 
     #[test]

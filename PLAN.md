@@ -354,8 +354,19 @@ As of 2026-11-15, `native-first` branch, spec v3.
   - Determinism: `similarity` summed weights in `HashMap` order, so tied
     lookalikes ranked differently between runs; fixed, and two full real
     benches now give identical reports.
+  - G5 150-signature hint-free scan (`examples/profile_g5.rs`: signatures
+    from 150 gcc-O2 sqlite functions, scanned against stripped clang-O2
+    sqlite, 3 threads on a shared 8-core machine): x64 (1.13 MB) 6.5 s ->
+    0.8 s, Thumb (0.73 MB) 50.4 s -> 1.4 s, peak 58 / 62 MB (G5 <= 10 s,
+    <= 2 GB). From ARM32/Thumb blocks decoded instruction by instruction
+    instead of by prefix (4x fewer Capstone decodes), one parallel sweep for
+    both whole-image indexes, signature keys formatted once per scan, a
+    first-byte skip in Tier 0, and frequencies built before candidates.
+    Every output is unchanged (toy and real-slice bench reports, match
+    digests, generated DBs). No 1.5 MB stripped image is in the corpus;
+    the largest is x64 clang-O2 sqlite.
   - Open for M8 exit: the weekly workflow (`real-bench.yml`) has not run
-    yet; the 150-signature hint-free scan cost (G5) is not measured.
+    yet.
 - M12, trust labels (2026-11-16, tuning corpus only): `identified` now
   needs an untied first match similar enough for its evidence, and
   shape-only matches need similarity 0.3 (hinted too, with 6 features).
