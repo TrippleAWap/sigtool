@@ -410,7 +410,14 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                 break;
             }
             seen.push(current);
-            if self.source.name_for_address(current).is_some() {
+            // Linker thunks keep a `.symtab` name in unstripped images
+            // (`__ThumbV7PILongThunk_f`, `__f_veneer`); stopping there would
+            // name the thunk, which a stripped copy cannot, instead of `f`.
+            if self
+                .source
+                .name_for_address(current)
+                .is_some_and(|name| !crate::stubs::linker_thunk_name(&name))
+            {
                 break;
             }
             let next = match self.stub_exit(current, depth) {

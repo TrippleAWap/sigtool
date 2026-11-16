@@ -10,6 +10,12 @@ Not yet versioned; the integrator bumps `SPEC_VERSION` once for these.
   relocated like function pointers but name even labels inside Thumb
   functions; before, each one switched the rest of that function to ARM
   decoding, so features of such functions in stripped Thumb images change.
+* Callees through lld Thumb-2 and ARM PI thunks (`movw`/`movt ip`, `add ip,
+  pc`, `bx ip`) resolve to what the thunk reaches (usually a PLT entry, so
+  the import name). Before, a stripped image recorded the thunk's address
+  and an unstripped one its `.symtab` name (`__ThumbV7PILongThunk_f`);
+  linker thunk and veneer names no longer stop thunk following. Affects
+  `callee` records of clang/lld ARM32 and Thumb shared objects.
 
 ## v1 — M1 extraction
 

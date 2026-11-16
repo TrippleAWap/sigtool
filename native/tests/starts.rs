@@ -89,6 +89,44 @@ fn load(arch: &str, build: &str, library: &str) -> Option<Starts> {
 }
 
 #[test]
+fn thumb_calls_through_lld_thunks_name_their_callee() {
+    // cJSON_DetachItemFromArray tail-calls cJSON_DetachItemViaPointer
+    // through `__ThumbV7PILongThunk_cJSON_DetachItemViaPointer` (movw/movt/
+    // add ip, pc/bx ip) and its PLT entry. Stripped or not, the callee must
+    // be the import, not the thunk's address or its `.symtab` name.
+    let root = corpus();
+    let full = root.join("thumb/clang-Os/cjson.so");
+    if !full.is_file() {
+        eprintln!("skip: {} is absent", full.display());
+        return;
+    }
+    // The address comes from the unstripped copy's labels.
+    let address = FileSource::from_path(&full).expect("image").modules()[0]
+        .functions
+        .iter()
+        .find(|(_, name)| name.as_str() == "cJSON_DetachItemFromArray")
+        .map(|(address, _)| *address)
+        .expect("cJSON_DetachItemFromArray");
+    for image in [root.join("stripped/thumb/clang-Os/cjson.so"), full] {
+        if !image.is_file() {
+            eprintln!("skip: {} is absent", image.display());
+            return;
+        }
+        let source = FileSource::from_path(&image).expect("image");
+        let result =
+            sigtool_native::generate::generate(&source, address, None, None, None, None, None)
+                .expect("generate");
+        let yaml = result.to_yaml().expect("yaml");
+        assert!(
+            yaml.contains("callee:cJSON_DetachItemViaPointer"),
+            "{}: {yaml}",
+            image.display()
+        );
+        assert!(!yaml.contains("Thunk"), "{}", image.display());
+    }
+}
+
+#[test]
 fn pic_function_addresses_are_function_starts() {
     // Leaf callbacks referenced only by address, formed as
     // `ldr rX, =sym-(.LPIC+pc); .LPIC: add rX, pc` (gcc, both modes).

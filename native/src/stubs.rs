@@ -129,12 +129,24 @@ pub fn arm32_stub(addr: u64, data: &[u8]) -> Option<StubExit> {
     }
     if first & 0xFFF0_F000 == 0xE300_C000 {
         let second = *all.get(1)?;
-        if second & 0xFFF0_F000 != 0xE340_C000 || all.get(2) != Some(&0xE12F_FF1C) {
+        if second & 0xFFF0_F000 != 0xE340_C000 {
             return None;
         }
         let low = ((first >> 4) & 0xF000) | (first & 0xFFF);
         let high = ((second >> 4) & 0xF000) | (second & 0xFFF);
-        return Some(StubExit::Direct(u64::from((high << 16) | low) & !1));
+        let value = u64::from((high << 16) | low);
+        return match (all.get(2), all.get(3)) {
+            (Some(&0xE12F_FF1C), _) => Some(StubExit::Direct(value & !1)),
+            // lld `__ARMV7PILongThunk_`: `add ip, ip, pc` reads its own
+            // address + 8.
+            (Some(&0xE08C_C00F), Some(&0xE12F_FF1C)) => Some(StubExit::Direct(
+                value.wrapping_add(addr + 8 + 8) & mask & !1,
+            )),
+            _ => None,
+        };
+    }
+    if let Some(exit) = thumb_thunk(addr, data) {
+        return Some(exit);
     }
     if first & 0xFFFF_F000 != 0xE28F_C000 {
         return None;
@@ -154,6 +166,52 @@ pub fn arm32_stub(addr: u64, data: &[u8]) -> Option<StubExit> {
         return None;
     }
     None
+}
+
+/// Whether `name` is a linker-made thunk or veneer symbol (lld
+/// `__ThumbV7PILongThunk_f`, `__AArch64ADRPThunk_f`; GNU ld `__f_veneer`,
+/// `__f_from_thumb`, `__f_from_arm`). Only unstripped images carry these.
+pub fn linker_thunk_name(name: &str) -> bool {
+    name.starts_with("__")
+        && (name.contains("Thunk_")
+            || name.ends_with("_veneer")
+            || name.ends_with("_from_thumb")
+            || name.ends_with("_from_arm"))
+}
+
+/// lld Thumb-2 thunks, which reach a callee (often its PLT entry) that a
+/// `b.w`/`bl` cannot, or one in the other mode:
+///
+/// * `movw ip, #lo; movt ip, #hi; add ip, pc; bx ip` (`__ThumbV7PILongThunk_`;
+///   the `add` reads its own address + 4)
+/// * `movw ip, #lo; movt ip, #hi; bx ip` (`__Thumbv7ABSLongThunk_`)
+fn thumb_thunk(addr: u64, data: &[u8]) -> Option<StubExit> {
+    let half = |index: usize| {
+        data.get(index * 2..index * 2 + 2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+    };
+    // T3 `movw`/`movt` with `rd = ip`: the immediate is i:imm4:imm3:imm8.
+    let immediate = |hw1: u16, hw2: u16| {
+        (u32::from(hw1 & 0xF) << 12)
+            | (u32::from((hw1 >> 10) & 1) << 11)
+            | (u32::from((hw2 >> 12) & 7) << 8)
+            | u32::from(hw2 & 0xFF)
+    };
+    let (w1, w2, t1, t2) = (half(0)?, half(1)?, half(2)?, half(3)?);
+    if w1 & 0xFBF0 != 0xF240 || w2 & 0x8F00 != 0x0C00 {
+        return None;
+    }
+    if t1 & 0xFBF0 != 0xF2C0 || t2 & 0x8F00 != 0x0C00 {
+        return None;
+    }
+    let value = u64::from((immediate(t1, t2) << 16) | immediate(w1, w2));
+    match (half(4)?, half(5)) {
+        (0x4760, _) => Some(StubExit::Direct(value & !1)),
+        (0x44FC, Some(0x4760)) => Some(StubExit::Direct(
+            value.wrapping_add(addr + 8 + 4) & 0xFFFF_FFFF & !1,
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +266,39 @@ mod tests {
             arm32_stub(0x37F2C, &prefixed),
             Some(StubExit::Slot(0x59284))
         );
+    }
+
+    fn halves(halfwords: &[u16]) -> Vec<u8> {
+        halfwords
+            .iter()
+            .flat_map(|half| half.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn thumb_lld_thunks_resolve_their_target() {
+        // __ThumbV7PILongThunk_cJSON_DetachItemViaPointer at 0x1495c in
+        // thumb/clang-Os/cjson.so (lld): 0x208 + 0x14968 (pc of the add) is
+        // the PLT entry at 0x14b70.
+        let pi = halves(&[0xF240, 0x2C08, 0xF2C0, 0x0C00, 0x44FC, 0x4760]);
+        assert_eq!(arm32_stub(0x1495C, &pi), Some(StubExit::Direct(0x14B70)));
+        let absolute = halves(&[0xF241, 0x2C35, 0xF2C0, 0x0C05, 0x4760]);
+        assert_eq!(
+            arm32_stub(0x1000, &absolute),
+            Some(StubExit::Direct(0x5_1234))
+        );
+        // ARM `__ARMV7PILongThunk_`: movw ip; movt ip; add ip, ip, pc; bx ip.
+        let arm = bytes(&[0xE300_C100, 0xE340_C000, 0xE08C_C00F, 0xE12F_FF1C]);
+        assert_eq!(arm32_stub(0x2000, &arm), Some(StubExit::Direct(0x2110)));
+    }
+
+    #[test]
+    fn thumb_address_computation_into_another_register_is_not_a_thunk() {
+        // movw r0; movt r0; add r0, pc; bx r0
+        let code = halves(&[0xF240, 0x2008, 0xF2C0, 0x0000, 0x4478, 0x4700]);
+        assert_eq!(arm32_stub(0x1000, &code), None);
+        assert!(linker_thunk_name("__ThumbV7PILongThunk_memcpy"));
+        assert!(!linker_thunk_name("__aeabi_idiv"));
     }
 
     #[test]
