@@ -1699,10 +1699,16 @@ pub fn default_corpus(repo_root: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// The committed toy baseline predates the M8 keys.
+    /// The committed toy baseline with the M8 keys removed, as a baseline
+    /// saved before M8 loads.
     fn old_baseline() -> BenchReport {
-        serde_json::from_str(include_str!("../../tests/baseline/native-bench.json"))
-            .expect("old baseline loads")
+        let mut baseline: BenchReport =
+            serde_json::from_str(include_str!("../../tests/baseline/native-bench.json"))
+                .expect("baseline loads");
+        baseline.identified.clear();
+        baseline.library_recall.clear();
+        baseline.cost = None;
+        baseline
     }
 
     fn answers(discovery: &str, correct: usize, unrelated_answers: usize) -> IdentifiedCell {
