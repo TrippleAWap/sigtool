@@ -445,6 +445,16 @@ As of 2026-11-16, `native-first` branch, spec v4.
   clang-O2 hinted top-1 0.471 -> 0.412 (one function each), and 76 hinted
   found-anywhere cells (shape-only lookalikes below the top removed by the
   trust floors; hinted found 4903 -> 4680). Full bench 221 s on 8 cores,
-  peak 1.06 GB. Held-out not yet run at v4.
-- Next: M8 exit (weekly workflow green), held-out at v4, then the open
+  peak 1.06 GB.
+- Held-out at v4 (2026-11-16, measured once, nothing tuned on it), M8 ->
+  v4, hint-free top-1: same build 0.889 -> 0.896, other compiler 0.372 ->
+  0.368, cross opt 0.370 -> 0.374, other arch 0.395 -> 0.414, other arch
+  other compiler 0.286 -> 0.307, other arch cross opt 0.288 -> 0.302, merged
+  held-out arch 0.389 -> 0.413. Identified precision hint-free 0.897 ->
+  0.981, hinted 0.883 -> 0.988. FP hint-free 0.057 -> 0.054, any-verdict
+  0.080, strong 0.113 (14 of 124 strong signatures; not measured at M8, and
+  0.07 above tuning: the one G4 row outside 0.05). Joint: other arch same
+  build 0.779, other arch other compiler 0.556, other arch cross opt 0.533,
+  same arch other compiler 0.702; joint false hits equal scanned alone.
+- Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
   rule decision on in-module constants (M10).
