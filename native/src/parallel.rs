@@ -27,13 +27,18 @@ pub fn threads() -> usize {
         })
 }
 
-/// Run `job(i)` for every `i < count` on all cores; results in index order.
-pub fn map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, job: F) -> Vec<T> {
-    let threads = if IN_WORKER.with(Cell::get) {
+/// Threads a [`map`] called here would use: 1 inside a pool worker.
+pub fn workers() -> usize {
+    if IN_WORKER.with(Cell::get) {
         1
     } else {
-        threads().min(count)
-    };
+        threads()
+    }
+}
+
+/// Run `job(i)` for every `i < count` on all cores; results in index order.
+pub fn map<T: Send, F: Fn(usize) -> T + Sync>(count: usize, job: F) -> Vec<T> {
+    let threads = workers().min(count);
     if threads <= 1 {
         return (0..count).map(job).collect();
     }

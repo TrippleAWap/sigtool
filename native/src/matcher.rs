@@ -22,6 +22,7 @@ use crate::recover::{recover, RecoveryLimits};
 use crate::score::score_features;
 use crate::sigfile::Signature;
 use crate::source::{ByteSource, Region};
+use crate::sweep::{RegionSweep, Step};
 
 pub const MAX_HITS_PER_ANCHOR: usize = 16;
 pub const MAX_CANDIDATE_STARTS: usize = 256;
@@ -617,22 +618,44 @@ impl ScanContext {
     }
 
     pub fn build<S: ByteSource + ?Sized>(source: &S) -> ScanContext {
-        // Two independent whole-image sweeps of similar cost.
-        let (references, code) = crate::parallel::join(
-            || {
-                let mut references = ReferenceIndex::default();
-                for region in source.regions() {
-                    if region.executable {
-                        references.index_region(source, region);
+        // The reference and code indexes are the same linear sweep read two
+        // ways, so one decode of each region feeds both. Each keeps its own
+        // budgets and stops exactly where its own sweep would have.
+        let mut references = ReferenceIndex::default();
+        let mut code = CodeIndexBuild::default();
+        for region in source.regions().iter().filter(|region| region.executable) {
+            let mut reference_build = references.begin_region(region);
+            if reference_build.is_none() && code.done {
+                continue;
+            }
+            let mut sweep = RegionSweep::new(source, region);
+            while !sweep.at_end() {
+                let reference_active = reference_build.as_mut().is_some_and(|build| build.wants());
+                let code_active = code.wants();
+                if !reference_active && !code_active {
+                    break;
+                }
+                let Some(step) = sweep.next_step() else {
+                    break;
+                };
+                if reference_active {
+                    if let Some(build) = reference_build.as_mut() {
+                        build.feed(&step);
                     }
                 }
-                references
-            },
-            || CodeIndex::build(source),
-        );
+                if code_active {
+                    code.feed(source, &step);
+                }
+            }
+            if let Some(build) = reference_build {
+                references.finish_region(region, build);
+            }
+            code.finish_region(region);
+        }
+        references.rebuild_merged();
         ScanContext {
             references,
-            code,
+            code: code.finish(),
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
         }
@@ -984,6 +1007,39 @@ pub struct ReferenceIndex {
     pub truncated: bool,
 }
 
+/// One region of a [`ReferenceIndex`] being swept.
+struct ReferenceBuild {
+    budget: usize,
+    count: usize,
+    resyncs: usize,
+    truncated: bool,
+    refs: HashMap<u64, Vec<u64>>,
+}
+
+impl ReferenceBuild {
+    /// Whether the region's sweep may take another step.
+    fn wants(&mut self) -> bool {
+        if self.count >= self.budget || self.resyncs >= MAX_INDEX_RESYNCS {
+            self.truncated = true;
+            return false;
+        }
+        true
+    }
+
+    fn feed(&mut self, step: &Step) {
+        let Some(insns) = step else {
+            self.resyncs += 1;
+            return;
+        };
+        for insn in insns {
+            self.count += 1;
+            for reference in &insn.refs {
+                self.refs.entry(reference.addr).or_default().push(insn.addr);
+            }
+        }
+    }
+}
+
 impl Default for ReferenceIndex {
     fn default() -> Self {
         ReferenceIndex::new(MAX_INDEX_INSTRUCTIONS)
@@ -1009,48 +1065,51 @@ impl ReferenceIndex {
 
     /// (Re)index one executable region; returns the instructions indexed.
     pub fn index_region<S: ByteSource + ?Sized>(&mut self, source: &S, region: &Region) -> usize {
+        let Some(mut build) = self.begin_region(region) else {
+            self.rebuild_merged();
+            return 0;
+        };
+        let mut sweep = RegionSweep::new(source, region);
+        while !sweep.at_end() && build.wants() {
+            let Some(step) = sweep.next_step() else {
+                break;
+            };
+            build.feed(&step);
+        }
+        let count = build.count;
+        self.finish_region(region, build);
+        self.rebuild_merged();
+        count
+    }
+
+    /// Forget `region`'s old entry and start indexing it, or `None` when it
+    /// is not executable or the budget is spent.
+    fn begin_region(&mut self, region: &Region) -> Option<ReferenceBuild> {
         self.by_region.remove(&region.start);
         self.instructions -= self.region_counts.remove(&region.start).unwrap_or(0);
         if !region.executable {
-            self.rebuild_merged();
-            return 0;
+            return None;
         }
         let budget = self.max_instructions.saturating_sub(self.instructions);
         if budget == 0 {
             self.truncated = true;
-            self.rebuild_merged();
-            return 0;
+            return None;
         }
+        Some(ReferenceBuild {
+            budget,
+            count: 0,
+            resyncs: 0,
+            truncated: false,
+            refs: HashMap::new(),
+        })
+    }
 
-        let normalizer = Normalizer::new(source);
-        let mut refs: HashMap<u64, Vec<u64>> = HashMap::new();
-        let mut count = 0usize;
-        let mut resyncs = 0usize;
-        let mut cursor = region.start;
-        while cursor < region.end() {
-            if count >= budget || resyncs >= MAX_INDEX_RESYNCS {
-                self.truncated = true;
-                break;
-            }
-            let span = (region.end() - cursor).min(0x1000) as usize;
-            let insns = normalizer.decode_block(cursor, span);
-            if insns.is_empty() {
-                cursor += 1;
-                resyncs += 1;
-                continue;
-            }
-            for insn in &insns {
-                count += 1;
-                for reference in &insn.refs {
-                    refs.entry(reference.addr).or_default().push(insn.addr);
-                }
-            }
-            let last = insns.last().expect("non-empty");
-            cursor = last.addr + last.size as u64;
-        }
-        self.instructions += count;
-        self.region_counts.insert(region.start, count);
-        let region_refs = refs
+    fn finish_region(&mut self, region: &Region, build: ReferenceBuild) {
+        self.truncated |= build.truncated;
+        self.instructions += build.count;
+        self.region_counts.insert(region.start, build.count);
+        let region_refs = build
+            .refs
             .into_iter()
             .map(|(addr, mut addrs)| {
                 addrs.sort_unstable();
@@ -1059,8 +1118,6 @@ impl ReferenceIndex {
             })
             .collect();
         self.by_region.insert(region.start, region_refs);
-        self.rebuild_merged();
-        count
     }
 
     /// Forget one region (the scanner calls this when it is freed).
@@ -1676,62 +1733,97 @@ pub struct CodeIndex {
     const_refs: HashMap<u64, Vec<u64>>,
 }
 
-impl CodeIndex {
-    pub fn build<S: ByteSource + ?Sized>(source: &S) -> CodeIndex {
-        let normalizer = Normalizer::new(source);
-        let mut index = CodeIndex::default();
-        let mut decoded = 0usize;
-        let mut resyncs = 0usize;
-        'regions: for region in source.regions() {
-            if !region.executable {
-                continue;
-            }
-            let mut boundaries: Vec<u64> = Vec::new();
-            let mut cursor = region.start;
-            while cursor < region.end() {
-                if decoded >= MAX_DISCOVERY_INSTRUCTIONS || resyncs >= MAX_INDEX_RESYNCS {
-                    break 'regions;
-                }
-                let span = (region.end() - cursor).min(0x1000) as usize;
-                let insns = normalizer.decode_block(cursor, span);
-                if insns.is_empty() {
-                    cursor += 1;
-                    resyncs += 1;
-                    continue;
-                }
-                for insn in &insns {
-                    decoded += 1;
-                    if !insn.padding {
-                        boundaries.push(insn.addr);
-                    }
-                    if matches!(insn.kind, Kind::Call | Kind::NoreturnCall) {
-                        if let Some(target) = insn.target {
-                            if source.is_executable(target) {
-                                index.call_targets.insert(target);
-                            }
-                            if let Some(callee) =
-                                call_destination(source, target, insn.callee.as_deref())
-                            {
-                                index.callers.entry(callee).or_default().push(insn.addr);
-                            }
-                        }
-                    }
-                    for value in insn.consts.iter().flat_map(|value| const_words(*value)) {
-                        index.const_refs.entry(value).or_default().push(insn.addr);
-                    }
-                }
-                let last = insns.last().expect("non-empty");
-                cursor = last.addr + last.size as u64;
-            }
-            boundaries.sort_unstable();
-            boundaries.dedup();
-            index.boundaries.insert(region.start, boundaries);
+/// A [`CodeIndex`] being swept. Its budgets are global across regions:
+/// once one runs out, the pass ends and the region it stopped in keeps no
+/// boundaries, as the swept fallback in [`CodeIndex::swept_starts`] expects.
+#[derive(Default)]
+struct CodeIndexBuild {
+    index: CodeIndex,
+    boundaries: Vec<u64>,
+    decoded: usize,
+    resyncs: usize,
+    done: bool,
+}
+
+impl CodeIndexBuild {
+    fn wants(&mut self) -> bool {
+        if self.decoded >= MAX_DISCOVERY_INSTRUCTIONS || self.resyncs >= MAX_INDEX_RESYNCS {
+            self.done = true;
         }
+        !self.done
+    }
+
+    fn feed<S: ByteSource + ?Sized>(&mut self, source: &S, step: &Step) {
+        let Some(insns) = step else {
+            self.resyncs += 1;
+            return;
+        };
+        for insn in insns {
+            self.decoded += 1;
+            if !insn.padding {
+                self.boundaries.push(insn.addr);
+            }
+            if matches!(insn.kind, Kind::Call | Kind::NoreturnCall) {
+                if let Some(target) = insn.target {
+                    if source.is_executable(target) {
+                        self.index.call_targets.insert(target);
+                    }
+                    if let Some(callee) = call_destination(source, target, insn.callee.as_deref()) {
+                        self.index
+                            .callers
+                            .entry(callee)
+                            .or_default()
+                            .push(insn.addr);
+                    }
+                }
+            }
+            for value in insn.consts.iter().flat_map(|value| const_words(*value)) {
+                self.index
+                    .const_refs
+                    .entry(value)
+                    .or_default()
+                    .push(insn.addr);
+            }
+        }
+    }
+
+    fn finish_region(&mut self, region: &Region) {
+        let mut boundaries = std::mem::take(&mut self.boundaries);
+        if self.done {
+            return;
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        self.index.boundaries.insert(region.start, boundaries);
+    }
+
+    fn finish(self) -> CodeIndex {
+        let mut index = self.index;
         for references in index.const_refs.values_mut() {
             references.sort_unstable();
             references.dedup();
         }
         index
+    }
+}
+
+impl CodeIndex {
+    pub fn build<S: ByteSource + ?Sized>(source: &S) -> CodeIndex {
+        let mut build = CodeIndexBuild::default();
+        for region in source.regions().iter().filter(|region| region.executable) {
+            if build.done {
+                break;
+            }
+            let mut sweep = RegionSweep::new(source, region);
+            while !sweep.at_end() && build.wants() {
+                let Some(step) = sweep.next_step() else {
+                    break;
+                };
+                build.feed(source, &step);
+            }
+            build.finish_region(region);
+        }
+        build.finish()
     }
 
     /// Instructions that materialize `value`, sorted and deduplicated.
