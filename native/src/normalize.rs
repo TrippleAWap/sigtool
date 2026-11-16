@@ -15,6 +15,7 @@ use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register}
 use yaxpeax_arm::armv8::a64::InstDecoder;
 
 use crate::arch::Arch;
+use crate::arm32::ARM32_HANDLE_DEPTHS;
 use crate::source::ByteSource;
 use crate::spec::MAX_THUNK_HOPS;
 use crate::stubs::{arm32_stub, arm64_stub, StubExit, MAX_STUB_BYTES};
@@ -289,18 +290,21 @@ enum Operand {
 pub struct Normalizer<'a, S: ByteSource + ?Sized> {
     pub(crate) source: &'a S,
     pub(crate) arm64: InstDecoder,
-    /// Capstone handles for ARM32 `[arm, thumb]`, opened on first use: opening
-    /// one allocates and initialises the decoder tables, which cost more than
-    /// decoding a typical basic block.
-    pub(crate) arm32: [std::cell::OnceCell<Option<capstone::Capstone>>; 2],
+    /// Capstone handles for ARM32 `[arm, thumb]`, one per decode depth
+    /// (see `arm32_block`), opened on first use: opening one allocates and
+    /// initialises the decoder tables, which cost more than decoding a
+    /// typical basic block.
+    pub(crate) arm32: [[ArmHandle; ARM32_HANDLE_DEPTHS]; 2],
 }
+
+type ArmHandle = std::cell::OnceCell<Option<capstone::Capstone>>;
 
 impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     pub fn new(source: &'a S) -> Normalizer<'a, S> {
         Normalizer {
             source,
             arm64: InstDecoder::default(),
-            arm32: [std::cell::OnceCell::new(), std::cell::OnceCell::new()],
+            arm32: Default::default(),
         }
     }
 
@@ -450,7 +454,11 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                     return matched;
                 }
                 // Any other single-branch thunk the decoder resolves.
-                let first = self.normalize_one_depth(addr, depth + 1)?;
+                let first = if self.source.arch() == Arch::Arm64 {
+                    self.normalize_one_depth(addr, depth + 1)?
+                } else {
+                    self.arm32_first(addr, 16, depth + 1)?
+                };
                 (first.kind == Kind::Jump)
                     .then_some(first.target)
                     .flatten()

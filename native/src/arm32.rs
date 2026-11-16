@@ -22,6 +22,7 @@ use crate::normalize::{
     PendingValue, MASK32,
 };
 use crate::source::ByteSource;
+use crate::spec::MAX_THUNK_HOPS;
 
 const PC: RegId = RegId(ArmReg::ARM_REG_PC as u16);
 const LR: RegId = RegId(ArmReg::ARM_REG_LR as u16);
@@ -315,6 +316,21 @@ fn arm32_immediate_consts(ops: &[ArmOp]) -> Vec<u64> {
 
 impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
     pub(crate) fn arm32_block(&self, base: u64, max_bytes: usize, depth: usize) -> Vec<Insn> {
+        self.arm32_decode(base, max_bytes, depth, usize::MAX)
+    }
+
+    /// The first instruction at `addr`, for stub detection, which reads only
+    /// its kind and target. Those never depend on the instructions after it,
+    /// while decoding the rest of its block cost a stub check per call site
+    /// several decodes. Its `consts` can differ from the block's first
+    /// instruction: pending values fold into the last instruction decoded.
+    pub(crate) fn arm32_first(&self, addr: u64, max_bytes: usize, depth: usize) -> Option<Insn> {
+        self.arm32_decode(addr, max_bytes, depth, 1)
+            .into_iter()
+            .next()
+    }
+
+    fn arm32_decode(&self, base: u64, max_bytes: usize, depth: usize, limit: usize) -> Vec<Insn> {
         if max_bytes == 0 {
             return Vec::new();
         }
@@ -323,67 +339,60 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             return Vec::new();
         }
         let thumb = self.source.is_thumb(base);
-        let Some(cs) = self.arm32[usize::from(thumb)]
+        // Resolving a branch's callee decodes the target one level deeper
+        // while this block is still being iterated, and a nested decode
+        // resets the IT-block state the handle carries. Each depth gets its
+        // own handle, so a nested decode never disturbs this one.
+        let slot = depth.min(ARM32_HANDLE_DEPTHS - 1);
+        let Some(cs) = self.arm32[usize::from(thumb)][slot]
             .get_or_init(|| arm_capstone(thumb))
             .as_ref()
         else {
             return Vec::new();
         };
         // A block ends at its first terminator, usually a few instructions
-        // in, while the span is up to a page. Disassembling the whole span
-        // with detail made whole-image sweeps ~100x slower on ARM32 and Thumb
-        // than on x64 and AArch64, so decode a growing prefix instead. Every
-        // attempt starts from `base` with `cs_disasm`, which resets the Thumb
-        // IT-block state the handle carries (`cs_disasm_iter` does not), so
-        // the result is the same instructions the full span would give.
-        let mut window = data.len().min(ARM32_FIRST_WINDOW);
-        loop {
-            let Ok(instructions) = cs.disasm_all(&data[..window], base) else {
-                return Vec::new();
-            };
-            let mut state = ArmState::default();
-            let mut out: Vec<Insn> = Vec::new();
-            let mut stopped = false;
-            let mut decoded_end = base;
-            for raw in instructions.iter() {
-                let size = raw.len();
-                if size == 0 {
-                    stopped = true;
-                    break;
-                }
-                let Ok(detail) = cs.insn_detail(raw) else {
-                    stopped = true;
-                    break;
-                };
-                decoded_end = raw.address() + size as u64;
-                let cc = match detail.arch_detail() {
-                    ArchDetail::ArmDetail(arm) => arm.cc(),
-                    _ => ArmCC::ARM_CC_INVALID,
-                };
-                let (ops, vector) = arm_operands(cs, &detail);
-                let insn = self.arm32(raw, &ops, cc, vector, thumb, &mut state, depth);
-                let terminating = insn.kind.is_terminating();
-                out.push(insn);
-                if terminating {
-                    stopped = true;
-                    break;
-                }
-            }
-            // Decoding ran into the end of the prefix (an instruction may be
-            // cut there): retry with more bytes. Stopping earlier means an
-            // invalid instruction, which the full span would hit too.
-            let at_cut = base + window as u64 - decoded_end < 4;
-            if stopped || !at_cut || window == data.len() {
-                return finish_block(out, state);
-            }
-            window = data.len().min(window * 4);
+        // in, while the span is up to a page. Disassembling a prefix of the
+        // span with detail still decoded about four instructions for every
+        // one kept on Thumb sqlite, so step through it one instruction at a
+        // time and stop at the terminator. `cs_disasm_iter` continues the
+        // IT-block state the handle carries while `cs_disasm` resets it, so
+        // an empty `cs_disasm` first gives the walk the state a fresh
+        // disassembly of the span starts from: the result is the same
+        // instructions the full span would give.
+        if cs.disasm_all(&[], base).is_err() {
+            return Vec::new();
         }
+        let Ok(mut instructions) = cs.disasm_iter(&data, base) else {
+            return Vec::new();
+        };
+        let mut state = ArmState::default();
+        let mut out: Vec<Insn> = Vec::new();
+        while let Some(raw) = instructions.next() {
+            if raw.len() == 0 {
+                break;
+            }
+            let Ok(detail) = cs.insn_detail(&raw) else {
+                break;
+            };
+            let cc = match detail.arch_detail() {
+                ArchDetail::ArmDetail(arm) => arm.cc(),
+                _ => ArmCC::ARM_CC_INVALID,
+            };
+            let (ops, vector) = arm_operands(cs, &detail);
+            let insn = self.arm32(&raw, &ops, cc, vector, thumb, &mut state, depth);
+            let terminating = insn.kind.is_terminating();
+            out.push(insn);
+            if terminating || out.len() >= limit {
+                break;
+            }
+        }
+        finish_block(out, state)
     }
 }
 
-/// Instructions in the first ARM32 decode attempt, in bytes; most blocks end
-/// within it.
-const ARM32_FIRST_WINDOW: usize = 64;
+/// Capstone handles per mode: the block itself plus one per nested stub
+/// decode, which [`MAX_THUNK_HOPS`] bounds.
+pub(crate) const ARM32_HANDLE_DEPTHS: usize = MAX_THUNK_HOPS + 2;
 
 /// Fold constants still pending at the end of a block into its last
 /// instruction.
