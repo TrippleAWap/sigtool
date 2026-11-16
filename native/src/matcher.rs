@@ -153,12 +153,17 @@ pub fn compare_keys(signature: &Signature, present: &HashSet<String>) -> MatchSc
     compare_with_keys(signature, &feature_keys(signature), present)
 }
 
-/// The signature's feature keys, in document order.
-fn feature_keys(signature: &Signature) -> Vec<String> {
+/// The signature's feature keys in document order, each with its inherited
+/// form (SPEC.md §1.4).
+fn feature_keys(signature: &Signature) -> Vec<(String, String)> {
     signature
         .features
         .iter()
-        .map(|feature| feature.key())
+        .map(|feature| {
+            let key = feature.key();
+            let inherited = format!("{INHERITED_PREFIX}{key}");
+            (key, inherited)
+        })
         .collect()
 }
 
@@ -167,14 +172,15 @@ fn feature_keys(signature: &Signature) -> Vec<String> {
 /// image, and formatting each key again per candidate was most of the cost.
 fn compare_with_keys(
     signature: &Signature,
-    keys: &[String],
+    keys: &[(String, String)],
     present: &HashSet<String>,
 ) -> MatchScore {
     let matched: Vec<(&crate::sigfile::SignatureFeature, &String)> = signature
         .features
         .iter()
         .zip(keys)
-        .filter(|(_, key)| present.contains(*key))
+        .filter(|(_, (key, _))| present.contains(key))
+        .map(|(feature, (key, _))| (feature, key))
         .collect();
     // Keys the candidate holds only through a small callee (SPEC.md §1.4):
     // discounted, and never counted as distinct required evidence.
@@ -182,9 +188,8 @@ fn compare_with_keys(
         .features
         .iter()
         .zip(keys)
-        .filter(|(_, key)| {
-            !present.contains(*key) && present.contains(&format!("{INHERITED_PREFIX}{key}"))
-        })
+        .filter(|(_, (key, inherited))| !present.contains(key) && present.contains(inherited))
+        .map(|(feature, (_, inherited))| (feature, inherited))
         .collect();
     let mut required_weight: f64 = signature
         .features
@@ -222,11 +227,7 @@ fn compare_with_keys(
     let mut matched_keys: Vec<String> = matched
         .iter()
         .map(|(_, key)| (*key).clone())
-        .chain(
-            inherited
-                .iter()
-                .map(|(_, key)| format!("{INHERITED_PREFIX}{key}")),
-        )
+        .chain(inherited.iter().map(|(_, inherited)| (*inherited).clone()))
         .collect();
     matched_keys.sort();
     MatchScore {
