@@ -31,7 +31,7 @@ costs their trust and can send an analysis the wrong way.
 ## 2. Goals for v1.0
 
 Every goal is a number the bench measures. "Now" is the current baseline
-(2026-11-14). All recall figures are top-1: the expected function must be the
+(2026-11-16, spec v4). All recall figures are top-1: the expected function must be the
 single best match, and ties count as misses. Hint-free figures scan
 `strip --strip-all` copies.
 
@@ -39,32 +39,32 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Same arch, same build | 0.810 | 0.95 |
-| Same arch, other compiler, same level | 0.304 | 0.55 |
-| Same arch, other optimization level | 0.249 | 0.45 |
-| Other arch, same build settings | 0.300 | 0.60 |
-| Other arch, other compiler | 0.210 | 0.45 |
-| Other arch, other optimization level | 0.181 | 0.35 |
-| Merged x64+arm64 signature, held-out arch, same level | 0.392 | 0.70 |
+| Same arch, same build | 0.817 | 0.95 |
+| Same arch, other compiler, same level | 0.308 | 0.55 |
+| Same arch, other optimization level | 0.254 | 0.45 |
+| Other arch, same build settings | 0.306 | 0.60 |
+| Other arch, other compiler | 0.216 | 0.45 |
+| Other arch, other optimization level | 0.183 | 0.35 |
+| Merged x64+arm64 signature, held-out arch, same level | 0.397 | 0.70 |
 
 ### G2. Find: whole-module sets (real corpus, hint-free, `bench --joint`)
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Other arch, same build settings | 0.771 | 0.85 |
-| Other arch, other compiler | 0.527 | 0.65 |
-| Other arch, other optimization level | 0.430 | 0.50 |
-| Same arch, other compiler | 0.670 | 0.70 |
+| Other arch, same build settings | 0.763 | 0.85 |
+| Other arch, other compiler | 0.493 | 0.65 |
+| Other arch, other optimization level | 0.402 | 0.50 |
+| Same arch, other compiler | 0.633 | 0.70 |
 
 ### G3. Trust
 
 | Measure | Now | v1.0 |
 |---|---|---|
-| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | not measured | ≥ 0.98 |
-| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.163 | ≤ 0.05 |
-| Strong-signature false-positive rate, corpus | 0.072 | ≤ 0.01 |
+| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.981, hinted 0.987 | ≥ 0.98 |
+| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.154 | ≤ 0.05 |
+| Strong-signature false-positive rate, corpus | 0.040 | ≤ 0.01 |
 | Strong-signature false-positive rate, negative corpus | 0.000 | 0.000 |
-| Joint resolution false hits in unrelated libraries | ≤ 0.025 per library | no higher than the same set scanned alone |
+| Joint resolution false hits in unrelated libraries | equal to scanned alone in every library | no higher than the same set scanned alone |
 
 ### G4. Generalize
 
@@ -323,13 +323,13 @@ documented.
 
 ## 8. Status
 
-As of 2026-11-15, `native-first` branch, spec v3.
+As of 2026-11-16, `native-first` branch, spec v4.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
-  same build 0.671, other arch 0.326, other arch other compiler 0.263.
+  same build 0.671, other arch 0.329, other arch other compiler 0.267.
 - Whole-module sets: the "Now" column of G2.
-- False positives: strong 0.072 (corpus) and 0.000 (negative), any-verdict
-  hinted 0.196, hint-free 0.163.
+- False positives: strong 0.040 (corpus) and 0.000 (negative), any-verdict
+  hinted 0.111, hint-free 0.154.
 - What moved the numbers, in order, with measurements:
   [`docs/history/PLAN-v0.5.md`](docs/history/PLAN-v0.5.md) §13 and
   [`spec/CHANGELOG.md`](spec/CHANGELOG.md).
@@ -431,4 +431,20 @@ As of 2026-11-15, `native-first` branch, spec v3.
   not met: 7% of true functions are below the 0.2 pair floor in the same
   build and 30% across compilers, so the rest is feature work (M10).
   Not yet run on held-out.
-- Next: finish M8, then M9.
+- v4 (2026-11-16): M9 coverage, M10 inherited evidence, M12 trust labels,
+  and M11 joint assignment merged and measured together (full real bench,
+  `--max-functions 4 --joint`; baselines re-saved for the version). Against
+  the v3 baseline: hint-free top-1 3637 -> 3704 hits, hinted 4127 -> 4177;
+  identified precision hint-free 0.851 -> 0.981, hinted 0.687 -> 0.987; FP
+  hint-free 0.163 -> 0.154, hinted any-verdict 0.196 -> 0.111, strong 0.072
+  -> 0.040. Joint rows together are below M11's own measurement (other arch
+  other compiler 0.493 vs 0.527, other arch cross opt 0.402 vs 0.430, same
+  arch other compiler 0.633 vs 0.670); the interaction with inherited
+  evidence is not yet explained. Cells that dropped past tolerance: arm64
+  clang-O2 -> gcc-Os hint-free top-1 0.400 -> 0.350 and merged->thumb
+  clang-O2 hinted top-1 0.471 -> 0.412 (one function each), and 76 hinted
+  found-anywhere cells (shape-only lookalikes below the top removed by the
+  trust floors; hinted found 4903 -> 4680). Full bench 221 s on 8 cores,
+  peak 1.06 GB. Held-out not yet run at v4.
+- Next: M8 exit (weekly workflow green), held-out at v4, then the open
+  rule decision on in-module constants (M10).

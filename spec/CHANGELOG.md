@@ -1,8 +1,13 @@
 # Spec changelog
 
-## Unreleased
+## v4 — coverage, inherited evidence, trust labels, joint assignment
 
-Not yet versioned; the integrator bumps `SPEC_VERSION` once for these.
+`SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,
+thunk and `-fno-plt` callees, the stripped ARM32 mode map), and acceptance,
+evidence labels, and joint resolution change, so a v3 document or DB is
+refused rather than matched with different semantics.
+
+### Coverage (M9)
 
 * Stripped ARM32 mode map: an even (ARM) relocated pointer into code whose
   region votes Thumb marks ARM mode only when it is word-aligned and its own
@@ -21,10 +26,8 @@ Not yet versioned; the integrator bumps `SPEC_VERSION` once for these.
   tail calls) record the callee the slot names (an import, else the
   pointer it holds), like x86-64 `call [rip+slot]`. Any other use of the
   register in between, or a control transfer, drops the slot.
-## Unreleased — M10 cross-build robustness
 
-Not yet versioned: `SPEC_VERSION` stays `3` until the integrator bumps it.
-Feature records change (inherited records), so the bump is required.
+### Inline-invariant evidence (M10)
 
 * Inline-invariant evidence (SPEC.md §1.4): a function's features also carry
   the `str`, `const`, and `callee` features of its small direct callees (at
@@ -43,6 +46,47 @@ Feature records change (inherited records), so the bump is required.
   0.878 -> 0.876. Full credit (inherited keys matched like own ones) gained
   4-6 points of top-1 but cost 0.03 FP rate and 0.025-0.05 identified
   precision: every caller of a small function then matched its signature.
+
+### Trust labels and shape-only floors (M12)
+
+* Shape-only matches need similarity at least 0.3 in both discovery modes,
+  and hinted shape-only matches need the 6 matched features hint-free already
+  required, on images with at least 32 known functions (SPEC.md §8).
+* Evidence labels (SPEC.md §8): `identified` is reserved for the first match
+  when it is untied and similar enough for the evidence it rests on;
+  `candidate` is new, for identifying evidence that is not the answer.
+* Real corpus (`--max-functions 4`): identified precision hint-free 0.848 ->
+  0.981, hinted 0.687 -> 0.987; FP hint-free 0.163 -> 0.156, hinted
+  any-verdict 0.196 -> 0.113, strong 0.072 -> 0.042. Top-1 recall: hint-free
+  unchanged, hinted 4127 -> 4137 hits; hinted found-anywhere 4903 -> 4637
+  (shape-only lookalikes below the top removed).
+
+### Joint resolution 2.0 (M11)
+
+Joint resolution's output semantics change; feature records, the signature
+document, and single-signature acceptance do not (SPEC.md §8).
+
+* Greedy pinning rounds are replaced by a one-to-one assignment of each
+  module's signatures to every target function with similarity at least
+  0.2, weighed by similarity, call-graph degree agreement, and the scan's
+  `identified` answer, refined by preserved links, and trusted only when it
+  preserves at least 6 link ends and a fifth of those it could.
+* `joint:N` now counts links the mapping preserves; `joint:0` (placed without
+  a preserved link) ranks first but is not identifying. Seeds use
+  `identified_answer`; the release step is gone (no measurable effect).
+* Real corpus, hint-free, `bench --joint` (x64 clang-O2 module sets): other
+  arch same build 0.537 -> 0.771, other arch other compiler 0.313 -> 0.527,
+  other arch other opt 0.265 -> 0.430, same arch other compiler 0.437 ->
+  0.670, same arch other opt 0.346 -> 0.499. Joint false hits in unrelated
+  libraries equal scanned-alone in every library (zlib 10 -> 8 of 480).
+* Rejected in simulation (`bench --joint-report`): global best-first pinning
+  (+0.002), Hungarian instead of greedy (within 0.003), sibling relations
+  through a shared unsigned neighbour as a bonus (-0.02 to -0.05) or as
+  acceptance (zlib false hits 8 -> 18), pair floors 0.15 / 0.1 (false hits
+  46 -> 259 / 639), accepting graph-supported placements without the module
+  gate (zlib 8 -> 10), and breaking weight ties by address (+0.005, but a
+  guess). Call order is not in the signature (`links` are sorted sets), so
+  only order-free degrees are used.
 
 ## v1 — M1 extraction
 
@@ -197,51 +241,6 @@ refused rather than matched without the evidence it lacks.
   compiler 0.233 -> 0.313, cross-arch cross-opt 0.188 -> 0.266); false hits
   in unrelated libraries are unchanged except zlib (0.021 -> 0.025). A 0.1
   similarity floor gained 1-2 more points but tripled zlib's false hits.
-
-## Unreleased — trust labels and shape-only floors
-
-Acceptance and reporting change; feature records and the signature document
-do not. Not yet versioned: whether this needs a `SPEC_VERSION` bump is open
-(a v3 document matches with stricter acceptance, not different semantics).
-
-* Shape-only matches need similarity at least 0.3 in both discovery modes,
-  and hinted shape-only matches need the 6 matched features hint-free already
-  required, on images with at least 32 known functions (SPEC.md §8).
-* Evidence labels (SPEC.md §8): `identified` is reserved for the first match
-  when it is untied and similar enough for the evidence it rests on;
-  `candidate` is new, for identifying evidence that is not the answer.
-* Real corpus (`--max-functions 4`): identified precision hint-free 0.848 ->
-  0.981, hinted 0.687 -> 0.987; FP hint-free 0.163 -> 0.156, hinted
-  any-verdict 0.196 -> 0.113, strong 0.072 -> 0.042. Top-1 recall: hint-free
-  unchanged, hinted 4127 -> 4137 hits; hinted found-anywhere 4903 -> 4637
-  (shape-only lookalikes below the top removed).
-
-### Joint resolution 2.0 (M11)
-
-Joint resolution's output semantics change; feature records, the signature
-document, and single-signature acceptance do not (SPEC.md §8).
-
-* Greedy pinning rounds are replaced by a one-to-one assignment of each
-  module's signatures to every target function with similarity at least
-  0.2, weighed by similarity, call-graph degree agreement, and the scan's
-  `identified` answer, refined by preserved links, and trusted only when it
-  preserves at least 6 link ends and a fifth of those it could.
-* `joint:N` now counts links the mapping preserves; `joint:0` (placed without
-  a preserved link) ranks first but is not identifying. Seeds use
-  `identified_answer`; the release step is gone (no measurable effect).
-* Real corpus, hint-free, `bench --joint` (x64 clang-O2 module sets): other
-  arch same build 0.537 -> 0.771, other arch other compiler 0.313 -> 0.527,
-  other arch other opt 0.265 -> 0.430, same arch other compiler 0.437 ->
-  0.670, same arch other opt 0.346 -> 0.499. Joint false hits in unrelated
-  libraries equal scanned-alone in every library (zlib 10 -> 8 of 480).
-* Rejected in simulation (`bench --joint-report`): global best-first pinning
-  (+0.002), Hungarian instead of greedy (within 0.003), sibling relations
-  through a shared unsigned neighbour as a bonus (-0.02 to -0.05) or as
-  acceptance (zlib false hits 8 -> 18), pair floors 0.15 / 0.1 (false hits
-  46 -> 259 / 639), accepting graph-supported placements without the module
-  gate (zlib 8 -> 10), and breaking weight ties by address (+0.005, but a
-  guess). Call order is not in the signature (`links` are sorted sets), so
-  only order-free degrees are used.
 
 ## v2 — portable features
 

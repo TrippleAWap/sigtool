@@ -1,4 +1,4 @@
-# Signature spec v3
+# Signature spec v4
 
 Status: draft for M1 (extraction). Generation, scoring, and matching fields are
 specified in outline and completed in M2/M3.

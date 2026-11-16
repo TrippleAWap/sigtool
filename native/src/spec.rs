@@ -6,7 +6,7 @@
 
 use blake2b_simd::Params;
 
-pub const SPEC_VERSION: &str = "3";
+pub const SPEC_VERSION: &str = "4";
 
 /// blake2b personalization fixes the hash domain; the Python reference uses
 /// `hashlib.blake2b(..., person=b"sigtool.v1")`.

@@ -1,5 +1,5 @@
 {
-  "spec_version": "3",
+  "spec_version": "4",
   "hint_free_stripped": false,
   "hint_free_false_positives": [
     {
@@ -177,8 +177,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -186,8 +186,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -348,8 +348,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -501,8 +501,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 16
     },
     {
@@ -510,8 +510,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 16
     },
     {
@@ -834,8 +834,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -987,8 +987,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -996,8 +996,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -1149,8 +1149,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -1158,8 +1158,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -1311,8 +1311,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1320,8 +1320,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -1473,8 +1473,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -1482,8 +1482,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -1644,8 +1644,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -1797,8 +1797,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -1806,8 +1806,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -1959,8 +1959,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 14
     },
     {
@@ -1968,8 +1968,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -2121,8 +2121,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 16
     },
     {
@@ -2130,8 +2130,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 16
     },
     {
@@ -2283,8 +2283,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -2292,8 +2292,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -2454,8 +2454,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 6,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -3438,17 +3438,17 @@
   "identified": [
     {
       "discovery": "hint-free",
-      "answers": 922,
-      "correct": 868,
+      "answers": 584,
+      "correct": 552,
       "unrelated_scans": 2280,
-      "unrelated_answers": 1
+      "unrelated_answers": 0
     },
     {
       "discovery": "hinted",
-      "answers": 924,
-      "correct": 924,
+      "answers": 579,
+      "correct": 579,
       "unrelated_scans": 2280,
-      "unrelated_answers": 1
+      "unrelated_answers": 0
     }
   ],
   "library_recall": [
@@ -3463,7 +3463,7 @@
       "library": "loops",
       "discovery": "hint-free",
       "row": "other arch, other optimization level",
-      "top_hits": 208,
+      "top_hits": 213,
       "attempts": 576
     },
     {
@@ -3477,7 +3477,7 @@
       "library": "loops",
       "discovery": "hint-free",
       "row": "same arch, other optimization level",
-      "top_hits": 81,
+      "top_hits": 83,
       "attempts": 192
     },
     {
@@ -3498,7 +3498,7 @@
       "library": "loops",
       "discovery": "hinted",
       "row": "other arch, other optimization level",
-      "top_hits": 251,
+      "top_hits": 258,
       "attempts": 576
     },
     {
@@ -3512,7 +3512,7 @@
       "library": "loops",
       "discovery": "hinted",
       "row": "same arch, other optimization level",
-      "top_hits": 96,
+      "top_hits": 99,
       "attempts": 192
     },
     {
@@ -3598,36 +3598,36 @@
     "phases": [
       {
         "phase": "load",
-        "millis": 6,
-        "peak_memory_bytes": 6103040
+        "millis": 17,
+        "peak_memory_bytes": 6066176
       },
       {
         "phase": "indexes",
-        "millis": 16,
-        "peak_memory_bytes": 10653696
+        "millis": 62,
+        "peak_memory_bytes": 8728576
       },
       {
         "phase": "samples",
-        "millis": 26,
-        "peak_memory_bytes": 13053952
+        "millis": 60,
+        "peak_memory_bytes": 11522048
       },
       {
         "phase": "merge",
-        "millis": 16,
-        "peak_memory_bytes": 13082624
+        "millis": 52,
+        "peak_memory_bytes": 11988992
       },
       {
         "phase": "recall",
-        "millis": 374,
-        "peak_memory_bytes": 21938176
+        "millis": 527,
+        "peak_memory_bytes": 21790720
       },
       {
         "phase": "false positives",
-        "millis": 177,
-        "peak_memory_bytes": 27095040
+        "millis": 410,
+        "peak_memory_bytes": 27856896
       }
     ],
-    "total_millis": 618,
-    "peak_memory_bytes": 27095040
+    "total_millis": 1130,
+    "peak_memory_bytes": 27856896
   }
 }
