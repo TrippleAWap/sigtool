@@ -48,8 +48,8 @@ pub struct ScanHit {
     pub score: f64,
     pub region: String,
     pub first_seen: usize,
-    /// The match rests on identifying evidence ([`crate::matcher::identified`]).
-    pub identified: bool,
+    /// What the match can be trusted for ([`crate::matcher::evidence`]).
+    pub evidence: crate::matcher::Evidence,
 }
 
 /// Cached Tier 0 hits and matches for one signature.
@@ -220,7 +220,7 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                 .states
                 .get(signature_id)
                 .expect("state exists for every signature");
-            for matched in &state.matches {
+            for (index, matched) in state.matches.iter().enumerate() {
                 let first_seen = state
                     .first_seen
                     .get(&matched.address)
@@ -237,7 +237,7 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                     score: matched.score,
                     region: region_name(matched.address, &regions),
                     first_seen,
-                    identified: crate::matcher::identified(matched),
+                    evidence: crate::matcher::evidence(&state.matches, index),
                 });
             }
         }

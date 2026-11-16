@@ -356,4 +356,10 @@ As of 2026-11-15, `native-first` branch, spec v3.
     benches now give identical reports.
   - Open for M8 exit: the weekly workflow (`real-bench.yml`) has not run
     yet; the 150-signature hint-free scan cost (G5) is not measured.
+- M12, trust labels (2026-11-16, tuning corpus only): `identified` now
+  needs an untied first match similar enough for its evidence, and
+  shape-only matches need similarity 0.3 (hinted too, with 6 features).
+  Identified precision hint-free 0.981, hinted 0.987; FP hint-free 0.163 ->
+  0.156, hinted any-verdict 0.196 -> 0.113, strong 0.072 -> 0.042; top-1
+  unchanged hint-free, +10 hits hinted. Not yet run on held-out.
 - Next: finish M8, then M9.

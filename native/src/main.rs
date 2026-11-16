@@ -41,7 +41,7 @@ use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
-use sigtool_native::matcher::{identified, scan, scan_in, Match, ScanContext};
+use sigtool_native::matcher::{evidence, scan, scan_in, Match, ScanContext};
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
 use sigtool_native::scanner::{ScanHit, SignatureScanner};
@@ -593,7 +593,7 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
             index + 1,
             matched.address,
             matched.score,
-            evidence_label(identified(matched)),
+            evidence(&matches, index).label(),
             where_
         );
     }
@@ -628,7 +628,8 @@ fn match_document(
     );
     let entries = matches
         .iter()
-        .map(|matched| {
+        .enumerate()
+        .map(|(index, matched)| {
             let mut entry: BTreeMap<String, Value> = BTreeMap::new();
             entry.insert(
                 "address".to_string(),
@@ -650,7 +651,7 @@ fn match_document(
             entry.insert("score".to_string(), json_number(matched.score));
             entry.insert(
                 "evidence".to_string(),
-                Value::String(evidence_label(identified(matched)).to_string()),
+                Value::String(evidence(matches, index).label().to_string()),
             );
             entry.insert(
                 "label".to_string(),
@@ -707,7 +708,7 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             hit.name,
             hit.address,
             hit.score,
-            evidence_label(hit.identified),
+            hit.evidence.label(),
             where_
         );
     }
@@ -752,7 +753,7 @@ fn hint_free_hits(
         let signature_id = signature
             .signature_id()
             .map_err(|error| CliError::input(error.to_string()))?;
-        for matched in matches {
+        for (index, matched) in matches.iter().enumerate() {
             hits.push(ScanHit {
                 signature_id: signature_id.clone(),
                 name: signature.name.clone(),
@@ -764,22 +765,11 @@ fn hint_free_hits(
                     .map(|region| region.name.clone())
                     .unwrap_or_default(),
                 first_seen: 0,
-                identified: identified(&matched),
+                evidence: evidence(&matches, index),
             });
         }
     }
     Ok(hits)
-}
-
-/// `identified`: a string, in-image callee, or distinctive constant matched.
-/// `shape-only`: only CFG/op shape, near-zero constants, and imports did;
-/// treat it as a candidate, since unrelated lookalikes match the same way.
-fn evidence_label(identified: bool) -> &'static str {
-    if identified {
-        "identified"
-    } else {
-        "shape-only"
-    }
 }
 
 fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, Value> {
@@ -801,7 +791,7 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
             entry.insert("score".to_string(), json_number(hit.score));
             entry.insert(
                 "evidence".to_string(),
-                Value::String(evidence_label(hit.identified).to_string()),
+                Value::String(hit.evidence.label().to_string()),
             );
             entry.insert("region".to_string(), Value::String(hit.region.clone()));
             entry.insert(

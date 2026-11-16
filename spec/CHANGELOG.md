@@ -154,6 +154,24 @@ refused rather than matched without the evidence it lacks.
   in unrelated libraries are unchanged except zlib (0.021 -> 0.025). A 0.1
   similarity floor gained 1-2 more points but tripled zlib's false hits.
 
+## Unreleased — trust labels and shape-only floors
+
+Acceptance and reporting change; feature records and the signature document
+do not. Not yet versioned: whether this needs a `SPEC_VERSION` bump is open
+(a v3 document matches with stricter acceptance, not different semantics).
+
+* Shape-only matches need similarity at least 0.3 in both discovery modes,
+  and hinted shape-only matches need the 6 matched features hint-free already
+  required, on images with at least 32 known functions (SPEC.md §8).
+* Evidence labels (SPEC.md §8): `identified` is reserved for the first match
+  when it is untied and similar enough for the evidence it rests on;
+  `candidate` is new, for identifying evidence that is not the answer.
+* Real corpus (`--max-functions 4`): identified precision hint-free 0.848 ->
+  0.981, hinted 0.687 -> 0.987; FP hint-free 0.163 -> 0.156, hinted
+  any-verdict 0.196 -> 0.113, strong 0.072 -> 0.042. Top-1 recall: hint-free
+  unchanged, hinted 4127 -> 4137 hits; hinted found-anywhere 4903 -> 4637
+  (shape-only lookalikes below the top removed).
+
 ## v2 — portable features
 
 `SPEC_VERSION` is `2`. Constant words and portable callees change feature

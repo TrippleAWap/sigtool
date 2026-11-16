@@ -704,7 +704,15 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     // function list is compared, so coincidences are frequent there. Images
     // too small for frequencies keep every accepted match.
     if hints {
-        return matches;
+        // Hinted scans skip the frequency gates, but a shape-only lookalike
+        // is no less a coincidence in an unstripped image: the hinted
+        // candidate list is every symbol start, so the same floors apply
+        // (measured: see `MIN_SHAPE_ONLY_SIMILARITY`). Small images are
+        // exempt for the same reason as in hint-free mode.
+        if source.function_starts().len() < MIN_FREQUENCY_FUNCTIONS {
+            return matches;
+        }
+        return matches.into_iter().filter(enough_evidence).collect();
     }
     let frequencies = context.frequencies[usize::from(hints)]
         .get_or_init(|| Frequencies::build(source, &context.features, hints));
@@ -812,6 +820,18 @@ pub fn identifying_key(key: &str) -> bool {
 /// functions have fewer than 6 features to match.
 pub const MIN_LOW_INFORMATION_MATCHED: usize = 6;
 
+/// Minimum similarity of a shape-only match (no identifying key), in both
+/// discovery modes, on images large enough for frequencies. Simulated on the
+/// real corpus (`bench --fp-report`, both modes logged, max 4 functions):
+/// 0.3 moves no hint-free top-1 answer and cuts the hint-free any-verdict FP
+/// rate 0.163 -> 0.156; in hinted mode, together with the 6-feature minimum
+/// that hint-free already applied, top-1 hits rise 4127 -> 4137 (a shape-only
+/// lookalike no longer outranks the function) and the any-verdict FP rate
+/// falls 0.196 -> 0.113, strong 0.072 -> 0.042. 0.35 costs 4 hint-free and
+/// 22 hinted top-1 hits for 0.146 / 0.099; 0.4 costs 31 and 47 for 0.137 /
+/// 0.090; requiring 7 matched features instead of 6 costs 26 and 37.
+pub const MIN_SHAPE_ONLY_SIMILARITY: f64 = 0.3;
+
 /// Whether a match rests on evidence that identifies a function (see
 /// [`identifying_key`]) rather than only shape and near-zero constants.
 /// Front-ends report it: a shape-only match of a small function is often
@@ -821,9 +841,96 @@ pub fn identified(found: &Match) -> bool {
     found.matched.iter().any(|key| identifying_key(key))
 }
 
+/// Similarity an identified first match needs to be the answer when its
+/// evidence is a direct neighbour's (`near:in:`, `near:out:`) or call-graph
+/// votes (`joint:`) rather than a string of its own; anything weaker (callees,
+/// constants, two-hop neighbours) needs [`MIN_ANSWER_SIMILARITY`]. A matched
+/// string needs no floor: no identified first match with a string was wrong
+/// in either mode. Simulated on the real corpus (both modes logged, after the
+/// shape-only floor): labelling every untied identified first match gives
+/// precision hint-free 0.886, hinted 0.722. With these floors at 0.3 / 0.7:
+/// 0.981 / 0.987, with 2715 / 1759 correct answers kept of 3087 / 3619 (top-1
+/// recall is unchanged: only the label moves). Neighbour floor 0.2 gives
+/// 0.963 hint-free (five answers in unrelated images), 0.4 gives 0.985 but
+/// drops 219 correct hint-free answers. Other floor 0.6: 0.978 / 0.977;
+/// 0.65: 0.980 / 0.986, under target hint-free; 0.75: 0.984 / 0.990 for 30 /
+/// 116 fewer correct answers. `joint:` votes are not in the single-signature
+/// bench; they rank with direct neighbours because both are call-graph
+/// evidence. Not yet checked on the held-out corpus.
+pub const MIN_ANSWER_SIMILARITY_NEIGHBOUR: f64 = 0.3;
+
+/// See [`MIN_ANSWER_SIMILARITY_NEIGHBOUR`].
+pub const MIN_ANSWER_SIMILARITY: f64 = 0.7;
+
+/// What a match in a ranked list can be trusted for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Evidence {
+    /// The first match, alone at the top, on evidence that names a function
+    /// and resembling the signature enough to be the answer.
+    Identified,
+    /// Identifying evidence, but not a trusted answer: not first, tied for
+    /// first, or too dissimilar for the evidence it rests on.
+    Candidate,
+    /// Only shape, near-zero constants, and imports matched.
+    ShapeOnly,
+}
+
+impl Evidence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Evidence::Identified => "identified",
+            Evidence::Candidate => "candidate",
+            Evidence::ShapeOnly => "shape-only",
+        }
+    }
+}
+
+/// Whether the first of `matches` (ranked best first) is an identified
+/// answer: identifying evidence, strictly first (a tie is no answer), and
+/// similar enough for the kind of evidence it rests on.
+pub fn identified_answer(matches: &[Match]) -> bool {
+    let Some(first) = matches.first() else {
+        return false;
+    };
+    if !identified(first) {
+        return false;
+    }
+    if matches
+        .get(1)
+        .is_some_and(|next| rank_key(next) == rank_key(first))
+    {
+        return false;
+    }
+    let named_by_string = first.matched.iter().any(|key| key.starts_with("str:"));
+    let floor = if named_by_string {
+        0.0
+    } else if first.matched.iter().any(|key| {
+        key.starts_with("near:in:")
+            || key.starts_with("near:out:")
+            || key.starts_with(crate::joint::JOINT_PREFIX)
+    }) {
+        MIN_ANSWER_SIMILARITY_NEIGHBOUR
+    } else {
+        MIN_ANSWER_SIMILARITY
+    };
+    first.similarity >= floor
+}
+
+/// The [`Evidence`] of `matches[index]` in a list ranked best first.
+pub fn evidence(matches: &[Match], index: usize) -> Evidence {
+    if index == 0 && identified_answer(matches) {
+        Evidence::Identified
+    } else if matches.get(index).is_some_and(identified) {
+        Evidence::Candidate
+    } else {
+        Evidence::ShapeOnly
+    }
+}
+
 fn enough_evidence(found: &Match) -> bool {
-    found.matched.len() >= MIN_LOW_INFORMATION_MATCHED
-        || found.matched.iter().any(|key| identifying_key(key))
+    identified(found)
+        || (found.matched.len() >= MIN_LOW_INFORMATION_MATCHED
+            && found.similarity >= MIN_SHAPE_ONLY_SIMILARITY)
 }
 
 /// Minimum similarity for any accepted match. Measured on stripped x64 and
@@ -1913,5 +2020,35 @@ mod tests {
     fn unescape_reverses_quotes() {
         assert_eq!(unescape("a\\\"b\\\\c").as_deref(), Some("a\"b\\c"));
         assert_eq!(unescape("long:abc"), None);
+    }
+
+    fn found(address: u64, similarity: f64, matched: &[&str]) -> Match {
+        Match {
+            address,
+            end: address + 4,
+            score: 1.0,
+            similarity,
+            matched: matched.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn an_answer_is_first_untied_and_similar_enough_for_its_evidence() {
+        // A string names the function at any accepted similarity.
+        assert!(identified_answer(&[found(1, 0.2, &["str:x"])]));
+        // A callee needs the high floor; a direct neighbour key the low one.
+        assert!(!identified_answer(&[found(1, 0.5, &["callee:f"])]));
+        assert!(identified_answer(&[found(1, 0.7, &["callee:f"])]));
+        assert!(identified_answer(&[found(1, 0.3, &["near:in:str:x"])]));
+        assert!(!identified_answer(&[found(1, 0.3, &["near:in2:str:x"])]));
+        // Shape alone is never an answer, and a tie is no answer.
+        assert!(!identified_answer(&[found(1, 1.0, &["cfg:blocks:1"])]));
+        assert!(!identified_answer(&[]));
+        let tied = [found(1, 0.9, &["str:x"]), found(2, 0.9, &["str:x"])];
+        assert!(!identified_answer(&tied));
+        assert_eq!(evidence(&tied, 0), Evidence::Candidate);
+        let ranked = [found(1, 0.9, &["str:x"]), found(2, 0.8, &["cfg:blocks:1"])];
+        assert_eq!(evidence(&ranked, 0), Evidence::Identified);
+        assert_eq!(evidence(&ranked, 1), Evidence::ShapeOnly);
     }
 }

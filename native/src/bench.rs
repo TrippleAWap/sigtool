@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::elf::FileSource;
 use crate::generate::generate_in;
-use crate::matcher::{identified, rank_key, scan_in, Match, ScanContext};
+use crate::matcher::{identified_answer, rank_key, scan_in, Match, ScanContext};
 use crate::merge::{merge_in, MergeSample};
 use crate::sigfile::Signature;
 use crate::spec::SPEC_VERSION;
@@ -652,7 +652,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         let found = matches.iter().any(|m| m.address == expected);
         // Matches are sorted best first; a tie for first is ambiguous.
         let top = top_is(&matches, expected);
-        let answer = matches.first().is_some_and(identified);
+        let answer = identified_answer(&matches);
         let kept = if options.fp_report.is_some() {
             matches
         } else {
@@ -825,7 +825,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         for (index, _, matches) in &hits {
             counts[*index] += matches.len();
             cell.unrelated_scans += 1;
-            if matches.first().is_some_and(identified) {
+            if identified_answer(matches) {
                 cell.unrelated_answers += 1;
             }
         }
@@ -1003,7 +1003,7 @@ fn false_positive_counts(
     let mut answers = 0;
     for (index, _, matches) in hits {
         per_sample[*index] += matches.len();
-        answers += usize::from(matches.first().is_some_and(identified));
+        answers += usize::from(identified_answer(matches));
     }
     (per_sample, hits.len(), answers)
 }
