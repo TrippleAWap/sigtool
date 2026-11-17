@@ -480,7 +480,8 @@ As of 2026-11-16, `native-first` branch, spec v4.
   `.github/workflows/release.yml`, which builds `sigtool-native` for
   linux-x86_64, linux-aarch64, windows-x86_64, windows-aarch64, and
   macos-aarch64 (arm64 Linux and Windows cross-compiled; arm64 runners are
-  not free for private repos), packages each with `packaging/package.py`
+  not free for private repos; Linux inside `debian:bullseye` and gated at
+  glibc 2.31), packages each with `packaging/package.py`
   into an HCLI / Plugin Manager plugin zip (`sigtool/` with
   `ida-plugin.json` listing that one platform, `ida_plugin.py`, and the
   binary beside it) plus a standalone CLI archive, lints the plugin zip with
