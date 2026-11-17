@@ -452,7 +452,10 @@ As of 2026-11-16, `native-first` branch, spec v4.
   `tests/ida_cli_smoke.py` drives every action against the real CLI with fake
   IDA modules: x64 zlib clang-O2 -> stripped gcc-O2 signs 120/120 and renames
   17 non-exported functions, 15 right (`deflate_fast` and `deflate_slow` swap,
-  both `identified`); arm64 lz4 clang-O2 -> gcc-Os 9 of 10 right; arm32 cJSON
+  both `identified`); arm64 lz4 clang-O2 -> gcc-Os 9 of 9 right (a tenth
+  `identified` hit at +0x170c0, where the IDB has no function, is skipped:
+  apply-names renames only a function starting at the match, or code IDA
+  agrees to start one at); arm32 cJSON
   gcc-O2 -> clang-O2 9 of 9. IDA's UI paths (dialogs, choosers, wait box,
   context menus) remain unexercised.
 - v4 (2026-11-16): M9 coverage, M10 inherited evidence, M12 trust labels,

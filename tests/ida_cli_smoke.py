@@ -40,6 +40,7 @@ class FakeIdb:
     def __init__(self, image: Path, functions: dict[int, tuple[str | None, int]]) -> None:
         self.image = image
         self.functions = functions
+        self.code = executable_ranges(image)
         self.names = {ea: name for ea, (name, _size) in functions.items() if name}
         self.comments: dict[int, str] = {}
         self.answers: deque = deque()
@@ -135,7 +136,10 @@ def install_fakes(idb: FakeIdb) -> None:
     funcs.FUNC_THUNK = 0x80
     funcs.get_func = get_func
     funcs.get_func_name = lambda ea: idb.names.get(ea, f"sub_{ea:X}")
-    funcs.add_func = lambda ea: idb.functions.setdefault(ea, (None, 1)) and True
+    # The fake IDB already holds every function IDA's analysis would find
+    # (ground truth); code outside them is a chunk or tail of one of them, so
+    # IDA refuses to start a new function there.
+    funcs.add_func = lambda _ea: False
     funcs.get_func_cmt = lambda func, _repeatable: idb.comments.get(func.start_ea, "")
     funcs.set_func_cmt = lambda func, text, _repeatable: (
         idb.comments.__setitem__(func.start_ea, text) or True
@@ -158,6 +162,7 @@ def install_fakes(idb: FakeIdb) -> None:
     bytes_ = module("ida_bytes")
     bytes_.get_flags = lambda ea: ea
     bytes_.has_user_name = lambda ea: ea in idb.names
+    bytes_.is_code = lambda ea: any(low <= ea < high for low, high in idb.code)
 
     segment = module("ida_segment")
     segment.SEG_XTRN = 1
@@ -173,6 +178,32 @@ def ground_truth(corpus: Path, relative: str) -> dict[int, tuple[str, int]]:
         if binary["path"] == relative:
             return {f["start"]: (f["name"], f["size"]) for f in binary["functions"]}
     raise SystemExit(f"{relative} is not in {corpus / 'ground_truth.json'}")
+
+
+def executable_ranges(path: Path) -> list[tuple[int, int]]:
+    """``[low, high)`` of a little-endian ELF's executable ``PT_LOAD`` segments."""
+    data = path.read_bytes()
+    wide = data[4] == 2
+    if wide:
+        phoff = struct.unpack_from("<Q", data, 0x20)[0]
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    else:
+        phoff = struct.unpack_from("<I", data, 0x1C)[0]
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x2A)
+    ranges = []
+    for index in range(phnum):
+        at = phoff + index * phentsize
+        if wide:
+            kind, flags, _offset, vaddr, _paddr, _filesz, memsz = struct.unpack_from(
+                "<IIQQQQQ", data, at
+            )
+        else:
+            kind, _offset, vaddr, _paddr, _filesz, memsz, flags = struct.unpack_from(
+                "<IIIIIII", data, at
+            )
+        if kind == 1 and flags & 1:  # PT_LOAD, PF_X
+            ranges.append((vaddr, vaddr + memsz))
+    return ranges
 
 
 def dynamic_functions(path: Path) -> dict[int, str]:

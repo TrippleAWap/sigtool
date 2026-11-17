@@ -233,6 +233,31 @@ def choose_renames(
     return proposals, sorted(skipped)
 
 
+def rename_blocker(
+    rva: int,
+    function_start: int | None,
+    is_code: bool,
+    add_function: Callable[[], int | None],
+) -> str | None:
+    """Why the function at ``rva`` must not be renamed, or ``None`` to rename it.
+
+    ``function_start`` is the RVA of the IDB function containing ``rva`` (or
+    ``None``); ``add_function`` asks IDA to create one at ``rva`` and returns
+    its start RVA, or ``None`` when IDA refuses. A match is applied only to a
+    function starting exactly there, or to code IDA agrees to make one at:
+    a rename at data or mid-function would invent a function IDA never saw.
+    """
+    if function_start == rva:
+        return None
+    if function_start is not None:
+        return f"+{rva:#x} is inside the function at +{function_start:#x}"
+    if not is_code:
+        return f"no function at +{rva:#x} (not code in this IDB)"
+    if add_function() != rva:
+        return f"no function at +{rva:#x} (IDA could not create one there)"
+    return None
+
+
 def provenance_comment(existing: str, proposal: Proposal, source: str) -> str:
     """``existing`` function comment plus a line recording where a rename came from.
 
@@ -455,6 +480,14 @@ def _has_user_name(ea: int) -> bool:
     return bool(ida_bytes.has_user_name(ida_bytes.get_flags(ea))) and is_meaningful_name(
         ida_name.get_ea_name(ea)
     )
+
+
+def _add_function(ea: int, base: int) -> int | None:
+    """Create a function at ``ea``; the RVA it starts at, or ``None``."""
+    if not ida_funcs.add_func(ea):
+        return None
+    function = ida_funcs.get_func(ea)
+    return None if function is None else int(function.start_ea) - base
 
 
 def _named_functions() -> list[dict[str, str]]:
@@ -812,8 +845,16 @@ class ApplyNamesHandler(_Handler):
         for index in chosen:
             item = proposals[index]
             ea = base + item.rva
-            if ida_funcs.get_func(ea) is None:
-                ida_funcs.add_func(ea)
+            function = ida_funcs.get_func(ea)
+            problem = rename_blocker(
+                item.rva,
+                None if function is None else int(function.start_ea) - base,
+                bool(ida_bytes.is_code(ida_bytes.get_flags(ea))),
+                lambda ea=ea: _add_function(ea, base),
+            )
+            if problem is not None:
+                ida_kernwin.msg(f"sigtool: not renaming {item.name}: {problem}\n")
+                continue
             # SN_NOCHECK replaces characters IDA does not allow in names (a
             # name from another toolchain's mangling) instead of failing.
             if not ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):

@@ -147,6 +147,36 @@ class ChooseRenamesTests(unittest.TestCase):
         self.assertEqual(plugin._chosen([0, 3]), [0, 3])
 
 
+class RenameBlockerTests(unittest.TestCase):
+    def blocker(self, start, is_code=True, created=None):
+        calls = []
+
+        def add():
+            calls.append(True)
+            return created
+
+        return plugin.rename_blocker(0x200, start, is_code, add), calls
+
+    def test_existing_function_start_is_renamed_without_creating(self):
+        self.assertEqual(self.blocker(0x200), (None, []))
+
+    def test_mid_function_is_skipped(self):
+        reason, calls = self.blocker(0x180)
+        self.assertEqual(reason, "+0x200 is inside the function at +0x180")
+        self.assertEqual(calls, [])
+
+    def test_data_is_skipped_without_creating(self):
+        reason, calls = self.blocker(None, is_code=False, created=0x200)
+        self.assertIn("no function at +0x200", reason)
+        self.assertEqual(calls, [])
+
+    def test_code_needs_a_function_created_at_the_address(self):
+        self.assertEqual(self.blocker(None, created=0x200), (None, [True]))
+        for created in (None, 0x1F0):
+            reason, _ = self.blocker(None, created=created)
+            self.assertIn("could not create", reason)
+
+
 class ProvenanceTests(unittest.TestCase):
     def proposal(self):
         return plugin.Proposal(0x200, "inflate", 0.91234, "identified", "sub_200", "abc123")
