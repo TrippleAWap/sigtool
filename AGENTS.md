@@ -86,7 +86,8 @@ cargo run --release --example profile_gen -- IMAGE ADDR [TARGET]   # gen / hint-
 cargo run --release --example profile_g5 -- gen IMAGE SIGS.db [COUNT]   # then: scan STRIPPED SIGS.db (G5 cost)
 SIGTOOL_THREADS=1 cargo run --release -- bench ...          # one thread (determinism checks)
 
-python packaging/package.py --platform windows-x86_64 --binary native/target/release/sigtool-native.exe \n    --out dist                      # plugin zip + CLI archive for one platform (release.yml runs it per target)
+python packaging/package.py --platform windows-x86_64 --binary native/target/release/sigtool-native.exe \
+    --out dist                      # plugin zip + CLI archive for one platform (release.yml runs it per target)
 python corpus/build.py              # toy corpus + ground truth (clang + ld.lld + llvm-readelf)
 python corpus/real.py               # real libraries: clang on the host, gcc via corpus/docker
 python corpus/real.py --heldout     # held-out libraries into corpus/build-heldout (milestone exits only)
