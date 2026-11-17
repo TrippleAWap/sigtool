@@ -385,8 +385,11 @@ and rely on neighbour context (§8).
 
 `native/src/validate.rs` reports what is measurable without a matcher:
 
-* `strong` — at least 2 anchors, 2 data features, 2 different data kinds, and
-  complete recovery.
+* `strong` — at least 2 anchors, 2 data features, 2 different data kinds, at
+  least 2 required features that identify a function by themselves (a `str`,
+  a `callee` without `!`, or a `const` at least `0x100` from zero, §8), and
+  complete recovery. Imports and near-zero constants count as data features
+  but identify nothing: a match can reach the threshold on them alone.
 * `small` — at most 12 instructions; match with neighbour context.
 * `weak` — everything else. Notes name the specific deficit (no anchors, one
   anchor, single feature kind, partial recovery, low confidence).
