@@ -49,7 +49,7 @@ Normalization must make these cases produce the same feature records across arch
 ## Conventions
 
 - **Rust:** `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`. Dependencies: `iced-x86`, `yaxpeax-arm`, `capstone`, `blake2b_simd`, `serde`, `serde_json`, `memmap2`, `crc32fast`, `clap`; Capstone builds its bundled C library, so a C toolchain is required. Windows APIs are declared with `extern "system"` FFI, not a crate.
-- **Python (tooling only):** `ruff format` and `ruff check` over `corpus/`, `tests/vectors/`, and `ida_plugin.py`.
+- **Python (tooling only):** `ruff format` and `ruff check` over `corpus/`, `tests/vectors/`, `tests/test_ida_plugin.py`, and `ida_plugin.py`; `python -m unittest tests/test_ida_plugin.py` tests the plugin's IDA-free parts with stubbed IDA modules.
 - **Naming:** feature kinds are `str`, `const`, `callee`, `cfg`, `ops`. Arch identifiers: `x64`, `arm64`, `arm32`, `thumb`.
 - **Errors:** specific error types in the library; the CLI translates them to exit codes (`0` ok, `1` locate found nothing, `2` usage/input, `3` unsupported architecture or target, `4` self-test failure).
 - **Hashing:** the hash function and personalization fixed in `spec/`.
@@ -67,6 +67,8 @@ cargo run --release -- locate --signature S.yaml --file IMAGE --json M.json   # 
 cargo run --release -- scan --file IMAGE --signature S.yaml   # or --db signatures.db, --pid P
 cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:+RVA --name N
 cargo run --release -- db build --signature S.yaml --output signatures.db
+cargo run --release -- db build --file IMAGE --functions F.json --report R.json --output signatures.db
+                                    # sign a [{"rva", "name"}] list in one run (the IDA plugin's sign-all)
 cargo run --release -- bench --baseline ../tests/baseline/native-bench.json       # toy corpus gate
 cargo run --release -- bench --save-baseline ../tests/baseline/native-bench.json  # intentional improvement
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --joint \

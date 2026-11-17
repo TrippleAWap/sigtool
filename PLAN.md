@@ -431,6 +431,12 @@ As of 2026-11-16, `native-first` branch, spec v4.
   not met: 7% of true functions are below the 0.2 pair floor in the same
   build and 30% across compilers, so the rest is feature work (M10).
   Not yet run on held-out.
+- M11, IDA workflow (2026-11-17): the plugin signs every meaningfully named
+  function of an IDB into one DB (`db build --file IMAGE --functions LIST`,
+  one run sharing one scan context) and applies a DB to another IDB through
+  `scan --db --discovery hint-free` (joint resolution), renaming only
+  `identified` answers after a chooser confirms them. `scan --json` hits now
+  carry `module` and `rva`. Not yet exercised in a real IDA (M12).
 - v4 (2026-11-16): M9 coverage, M10 inherited evidence, M12 trust labels,
   and M11 joint assignment merged and measured together (full real bench,
   `--max-functions 4 --joint`; baselines re-saved for the version). Against
