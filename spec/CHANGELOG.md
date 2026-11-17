@@ -1,5 +1,36 @@
 # Spec changelog
 
+## v5 (unreleased)
+
+Draft; `SPEC_VERSION` is still `4` until the version is cut.
+
+### Cross-ISA shape corroboration
+
+* A low-information signature scanned in an image of another ISA family
+  (`x64`, `arm64`, `arm32`; Thumb is `arm32`) also corroborates its shape on
+  the ISA-stable dimensions alone (`cfg:blocks`, `cfg:edges`, `cfg:loops`,
+  `ops:branch`, `ops:call`, `ops:cond`, `ops:ret`, `ops:store`) when the
+  candidate matches at least 4 distinct required features (SPEC.md §8).
+  Diagnosis (`examples/diagnose_cross`, every true cross-arch same-build pair
+  at `--max-functions 4`): 62% of those signatures are low-information, and
+  of the 873 true pairs that failed acceptance, 345 failed only the shape
+  gate; across ISAs the `stack`, `arith`, `logic`, `move`, `load` buckets of
+  the true function agree 0.24-0.40 of the time, `cfg:loops` and `ops:call`
+  0.83-0.88.
+* Real corpus, hint-free, `--max-functions 4` (no `--joint`): top-1 other
+  arch same build 0.306 -> 0.342, other arch other compiler 0.216 -> 0.219,
+  other arch cross opt 0.183 -> 0.184, merged same opt 0.652 -> 0.678,
+  merged held-out arch 0.397 -> 0.448; same-arch rows and identified answers
+  (2747 correct) unchanged. Cross-ISA false hits (`examples/cross_fp`: each
+  sample signature scanned against the other libraries' stripped images in
+  the other ISA families, same build; the bench measures same-arch only):
+  0.055 -> 0.058 of signatures with a hit, 0 identified answers before and
+  after.
+* Lost: the stable dimensions with no required-feature floor (acceptance of
+  true cross-ISA pairs 0.366 -> 0.475, but cross-ISA false hits 0.055 ->
+  0.143); requiring all stable dimensions instead of 0.8 (0.390, 0.085); a
+  floor of 3 (0.426, 0.079).
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,
