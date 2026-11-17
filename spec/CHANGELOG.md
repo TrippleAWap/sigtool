@@ -26,6 +26,24 @@ records and need the bump before release.
   `cJSONUtils_GeneratePatches` answered with its twin
   `cJSONUtils_GeneratePatchesCaseSensitive` (the same source but a `false`
   / `true` argument), 20 -> 66, which the gcc ARM strings now reach.
+* Hint-free acceptance (SPEC.md §8): a low-information signature's
+  candidate that fails only shape corroboration is accepted when it shares
+  a neighbour key and reaches similarity 0.4. Full real bench
+  (`--max-functions 4 --joint`) after the ARM32 entry above, hint-free
+  top-1: other compiler 0.335 -> 0.356, cross opt 0.282 -> 0.303, other
+  arch 0.351 -> 0.387, other arch other compiler 0.253 -> 0.267, other arch
+  cross opt 0.224 -> 0.243, merged held-out arch 0.459 -> 0.521, same build
+  0.835 unchanged (4208 -> 4487 hits); hinted unchanged. Every FP rate and
+  joint false hits unchanged; joint rows within 0.001. Identified precision
+  hint-free 0.973 -> 0.969: 21 of the 225 waived identified answers are
+  wrong, 13 of them `LZ4_loadDict` on one shared caller constant. Floors
+  swept offline on the waived matches (`bench --fp-report`): 0.45 4379 hits,
+  precision 0.970; 0.5 4296, 0.971; 0.6 4221, 0.972; at least two neighbour
+  keys 4222, 0.972; a direct callee's key 4228, 0.973. Rejecting waived
+  matches whose only neighbour key is one caller constant keeps all 4487
+  hits at precision 0.972, but rests on that one function: not built.
+  Earlier x64 + arm64 slice simulation (before the ARM32 entry, not
+  re-measured): no floor and 0.3 / 0.35 lost precision.
 
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
