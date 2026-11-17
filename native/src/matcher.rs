@@ -16,7 +16,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::errors::SelfTestError;
-use crate::features::{const_words, extract, Feature, FeatureKind, INHERITED_PREFIX};
+use crate::features::{
+    const_words, extract, extract_with, Feature, FeatureKind, InlineCache, INHERITED_PREFIX,
+};
 use crate::normalize::{Kind, Normalizer};
 use crate::recover::{recover, RecoveryLimits};
 use crate::score::score_features;
@@ -1076,9 +1078,10 @@ impl Candidate {
         start: u64,
         limits: Option<RecoveryLimits>,
         hints: bool,
+        inline: Option<&InlineCache>,
     ) -> Option<Candidate> {
         let recovered = recover(source, start, limits, hints).ok()?;
-        let features = extract(source, &recovered);
+        let features = extract_with(source, &recovered, inline);
         let (body_start, body_end) = (recovered.start(), recovered.end());
         let mut calls: Vec<u64> = recovered
             .blocks
@@ -1118,6 +1121,7 @@ type CandidateMap = HashMap<(u64, bool), Option<Arc<Candidate>>>;
 #[derive(Debug, Default)]
 pub struct FeatureCache {
     entries: RwLock<CandidateMap>,
+    inline: InlineCache,
 }
 
 impl FeatureCache {
@@ -1135,7 +1139,8 @@ impl FeatureCache {
         {
             return entry.clone();
         }
-        let candidate = Candidate::recover(source, start, None, hints).map(Arc::new);
+        let candidate =
+            Candidate::recover(source, start, None, hints, Some(&self.inline)).map(Arc::new);
         self.entries
             .write()
             .expect("feature cache")
@@ -1169,7 +1174,8 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
         }
         let candidate = match cache {
             Some(cache) if limits.is_none() => cache.get_or_recover(source, start, hints),
-            _ => Candidate::recover(source, start, limits, hints).map(Arc::new),
+            _ => Candidate::recover(source, start, limits, hints, cache.map(|c| &c.inline))
+                .map(Arc::new),
         };
         let Some(candidate) = candidate else {
             continue;

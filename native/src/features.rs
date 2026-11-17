@@ -95,9 +95,19 @@ impl Feature {
 /// plus the inline-invariant evidence of its small direct callees
 /// ([`inline_evidence`]).
 pub fn extract<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction) -> Vec<Feature> {
+    extract_with(source, func, None)
+}
+
+/// [`extract`], with the small callees' evidence looked up in `cache` (one
+/// image's callees, shared by every function recovered from it).
+pub fn extract_with<S: ByteSource + ?Sized>(
+    source: &S,
+    func: &RecoveredFunction,
+    cache: Option<&InlineCache>,
+) -> Vec<Feature> {
     let mut features = extract_own(source, func);
     let own: HashSet<String> = features.iter().map(Feature::key).collect();
-    let mut inherited: Vec<Feature> = inline_evidence(source, func)
+    let mut inherited: Vec<Feature> = inline_evidence_with(source, func, cache)
         .into_iter()
         .filter(|feature| !own.contains(&feature.base_key()))
         .collect();
@@ -134,6 +144,75 @@ pub fn inline_evidence<S: ByteSource + ?Sized>(
     source: &S,
     func: &RecoveredFunction,
 ) -> Vec<Feature> {
+    inline_evidence_with(source, func, None)
+}
+
+/// The inheritable features of each small callee, per callee address, for
+/// one image. A small helper is called from many functions, and every
+/// recovered candidate walked each of its callees again (up to
+/// [`MAX_INLINE_CALLEES`] bounded recoveries per candidate); the evidence is
+/// a function of the image bytes and the callee address alone, so it is
+/// computed once.
+#[derive(Debug, Default)]
+pub struct InlineCache {
+    entries: std::sync::RwLock<HashMap<u64, std::sync::Arc<Vec<Feature>>>>,
+}
+
+impl InlineCache {
+    fn get_or_compute<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        target: u64,
+    ) -> std::sync::Arc<Vec<Feature>> {
+        if let Some(found) = self.entries.read().expect("inline cache").get(&target) {
+            return found.clone();
+        }
+        let computed = std::sync::Arc::new(callee_evidence(source, target));
+        self.entries
+            .write()
+            .expect("inline cache")
+            .insert(target, computed.clone());
+        computed
+    }
+}
+
+/// The inheritable features of the small callee at `target`: empty when it
+/// does not recover cleanly within [`MAX_INLINE_CALLEE_INSTRUCTIONS`].
+fn callee_evidence<S: ByteSource + ?Sized>(source: &S, target: u64) -> Vec<Feature> {
+    // Every block holds at least one instruction, so the block cap stops the
+    // walk of a large callee early instead of decoding it whole.
+    let limits = crate::recover::RecoveryLimits {
+        max_instructions: MAX_INLINE_CALLEE_INSTRUCTIONS,
+        max_blocks: MAX_INLINE_CALLEE_INSTRUCTIONS,
+        ..Default::default()
+    };
+    let Ok(callee) = crate::recover::recover(source, target, Some(limits), false) else {
+        return Vec::new();
+    };
+    if callee.degraded || callee.instruction_count() > MAX_INLINE_CALLEE_INSTRUCTIONS {
+        return Vec::new();
+    }
+    extract_own(source, &callee)
+        .into_iter()
+        .filter(|feature| {
+            matches!(
+                feature.kind,
+                FeatureKind::Str | FeatureKind::Const | FeatureKind::Callee
+            )
+        })
+        .map(|mut feature| {
+            feature.required = false;
+            feature.inherited = true;
+            feature
+        })
+        .collect()
+}
+
+fn inline_evidence_with<S: ByteSource + ?Sized>(
+    source: &S,
+    func: &RecoveredFunction,
+    cache: Option<&InlineCache>,
+) -> Vec<Feature> {
     let (start, end) = (func.start(), func.end());
     let mut targets: Vec<u64> = func
         .blocks
@@ -149,30 +228,11 @@ pub fn inline_evidence<S: ByteSource + ?Sized>(
     targets.sort_unstable();
     targets.dedup();
     targets.truncate(MAX_INLINE_CALLEES);
-    // Every block holds at least one instruction, so the block cap stops the
-    // walk of a large callee early instead of decoding it whole.
-    let limits = crate::recover::RecoveryLimits {
-        max_instructions: MAX_INLINE_CALLEE_INSTRUCTIONS,
-        max_blocks: MAX_INLINE_CALLEE_INSTRUCTIONS,
-        ..Default::default()
-    };
     let mut inherited = Vec::new();
     for target in targets {
-        let Ok(callee) = crate::recover::recover(source, target, Some(limits), false) else {
-            continue;
-        };
-        if callee.degraded || callee.instruction_count() > MAX_INLINE_CALLEE_INSTRUCTIONS {
-            continue;
-        }
-        for mut feature in extract_own(source, &callee) {
-            if matches!(
-                feature.kind,
-                FeatureKind::Str | FeatureKind::Const | FeatureKind::Callee
-            ) {
-                feature.required = false;
-                feature.inherited = true;
-                inherited.push(feature);
-            }
+        match cache {
+            Some(cache) => inherited.extend(cache.get_or_compute(source, target).iter().cloned()),
+            None => inherited.extend(callee_evidence(source, target)),
         }
     }
     inherited
