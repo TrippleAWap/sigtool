@@ -554,3 +554,179 @@ fn scan_resolves_a_call_chain_jointly() {
     );
     assert_eq!(best.unwrap()["evidence"], "identified", "{document}");
 }
+
+/// The lowest PT_LOAD address of an ELF64 image (its image base).
+fn load_base(path: &Path) -> u64 {
+    let data = std::fs::read(path).expect("read image");
+    let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]) as usize;
+    let u64_at = |o: usize| u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
+    let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+    let (phoff, phentsize, phnum) = (u64_at(0x20) as usize, u16_at(0x36), u16_at(0x38));
+    (0..phnum)
+        .map(|i| phoff + i * phentsize)
+        .filter(|o| u32_at(*o) == 1)
+        .map(|o| u64_at(o + 0x10))
+        .min()
+        .expect("PT_LOAD")
+}
+
+/// The IDA workflow "sign a whole IDB, apply the names to another": `db build
+/// --functions` signs a name list by RVA in one run, each signature identical
+/// to the one `gen --rva --name` makes, skipping what cannot be signed; a
+/// `scan --db` of the stripped copy then reports each hit's rva, and joint
+/// resolution identifies the shape-only `bottom` through its callers.
+#[test]
+fn db_build_signs_a_function_list_and_scan_reports_rvas() {
+    let has = |tool: &str| {
+        Command::new(tool)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
+        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sigtool-batch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("chain.c");
+    let image = dir.join("libchain.so");
+    let stripped = dir.join("libchain.stripped.so");
+    let mut code = String::from(
+        "__attribute__((noinline)) static int bottom(int x) { return x ^ 5; }\n\
+         __attribute__((noinline)) static int lower(int x) { return bottom(x) - 7; }\n\
+         __attribute__((noinline)) static int middle(int x) { return lower(x) * 3; }\n\
+         const char *top(int x) {\n\
+         \x20   return middle(x) > 9 ? \"joint resolution banner\" : \"no\";\n\
+         }\n",
+    );
+    for n in 0..40 {
+        code.push_str(&format!(
+            "int filler{n}(int x) {{ return x ^ {}; }}\n",
+            n + 6
+        ));
+    }
+    std::fs::write(&source, code).unwrap();
+    let built = Command::new("clang")
+        .args([
+            "--target=x86_64-linux-gnu",
+            "-O2",
+            "-fPIC",
+            "-shared",
+            "-nostdlib",
+            "-fuse-ld=lld",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&image)
+        .status()
+        .expect("run clang");
+    assert!(built.success(), "clang failed to build the shared object");
+    let strip = Command::new("llvm-strip")
+        .arg("--strip-all")
+        .arg(&image)
+        .arg("-o")
+        .arg(&stripped)
+        .status()
+        .expect("run llvm-strip");
+    assert!(strip.success(), "llvm-strip failed");
+    let symbols = Command::new("llvm-nm")
+        .arg(&image)
+        .output()
+        .expect("run llvm-nm");
+    let symbols = String::from_utf8(symbols.stdout).expect("utf-8");
+    let base = load_base(&image);
+    let rva_of = |name: &str| {
+        symbols
+            .lines()
+            .find(|line| line.ends_with(&format!(" {name}")))
+            .and_then(|line| line.split_whitespace().next())
+            .and_then(|text| u64::from_str_radix(text, 16).ok())
+            .map(|addr| addr - base)
+            .unwrap_or_else(|| panic!("{name} in llvm-nm output"))
+    };
+
+    // An IDB name list: renamed functions, plus one RVA outside the image.
+    let mut list: Vec<serde_json::Value> = ["top", "middle", "lower", "bottom"]
+        .iter()
+        .map(|name| serde_json::json!({"rva": format!("0x{:x}", rva_of(name)), "name": name}))
+        .collect();
+    list.push(serde_json::json!({"rva": "0x7fffffff", "name": "outside"}));
+    let functions = dir.join("functions.json");
+    std::fs::write(&functions, serde_json::to_string(&list).unwrap()).unwrap();
+    let db = dir.join("chain.db");
+    let db_again = dir.join("chain.again.db");
+    let report = dir.join("report.json");
+    for output in [&db, &db_again] {
+        run(&[
+            "db",
+            "build",
+            "--file",
+            image.to_str().unwrap(),
+            "--functions",
+            functions.to_str().unwrap(),
+            "--tool",
+            "IDA",
+            "--report",
+            report.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+    }
+    let gen_report = dir.join("bottom.json");
+    run(&[
+        "gen",
+        "--file",
+        image.to_str().unwrap(),
+        "--rva",
+        &format!("0x{:x}", rva_of("bottom")),
+        "--name",
+        "bottom",
+        "--tool",
+        "IDA",
+        "--output",
+        dir.join("bottom.yaml").to_str().unwrap(),
+        "--json-report",
+        gen_report.to_str().unwrap(),
+    ]);
+    let json = dir.join("hits.json");
+    let scan = Command::new(env!("CARGO_BIN_EXE_sigtool-native"))
+        .args(["scan", "--file", stripped.to_str().unwrap()])
+        .args(["--db", db.to_str().unwrap()])
+        .args(["--discovery", "hint-free"])
+        .args(["--json", json.to_str().unwrap()])
+        .output()
+        .expect("run sigtool-native");
+    let read_json = |path: &Path| -> serde_json::Value {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    };
+    let report = read_json(&report);
+    let gen_report = read_json(&gen_report);
+    let hits = read_json(&json);
+    let same_db = std::fs::read(&db).ok() == std::fs::read(&db_again).ok();
+    let bottom_rva = format!("0x{:x}", rva_of("bottom"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(same_db, "db build --functions is not deterministic");
+    assert_eq!(report["signed"], 4, "{report}");
+    assert_eq!(report["failed"], 1, "{report}");
+    let rows = report["functions"].as_array().expect("functions");
+    assert_eq!(rows[4]["status"], "error", "{report}");
+    assert_eq!(
+        rows[3]["signature_id"], gen_report["signature_id"],
+        "a batch signature differs from gen's: {report}\n{gen_report}"
+    );
+    let best = hits["hits"]
+        .as_array()
+        .and_then(|hits| hits.iter().find(|hit| hit["name"] == "bottom"));
+    assert_eq!(
+        best.map(|hit| hit["rva"].clone()),
+        Some(serde_json::Value::String(bottom_rva)),
+        "stderr: {}\nhits: {hits}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    assert_eq!(best.unwrap()["evidence"], "identified", "{hits}");
+}
