@@ -1,5 +1,27 @@
 # Spec changelog
 
+## v5 (unreleased)
+
+Draft; `SPEC_VERSION` is still `4`.
+
+### Joint resolution
+
+Joint resolution's output changes; feature records, the signature document,
+and single-signature acceptance do not (SPEC.md §8).
+
+* The call graph joint resolution reads is symmetric: a function's callers
+  are its direct-call sites plus every candidate whose callees include it.
+  Callees held tail calls and callers did not (the code index records call
+  instructions only), so an `out:` link to a tail-called neighbour was
+  counted by the module gate but never earned the link bonus, and thin
+  wrappers of different helpers stayed tied. Simulated on the v4 joint
+  dump, then measured on the x64+arm64 slice (`--arch x64 --arch arm64
+  --joint --discovery hint-free`, identical to the simulation): other arch
+  cross opt 1416 -> 1432, other compiler 439 -> 446, same build 566 -> 574,
+  same arch cross opt 1465 -> 1477, same arch other compiler 476 -> 481 (of
+  2712 / 678 / 678 / 2712 / 678); joint false hits unchanged. Capping the
+  merged caller list at 16 like `callers_of` gained less.
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,

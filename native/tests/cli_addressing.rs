@@ -438,14 +438,16 @@ fn locate_finds_a_shape_only_helper_through_its_caller() {
     );
 }
 
-/// Joint resolution: `bottom` is three calls below the only function with a
-/// string, out of reach of neighbour keys (two hops), and has forty exported
-/// lookalikes. Scanned alone it is at best a `shape-only` candidate; scanned
-/// with the signatures of its callers, `top` pins `middle`, `middle` pins
-/// `lower`, and `lower` pins `bottom` through the stripped call graph, which
-/// makes the match `identified`.
-#[test]
-fn scan_resolves_a_call_chain_jointly() {
+/// Builds `code` as a stripped x86-64 shared object with clang -O2, signs
+/// `names` on the unstripped copy, scans them together on the stripped one,
+/// and returns `wanted`'s expected address, the scan's JSON document, and
+/// its stderr. `None` when the LLVM tools are missing.
+fn scan_jointly(
+    tag: &str,
+    code: &str,
+    names: &[&str],
+    wanted: &str,
+) -> Option<(String, serde_json::Value, String)> {
     let has = |tool: &str| {
         Command::new(tool)
             .arg("--version")
@@ -454,27 +456,13 @@ fn scan_resolves_a_call_chain_jointly() {
     };
     if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
         eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
-        return;
+        return None;
     }
-    let dir = std::env::temp_dir().join(format!("sigtool-joint-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sigtool-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("chain.c");
     let image = dir.join("libchain.so");
     let stripped = dir.join("libchain.stripped.so");
-    let mut code = String::from(
-        "__attribute__((noinline)) static int bottom(int x) { return x ^ 5; }\n\
-         __attribute__((noinline)) static int lower(int x) { return bottom(x) - 7; }\n\
-         __attribute__((noinline)) static int middle(int x) { return lower(x) * 3; }\n\
-         const char *top(int x) {\n\
-         \x20   return middle(x) > 9 ? \"joint resolution banner\" : \"no\";\n\
-         }\n",
-    );
-    for n in 0..40 {
-        code.push_str(&format!(
-            "int filler{n}(int x) {{ return x ^ {}; }}\n",
-            n + 6
-        ));
-    }
     std::fs::write(&source, code).unwrap();
     let built = Command::new("clang")
         .args([
@@ -513,7 +501,7 @@ fn scan_resolves_a_call_chain_jointly() {
             .unwrap_or_else(|| panic!("{name} in llvm-nm output"))
     };
     let mut signatures = Vec::new();
-    for name in ["top", "middle", "lower", "bottom"] {
+    for name in names {
         let path = dir.join(format!("{name}.yaml"));
         run(&[
             "gen",
@@ -538,19 +526,92 @@ fn scan_resolves_a_call_chain_jointly() {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
-    let expected = format!("0x{:x}", address_of("bottom"));
+    let expected = format!("0x{:x}", address_of(wanted));
     for path in signatures.iter().chain([&source, &image, &stripped, &json]) {
         std::fs::remove_file(path).ok();
     }
     std::fs::remove_dir(&dir).ok();
-    let best = document["hits"]
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Some((expected, document, stderr))
+}
+
+/// The best hit of signature `name` in a scan document.
+fn best_hit<'a>(document: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+    document["hits"]
         .as_array()
-        .and_then(|hits| hits.iter().find(|hit| hit["name"] == "bottom"));
+        .and_then(|hits| hits.iter().find(|hit| hit["name"] == name))
+}
+
+/// The three-call chain both joint tests start from: `top` holds the only
+/// string, `bottom` is out of reach of neighbour keys (two hops).
+const CHAIN: &str = "__attribute__((noinline)) static int bottom(int x) { return x ^ 5; }\n\
+     __attribute__((noinline)) static int lower(int x) { return bottom(x) - 7; }\n\
+     __attribute__((noinline)) static int middle(int x) { return lower(x) * 3; }\n\
+     const char *top(int x) {\n\
+     \x20   return middle(x) > 9 ? \"joint resolution banner\" : \"no\";\n\
+     }\n";
+
+/// Joint resolution: `bottom` is three calls below the only function with a
+/// string and has forty exported lookalikes. Scanned alone it is at best a
+/// `shape-only` candidate; scanned with the signatures of its callers, `top`
+/// pins `middle`, `middle` pins `lower`, and `lower` pins `bottom` through
+/// the stripped call graph, which makes the match `identified`.
+#[test]
+fn scan_resolves_a_call_chain_jointly() {
+    let mut code = String::from(CHAIN);
+    for n in 0..40 {
+        code.push_str(&format!(
+            "int filler{n}(int x) {{ return x ^ {}; }}\n",
+            n + 6
+        ));
+    }
+    let Some((expected, document, stderr)) = scan_jointly(
+        "joint",
+        &code,
+        &["top", "middle", "lower", "bottom"],
+        "bottom",
+    ) else {
+        return;
+    };
+    let best = best_hit(&document, "bottom");
     assert_eq!(
         best.map(|hit| hit["address"].clone()),
         Some(serde_json::Value::String(expected)),
-        "stderr: {}\nhits: {document}",
-        String::from_utf8_lossy(&output.stderr)
+        "stderr: {stderr}\nhits: {document}"
+    );
+    assert_eq!(best.unwrap()["evidence"], "identified", "{document}");
+}
+
+/// Joint resolution follows tail calls in both directions: `wrapper` reaches
+/// `middle` only through a tail call (`jmp`), which the code index's call
+/// sites do not hold, and has forty lookalikes that tail-call helpers of
+/// their own. Its `out:` link to `middle`, which the chain pins, must earn
+/// the link bonus at the function that tail-calls `middle`'s placement, or
+/// `wrapper` stays tied with its lookalikes.
+#[test]
+fn scan_resolves_a_tail_caller_jointly() {
+    let mut code = String::from(CHAIN);
+    code.push_str("int wrapper(int x) { return middle(x + 11); }\n");
+    for n in 0..40 {
+        code.push_str(&format!(
+            "__attribute__((noinline)) static int sink{n}(int x) {{ return (x ^ {}) * 3; }}\n\
+             int filler{n}(int x) {{ return sink{n}(x + 11); }}\n",
+            n + 6
+        ));
+    }
+    let Some((expected, document, stderr)) = scan_jointly(
+        "joint-tail",
+        &code,
+        &["top", "middle", "lower", "bottom", "wrapper"],
+        "wrapper",
+    ) else {
+        return;
+    };
+    let best = best_hit(&document, "wrapper");
+    assert_eq!(
+        best.map(|hit| hit["address"].clone()),
+        Some(serde_json::Value::String(expected)),
+        "stderr: {stderr}\nhits: {document}"
     );
     assert_eq!(best.unwrap()["evidence"], "identified", "{document}");
 }
