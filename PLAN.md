@@ -456,5 +456,16 @@ As of 2026-11-16, `native-first` branch, spec v4.
   0.07 above tuning: the one G4 row outside 0.05). Joint: other arch same
   build 0.779, other arch other compiler 0.556, other arch cross opt 0.533,
   same arch other compiler 0.702; joint false hits equal scanned alone.
+- Joint after v4 (2026-11-16, `joint-inherited` branch, tuning corpus only):
+  the joint-vs-M11 gap was joint resolution's own similarity copy counting
+  candidates' inherited `inl:` keys as extra weight, which pushed true
+  pairs below the 0.2 floor. With the scan's similarity, G2 hint-free: other
+  arch same build 0.763 -> 0.777, other compiler 0.493 -> 0.571, other opt
+  0.402 -> 0.466, same arch other compiler 0.633 -> 0.702; joint false hits
+  unchanged (equal to scanned-alone); every other report section unchanged.
+  Cost: inherited evidence cached per callee and acceptance decided before
+  building match results, outputs unchanged; full real bench `--joint`
+  66 s on 8 cores (idle machine; 221 s recorded at v4 under load),
+  peak 1.10 GB. Not yet run on held-out.
 - Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
   rule decision on in-module constants (M10).
