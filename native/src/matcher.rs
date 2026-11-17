@@ -239,6 +239,173 @@ fn compare_with_keys(
     }
 }
 
+/// A signature prepared for comparison with many candidates: its keys
+/// ([`feature_keys`]) and everything [`accepts`] reads from it, per feature.
+///
+/// A hint-free scan compares a signature with every function of the image
+/// and accepts a handful; [`compare_with_keys`] then [`accepts`] built the
+/// matched key list (a `String` clone per key, then a sort), formatted the
+/// score, and grouped the shape keys into dimensions by string for every one
+/// of them. [`ScanKeys::accept`] decides from per-feature flags and builds
+/// the [`MatchScore`] only for an accepted candidate, with the same sums in
+/// the same order, so the result is identical.
+struct ScanKeys {
+    keys: Vec<(String, String)>,
+    /// Required weight after the all-features fallback of
+    /// [`compare_with_keys`].
+    required_weight: f64,
+    required_count: usize,
+    needs_shape: bool,
+    /// Per feature: a callee that names a function ([`accepts`]' `named`).
+    named: Vec<bool>,
+    /// Per feature: index of its shape dimension (`cfg:blocks`), if a shape
+    /// key.
+    dimension: Vec<Option<usize>>,
+    dimensions: usize,
+}
+
+impl ScanKeys {
+    fn new(signature: &Signature) -> ScanKeys {
+        let keys = feature_keys(signature);
+        let mut required_weight: f64 = signature
+            .features
+            .iter()
+            .filter(|feature| feature.required)
+            .map(|feature| feature.weight)
+            .sum();
+        if required_weight <= 0.0 {
+            required_weight = signature
+                .features
+                .iter()
+                .map(|feature| feature.weight)
+                .sum();
+        }
+        let mut dimensions: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        let dimension = signature
+            .features
+            .iter()
+            .zip(&keys)
+            .map(|(feature, (key, _))| {
+                if !matches!(feature.kind, FeatureKind::Cfg | FeatureKind::Ops) {
+                    return None;
+                }
+                let name = key.rsplit_once(':').map(|(head, _)| head).unwrap_or(key);
+                let next = dimensions.len();
+                Some(*dimensions.entry(name.to_string()).or_insert(next))
+            })
+            .collect();
+        ScanKeys {
+            required_weight,
+            required_count: signature
+                .features
+                .iter()
+                .filter(|feature| feature.required)
+                .count(),
+            needs_shape: needs_shape_corroboration(signature),
+            named: signature
+                .features
+                .iter()
+                .map(|feature| {
+                    feature.kind == FeatureKind::Callee && !low_information_callee(&feature.value)
+                })
+                .collect(),
+            dimension,
+            dimensions: dimensions.len(),
+            keys,
+        }
+    }
+
+    /// `compare_with_keys` when [`accepts`] takes it, else `None`.
+    fn accept(&self, signature: &Signature, present: &HashSet<String>) -> Option<MatchScore> {
+        if self.required_weight <= 0.0 {
+            let result = compare_with_keys(signature, &self.keys, present);
+            return accepts(signature, &result).then_some(result);
+        }
+        // 1: the candidate holds the key itself; 2: only inherited.
+        let state: Vec<u8> = self
+            .keys
+            .iter()
+            .map(|(key, inherited)| {
+                if present.contains(key) {
+                    1
+                } else if present.contains(inherited) {
+                    2
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let held = |wanted: u8| {
+            signature
+                .features
+                .iter()
+                .zip(&state)
+                .filter(move |(_, state)| **state == wanted)
+                .map(|(feature, _)| feature)
+        };
+        let total: f64 = held(1).map(|feature| feature.weight).sum::<f64>()
+            + held(2)
+                .map(|feature| feature.weight * INHERITED_CREDIT)
+                .sum::<f64>();
+        let raw = (total / self.required_weight).min(1.0);
+        // Rounding to SCORE_DECIMALS moves a value by at most half a unit of
+        // the last decimal, so a value this far below the threshold fails it
+        // rounded too, and is not formatted.
+        if raw < signature.match_threshold - 1e-6 {
+            return None;
+        }
+        let score = round_to(raw, SCORE_DECIMALS);
+        let matched_required = held(1).filter(|feature| feature.required).count();
+        if score < signature.match_threshold
+            || matched_required < signature.min_distinct.min(self.required_count)
+        {
+            return None;
+        }
+        let named = self
+            .named
+            .iter()
+            .zip(&state)
+            .any(|(named, state)| *named && *state == 1);
+        if self.needs_shape && !named {
+            let agreement = if self.dimensions == 0 {
+                1.0
+            } else {
+                let mut agrees = vec![false; self.dimensions];
+                for (dimension, state) in self.dimension.iter().zip(&state) {
+                    if let Some(dimension) = dimension {
+                        agrees[*dimension] |= *state == 1;
+                    }
+                }
+                agrees.iter().filter(|agrees| **agrees).count() as f64 / self.dimensions as f64
+            };
+            if agreement < MIN_SHAPE_AGREEMENT {
+                return None;
+            }
+        }
+        let mut matched: Vec<String> = self
+            .keys
+            .iter()
+            .zip(&state)
+            .filter(|(_, state)| **state == 1)
+            .map(|((key, _), _)| key.clone())
+            .chain(
+                self.keys
+                    .iter()
+                    .zip(&state)
+                    .filter(|(_, state)| **state == 2)
+                    .map(|((_, inherited), _)| inherited.clone()),
+            )
+            .collect();
+        matched.sort();
+        Some(MatchScore {
+            score,
+            matched,
+            matched_required,
+        })
+    }
+}
+
 /// Shape dimensions (`cfg:blocks`, `ops:arith`, ...) a candidate must agree
 /// with when the signature's data evidence is low-information.
 ///
@@ -1164,7 +1331,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
-    let keys = feature_keys(signature);
+    let keys = ScanKeys::new(signature);
     for start in candidate_starts(source, signature, hits, max_candidates, hints, index, code) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
@@ -1180,8 +1347,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
         let Some(candidate) = candidate else {
             continue;
         };
-        let result = compare_with_keys(signature, &keys, &candidate.keys);
-        if accepts(signature, &result) {
+        if let Some(result) = keys.accept(signature, &candidate.keys) {
             matches.push(Match {
                 address: candidate.start,
                 end: candidate.end,
@@ -1627,6 +1793,48 @@ impl SimilarityKeys {
         } else {
             round_to(shared / denominator, SCORE_DECIMALS)
         }
+    }
+
+    /// [`Self::similarity`] when it is at least `floor`, else `None`: the
+    /// same value, without finishing the sum or formatting the rounding for
+    /// a candidate that cannot reach the floor. Joint resolution weighs a
+    /// module's every signature against every function of the target and
+    /// keeps a few pairs per signature.
+    pub fn similarity_at_least(&self, candidate: &[(String, f64)], floor: f64) -> Option<f64> {
+        if self.total <= 0.0 {
+            let value = self.similarity(candidate);
+            return (value >= floor).then_some(value);
+        }
+        // Rounding moves a value by at most half a unit of the last decimal,
+        // so below this margin the rounded value is below `floor` too.
+        let margin = floor - 1e-6;
+        let mut shared = 0.0;
+        let mut extra = 0.0;
+        for (key, weight) in candidate {
+            if let Some(base) = key.strip_prefix(INHERITED_PREFIX) {
+                if let Some(signature_weight) = self.wanted.get(base) {
+                    shared += signature_weight * INHERITED_CREDIT;
+                }
+                continue;
+            }
+            match self.wanted.get(key) {
+                Some(signature_weight) => shared += signature_weight,
+                None => {
+                    extra += weight;
+                    // Each signature key is shared at most once, so `shared`
+                    // ends at most `total`, and extra weight only grows.
+                    if self.total < margin * (self.total + extra) {
+                        return None;
+                    }
+                }
+            }
+        }
+        let value = shared / (self.total + extra);
+        if value < margin {
+            return None;
+        }
+        let value = round_to(value, SCORE_DECIMALS);
+        (value >= floor).then_some(value)
     }
 }
 

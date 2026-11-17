@@ -390,16 +390,15 @@ fn resolve_group<S: ByteSource + ?Sized>(
             .iter()
             .zip(degrees)
             .filter_map(|(candidate, (callees, callers))| {
-                let similar = prepared[local].similarity(&candidate.weighted);
-                (similar >= JOINT_MIN_SIMILARITY).then(|| {
-                    let degree = 1.0 / (1.0 + out.abs_diff(*callees) as f64)
-                        + 1.0 / (1.0 + into.abs_diff(*callers) as f64);
-                    (
-                        candidate.start,
-                        similar,
-                        similar + DEGREE_BONUS * degree / 2.0,
-                    )
-                })
+                let similar = prepared[local]
+                    .similarity_at_least(&candidate.weighted, JOINT_MIN_SIMILARITY)?;
+                let degree = 1.0 / (1.0 + out.abs_diff(*callees) as f64)
+                    + 1.0 / (1.0 + into.abs_diff(*callers) as f64);
+                Some((
+                    candidate.start,
+                    similar,
+                    similar + DEGREE_BONUS * degree / 2.0,
+                ))
             })
             .collect()
     });
@@ -531,10 +530,11 @@ pub fn report<S: ByteSource + ?Sized>(
         let signature = &signatures[index];
         let mut row = Vec::new();
         for candidate in &functions {
-            let similar = prepared[index].similarity(&candidate.weighted);
-            if similar < JOINT_MIN_SIMILARITY {
+            let Some(similar) =
+                prepared[index].similarity_at_least(&candidate.weighted, JOINT_MIN_SIMILARITY)
+            else {
                 continue;
-            }
+            };
             let result = compare_keys(signature, &candidate.keys);
             let found = Match {
                 address: candidate.start,
