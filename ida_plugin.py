@@ -157,6 +157,7 @@ class Proposal:
     score: float
     evidence: str
     current: str
+    signature_id: str = ""
 
 
 def choose_renames(
@@ -226,9 +227,27 @@ def choose_renames(
                 score=float(hit.get("score") or 0.0),
                 evidence=str(hit.get("evidence")),
                 current=current,
+                signature_id=str(hit.get("signature_id") or ""),
             )
         )
     return proposals, sorted(skipped)
+
+
+def provenance_comment(existing: str, proposal: Proposal, source: str) -> str:
+    """``existing`` function comment plus a line recording where a rename came from.
+
+    The line names the signature, score, and evidence so a later reader can
+    tell a sigtool rename from an analyst's; applying the same DB twice does
+    not repeat it.
+    """
+    line = (
+        f"sigtool: {proposal.name} from {source} "
+        f"(signature {proposal.signature_id or '?'}, score {proposal.score:.3f}, "
+        f"{proposal.evidence})"
+    )
+    if line in existing.splitlines():
+        return existing
+    return f"{existing.rstrip()}\n{line}" if existing.strip() else line
 
 
 @dataclass(frozen=True)
@@ -676,7 +695,7 @@ def show_results(title: str, columns: list[list], rows: list[Row]) -> None:
 
 
 class RenameChooser(ida_kernwin.Choose):
-    """The proposed renames; the selected rows are applied."""
+    """The proposed renames, all selected; the rows still selected are applied."""
 
     def __init__(self, proposals: list[Proposal], base: int) -> None:
         super().__init__(
@@ -688,7 +707,7 @@ class RenameChooser(ida_kernwin.Choose):
                 ["Score", 8],
                 ["Evidence", 10],
             ],
-            flags=ida_kernwin.Choose.CH_MULTI | ida_kernwin.Choose.CH_MODAL,
+            flags=ida_kernwin.Choose.CH_MULTI,
             deflt=list(range(len(proposals))),
         )
         self.items = [
@@ -701,6 +720,7 @@ class RenameChooser(ida_kernwin.Choose):
             ]
             for item in proposals
         ]
+        self.selection: list[int] = []
 
     def OnGetSize(self) -> int:
         return len(self.items)
@@ -708,9 +728,21 @@ class RenameChooser(ida_kernwin.Choose):
     def OnGetLine(self, n: int) -> list[str]:
         return self.items[n]
 
+    def OnSelectLine(self, n):
+        # A modal multi-select chooser hands the confirmed rows to this
+        # callback; Show() itself returns one index (or < 0 on cancel).
+        self.selection = _chosen(n)
+        return (ida_kernwin.Choose.NOTHING_CHANGED,)
+
+    def ask(self) -> list[int]:
+        """Show the chooser modally: the confirmed rows, or none on cancel."""
+        if self.Show(modal=True) < 0:
+            return []
+        return self.selection
+
 
 def _chosen(selection) -> list[int]:
-    """Normalize what a modal multi-select chooser returns across IDA versions."""
+    """Normalize a chooser selection (one index or a list of them)."""
     if selection is None:
         return []
     if isinstance(selection, int):
@@ -774,8 +806,9 @@ class ApplyNamesHandler(_Handler):
                 "see the Output window)"
             )
             return
-        chosen = _chosen(RenameChooser(proposals, base).show())
-        renamed = 0
+        chosen = RenameChooser(proposals, base).ask()
+        source = Path(db).name
+        rows = []
         for index in chosen:
             item = proposals[index]
             ea = base + item.rva
@@ -783,12 +816,43 @@ class ApplyNamesHandler(_Handler):
                 ida_funcs.add_func(ea)
             # SN_NOCHECK replaces characters IDA does not allow in names (a
             # name from another toolchain's mangling) instead of failing.
-            if ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
-                renamed += 1
-            else:
+            if not ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
                 ida_kernwin.msg(f"sigtool: IDA refused to rename {ea:#x} to {item.name}\n")
-        ida_kernwin.msg(f"sigtool: renamed {renamed} of {len(proposals)} proposed functions\n")
+                continue
+            function = ida_funcs.get_func(ea)
+            if function is not None:
+                # A regular, not repeatable, comment: it stays on the function
+                # instead of repeating at every call site.
+                existing = ida_funcs.get_func_cmt(function, False) or ""
+                ida_funcs.set_func_cmt(function, provenance_comment(existing, item, source), False)
+            rows.append(
+                Row(
+                    ea=ea,
+                    cells=(
+                        f"{ea:#x}",
+                        item.current,
+                        item.name,
+                        f"{item.score:.3f}",
+                        item.evidence,
+                        item.signature_id,
+                    ),
+                )
+            )
+        ida_kernwin.msg(f"sigtool: renamed {len(rows)} of {len(proposals)} proposed functions\n")
         ida_kernwin.refresh_idaview_anyway()
+        if rows:
+            show_results(
+                f"sigtool: renamed from {source}",
+                [
+                    ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
+                    ["Old name", 24],
+                    ["New name", 32],
+                    ["Score", 8],
+                    ["Evidence", 10],
+                    ["Signature", 20],
+                ],
+                rows,
+            )
 
 
 ACTIONS = (

@@ -147,6 +147,24 @@ class ChooseRenamesTests(unittest.TestCase):
         self.assertEqual(plugin._chosen([0, 3]), [0, 3])
 
 
+class ProvenanceTests(unittest.TestCase):
+    def proposal(self):
+        return plugin.Proposal(0x200, "inflate", 0.91234, "identified", "sub_200", "abc123")
+
+    def test_comment_is_appended_once(self):
+        first = plugin.provenance_comment("", self.proposal(), "zlib.db")
+        self.assertEqual(
+            first, "sigtool: inflate from zlib.db (signature abc123, score 0.912, identified)"
+        )
+        self.assertEqual(plugin.provenance_comment(first, self.proposal(), "zlib.db"), first)
+        kept = plugin.provenance_comment("analyst note\n", self.proposal(), "zlib.db")
+        self.assertEqual(kept, f"analyst note\n{first}")
+
+    def test_proposals_carry_the_signature_id(self):
+        proposals, _ = choose([hit("inflate", 0x200, signature_id="sig-1")])
+        self.assertEqual(proposals[0].signature_id, "sig-1")
+
+
 class MatchRowTests(unittest.TestCase):
     def test_rows_map_rvas_through_the_idb_base(self):
         rows = plugin.match_rows(
