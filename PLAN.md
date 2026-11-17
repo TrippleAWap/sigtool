@@ -436,7 +436,25 @@ As of 2026-11-16, `native-first` branch, spec v4.
   one run sharing one scan context) and applies a DB to another IDB through
   `scan --db --discovery hint-free` (joint resolution), renaming only
   `identified` answers after a chooser confirms them. `scan --json` hits now
-  carry `module` and `rva`. Not yet exercised in a real IDA (M12).
+  carry `module` and `rva`.
+- M12, IDA plugin (2026-11-17): still not run in a real IDA; the local IDA
+  9.2 install could not be used. Checked against the IDA 9.2 IDAPython API
+  sources instead, which showed three bugs now fixed: the rename chooser
+  called `Choose.show()` (the method is `Show(modal=True)`, and a modal
+  multi-select chooser reports its rows through `OnSelectLine`, not its return
+  value), `ask_file` got a fourth argument (it takes for_saving, a mask or
+  default name, and a prompt), and the menu path named a nonexistent item
+  instead of `Edit/Plugins/`. Locate now runs behind the cancellable wait box
+  and lists matches in a non-modal chooser; applied renames get a function
+  comment (signature id, score, evidence) and a results chooser; the plugin
+  prefers the `sigtool-native` next to it over PATH and warns when
+  `--version` (now `0.1.0 (spec 4)`) reports another spec.
+  `tests/ida_cli_smoke.py` drives every action against the real CLI with fake
+  IDA modules: x64 zlib clang-O2 -> stripped gcc-O2 signs 120/120 and renames
+  17 non-exported functions, 15 right (`deflate_fast` and `deflate_slow` swap,
+  both `identified`); arm64 lz4 clang-O2 -> gcc-Os 9 of 10 right; arm32 cJSON
+  gcc-O2 -> clang-O2 9 of 9. IDA's UI paths (dialogs, choosers, wait box,
+  context menus) remain unexercised.
 - v4 (2026-11-16): M9 coverage, M10 inherited evidence, M12 trust labels,
   and M11 joint assignment merged and measured together (full real bench,
   `--max-functions 4 --joint`; baselines re-saved for the version). Against
