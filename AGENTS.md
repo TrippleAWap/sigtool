@@ -15,6 +15,8 @@ native/        Rust crate: sources (elf.rs: ELF/PE files, proc_win.rs: live Wind
                processes), arch decoders, normalize, recover, features, score,
                sigfile, validate, matcher, merge, scanner, db, bench, CLI (main.rs)
 ida_plugin.py  IDA front-end: UI glue over the sigtool-native CLI
+packaging/     ida-plugin.json (HCLI / Plugin Manager manifest) and package.py, which
+               builds the per-platform plugin zip and CLI archive for a release
 spec/          signature spec and changelog
 corpus/        build scripts (build.py: toy corpus; real.py: pinned real libraries
                with clang and gcc), ground truth; binaries are never committed
@@ -49,7 +51,7 @@ Normalization must make these cases produce the same feature records across arch
 ## Conventions
 
 - **Rust:** `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`. Dependencies: `iced-x86`, `yaxpeax-arm`, `capstone`, `blake2b_simd`, `serde`, `serde_json`, `memmap2`, `crc32fast`, `clap`; Capstone builds its bundled C library, so a C toolchain is required. Windows APIs are declared with `extern "system"` FFI, not a crate.
-- **Python (tooling only):** `ruff format` and `ruff check` over `corpus/`, `tests/vectors/`, `tests/test_ida_plugin.py`, `tests/ida_cli_smoke.py`, and `ida_plugin.py`; `python -m unittest tests/test_ida_plugin.py` tests the plugin's IDA-free parts with stubbed IDA modules. `python tests/ida_cli_smoke.py --corpus corpus/build-real` (after `cargo build --release`) runs the plugin's generate, merge, locate, sign-all, and apply-names actions end to end against the real CLI, with fake IDA modules modelling the IDB from `ground_truth.json` (sign clang-O2 x64 zlib, apply to stripped gcc-O2 by default; `--arch`, `--library`, `--sign`, `--apply` pick others). It checks the plugin-to-CLI contract, not IDA's UI or API; run the plugin in a licensed IDA before calling a plugin change done.
+- **Python (tooling only):** `ruff format` and `ruff check` over `corpus/`, `packaging/`, `tests/vectors/`, `tests/test_ida_plugin.py`, `tests/ida_cli_smoke.py`, and `ida_plugin.py`; `python -m unittest tests/test_ida_plugin.py` tests the plugin's IDA-free parts with stubbed IDA modules. `python tests/ida_cli_smoke.py --corpus corpus/build-real` (after `cargo build --release`) runs the plugin's generate, merge, locate, sign-all, and apply-names actions end to end against the real CLI, with fake IDA modules modelling the IDB from `ground_truth.json` (sign clang-O2 x64 zlib, apply to stripped gcc-O2 by default; `--arch`, `--library`, `--sign`, `--apply` pick others). It checks the plugin-to-CLI contract, not IDA's UI or API; run the plugin in a licensed IDA before calling a plugin change done.
 - **Naming:** feature kinds are `str`, `const`, `callee`, `cfg`, `ops`. Arch identifiers: `x64`, `arm64`, `arm32`, `thumb`.
 - **Errors:** specific error types in the library; the CLI translates them to exit codes (`0` ok, `1` locate found nothing, `2` usage/input, `3` unsupported architecture or target, `4` self-test failure).
 - **Hashing:** the hash function and personalization fixed in `spec/`.
@@ -84,6 +86,8 @@ cargo run --release --example profile_gen -- IMAGE ADDR [TARGET]   # gen / hint-
 cargo run --release --example profile_g5 -- gen IMAGE SIGS.db [COUNT]   # then: scan STRIPPED SIGS.db (G5 cost)
 SIGTOOL_THREADS=1 cargo run --release -- bench ...          # one thread (determinism checks)
 
+python packaging/package.py --platform windows-x86_64 --binary native/target/release/sigtool-native.exe \
+    --out dist                      # plugin zip + CLI archive for one platform (release.yml runs it per target)
 python corpus/build.py              # toy corpus + ground truth (clang + ld.lld + llvm-readelf)
 python corpus/real.py               # real libraries: clang on the host, gcc via corpus/docker
 python corpus/real.py --heldout     # held-out libraries into corpus/build-heldout (milestone exits only)

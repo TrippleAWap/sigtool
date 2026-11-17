@@ -1,0 +1,33 @@
+{
+  "$schema": "https://hcli.docs.hex-rays.com/schemas/ida-plugin.json",
+  "IDAMetadataDescriptorVersion": 1,
+  "plugin": {
+    "name": "sigtool",
+    "entryPoint": "ida_plugin.py",
+    "version": "0.1.0",
+    "description": "Architecture-independent function signatures: sign a function once and find it again across architectures, compilers, and optimization levels, including in stripped binaries.",
+    "license": "MIT OR Apache-2.0",
+    "urls": {
+      "repository": "https://github.com/TrippleAWap/sigtool"
+    },
+    "authors": [
+      {
+        "name": "TrippleAWap",
+        "email": "90356816+TrippleAWap@users.noreply.github.com"
+      }
+    ],
+    "idaVersions": ["9.0", "9.0sp1", "9.1", "9.2", "9.3", "9.4"],
+    "requiresPython": ">=3.10",
+    "categories": ["malware-analysis", "api-scripting-and-automation"],
+    "keywords": [
+      "signatures",
+      "function-matching",
+      "cross-architecture",
+      "stripped-binaries",
+      "x86-64",
+      "aarch64",
+      "arm",
+      "thumb"
+    ]
+  }
+}

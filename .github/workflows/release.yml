@@ -1,0 +1,190 @@
+name: release
+
+# A pushed version tag builds every platform and publishes the GitHub Release
+# for it. A manual run builds and packages the same artifacts (downloadable from
+# the run) without publishing anything.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    # Linux builds run in Debian 11 so the binaries need only glibc 2.31 (the
+    # runner's own glibc is 2.39, newer than many IDA hosts). Other platforms
+    # build on the runner; an empty container means none.
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+            container: debian:bullseye
+            target: x86_64-unknown-linux-gnu
+            exe: sigtool-native
+          # arm64 is cross-compiled: GitHub's arm64 runners are free only for
+          # public repositories. Capstone builds its bundled C sources, so the
+          # cross gcc is both the linker and CC.
+          - platform: linux-aarch64
+            os: ubuntu-24.04
+            container: debian:bullseye
+            target: aarch64-unknown-linux-gnu
+            exe: sigtool-native
+            cross: true
+          - platform: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe: sigtool-native.exe
+          # Cross-compiled with the MSVC ARM64 tools installed on the image;
+          # cc finds them through vswhere.
+          - platform: windows-aarch64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            exe: sigtool-native.exe
+            cross: true
+          - platform: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            exe: sigtool-native
+    env:
+      BINARY: native/target/${{ matrix.target }}/release/${{ matrix.exe }}
+      # Debian ships python3 only; setup-python provides python elsewhere.
+      PYTHON: ${{ matrix.container && 'python3' || 'python' }}
+    steps:
+      # Before checkout so it uses git rather than the REST API fallback, and
+      # before rust-toolchain, which needs curl to install rustup.
+      - name: Install build tools (container)
+        if: matrix.container
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y \
+            build-essential ca-certificates curl git python3
+          if [ "${{ matrix.target }}" = aarch64-unknown-linux-gnu ]; then
+            apt-get install --no-install-recommends -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            {
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+              echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+              echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v4
+
+      # Installs rustup itself when the image has none (the container case).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        if: ${{ !matrix.container }}
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        working-directory: native
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin sigtool-native
+
+      - name: Smoke test
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: '"$BINARY" --help'
+
+      - name: Check the glibc floor
+        if: matrix.container
+        shell: bash
+        env:
+          GLIBC_MAX: "2.31"
+        run: |
+          versions=$(readelf --dyn-syms -W "$BINARY" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -uV)
+          max=$(tail -n1 <<< "$versions")
+          echo "GLIBC versions required: $(tr '\n' ' ' <<< "$versions")"
+          echo "max GLIBC version: ${max:-none}"
+          if [ -z "$max" ]; then
+            echo "::error::no GLIBC_ symbol versions found in $BINARY"
+            exit 1
+          fi
+          if [ "$(printf '%s\n%s\n' "$max" "$GLIBC_MAX" | sort -V | tail -n1)" != "$GLIBC_MAX" ]; then
+            echo "::error::$BINARY needs GLIBC_$max, above the GLIBC_$GLIBC_MAX floor"
+            exit 1
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            args=(--expect-version "${GITHUB_REF_NAME#v}")
+          fi
+          "$PYTHON" packaging/package.py --platform ${{ matrix.platform }} \
+            --binary "$BINARY" --out dist "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sigtool-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Lints every platform's plugin zip on the runner: HCLI needs Python 3.10+,
+  # newer than the Debian 11 build container's 3.9.
+  lint:
+    name: lint plugin archives
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: sigtool-*
+          merge-multiple: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: hcli plugin lint
+        env:
+          HCLI_VERSION: "0.27.3"
+        run: |
+          python -m pip install "ida-hcli==${HCLI_VERSION}"
+          for archive in dist/sigtool-ida-plugin-*.zip; do hcli plugin lint "$archive"; done
+
+  publish:
+    name: publish release
+    needs: [build, lint]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: sigtool-*
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * | LC_ALL=C sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "sigtool $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" dist/* --clobber
