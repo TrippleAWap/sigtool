@@ -1,5 +1,20 @@
 # Spec changelog
 
+## v5 (unreleased)
+
+Draft: `SPEC_VERSION` is not bumped yet; these entries change feature
+records and need the bump before release.
+
+* ARM32/Thumb: a literal-pool word inside the image stays available as a
+  PC-relative offset for a following `add rd, pc` (SPEC.md §2). GNU ld puts
+  `.rodata` after `.text`, so gcc's `ldr r0, =.LC0-(.LPIC0+8); add r0, pc,
+  r0` pools a small positive offset that passed for an in-image pointer and
+  lost the string: no gcc ARM32 or Thumb signature in the real corpus had a
+  `str` feature (clang's offsets are negative and were unaffected). Measured
+  hint-free on the stripped real corpus (`--max-functions 4`, ARM32 + Thumb
+  cells only): same arch other compiler 0.208 -> 0.263, cross opt 0.202 ->
+  0.259, same build 0.796 -> 0.833, ARM32<->Thumb same build 0.404 -> 0.458.
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,

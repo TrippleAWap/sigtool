@@ -112,6 +112,10 @@ Rule 4 of AGENTS.md: **no absolute address may appear in a feature.**
   against a previously pooled offset, like the AArch64 `adrp`+`add` pair. The
   register form reads the PC unaligned (Thumb `addr + 4`, ARM `addr + 8`). The
   pooled offset is consumed as an address, never flushed as a constant.
+  A pooled word inside the image is both: a reference to its target, and an
+  offset a following `add rd, pc` may still consume (GNU ld places `.rodata`
+  after `.text`, so gcc's PC-relative string offsets are small positive
+  numbers that also look like in-image addresses).
 * ARM32 `movw`/`movt` pairs and `mvn rd, #imm` collapse into one constant each,
   matching AArch64 `movz`/`movk` chains and `movn`. A partial value stays
   pending in its register until an instruction names that register, a new

@@ -127,6 +127,47 @@ fn thumb_calls_through_lld_thunks_name_their_callee() {
 }
 
 #[test]
+fn gcc_pic_strings_after_text_resolve() {
+    // GNU ld puts arm32 `.rodata` after `.text` in one segment, so gcc's
+    // `ldr r0, =.LC0-(.LPIC0+8); .LPIC0: add r0, pc, r0` pools a small
+    // positive offset that also passes for an in-module address. It must
+    // still reach the `add` and resolve to the string (both modes).
+    let root = corpus();
+    for arch in ["arm32", "thumb"] {
+        for build in ["gcc-O0", "gcc-O2", "gcc-Os"] {
+            let full = root.join(arch).join(build).join("lz4.so");
+            let image = root.join("stripped").join(arch).join(build).join("lz4.so");
+            if !full.is_file() || !image.is_file() {
+                eprintln!("skip: {} is absent", image.display());
+                continue;
+            }
+            // The address comes from the unstripped copy's labels.
+            let address = FileSource::from_path(&full).expect("image").modules()[0]
+                .functions
+                .iter()
+                .find(|(_, name)| name.as_str() == "LZ4_versionString")
+                .map(|(address, _)| *address)
+                .expect("LZ4_versionString");
+            let source = FileSource::from_path(&image).expect("image");
+            let recovered =
+                sigtool_native::recover::recover(&source, address, None, false).expect("recover");
+            let keys: Vec<String> = sigtool_native::features::extract(&source, &recovered)
+                .iter()
+                .map(|feature| feature.key())
+                .collect();
+            assert!(
+                keys.iter().any(|key| key == "str:1.10.0"),
+                "{arch}/{build}: {keys:?}"
+            );
+            assert!(
+                !keys.iter().any(|key| key.starts_with("const:")),
+                "{arch}/{build}: the pooled offset leaked as a constant: {keys:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn lld_thumb_thunks_are_function_starts() {
     // lld places `__ThumbV7PILongThunk_*` back to back at the end of
     // `.text`; they open with `movw ip` (no prologue) and are reached only

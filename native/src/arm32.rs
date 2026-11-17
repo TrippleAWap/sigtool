@@ -689,6 +689,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                     addr: value,
                     width: 4,
                 });
+                state.insert_offset(reg_key(destination), value);
             } else {
                 state.insert(
                     reg_key(destination),
@@ -739,20 +740,22 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             if *register == PC {
                 continue;
             }
-            let Some(held) = state.take(reg_key(*register)) else {
-                continue;
+            let held = match state.take(reg_key(*register)) {
+                Some(held) if held.is_page => continue,
+                Some(held) => held.value,
+                None => match state.take_offset(reg_key(*register)) {
+                    Some(value) => value,
+                    None => continue,
+                },
             };
-            if held.is_page {
-                continue;
-            }
             // Only literal loads and `adr` see the word-aligned PC; a Thumb
             // register add reads it unaligned, so the PIC `add rd, pc` would
             // otherwise land two bytes early whenever it sits at addr % 4 == 2.
             let register_base = if thumb { addr + 4 } else { base };
             let resolved = if subtracting {
-                register_base.wrapping_sub(held.value)
+                register_base.wrapping_sub(held)
             } else {
-                register_base.wrapping_add(held.value)
+                register_base.wrapping_add(held)
             } & MASK32;
             refs.push(DataRef {
                 addr: resolved,
