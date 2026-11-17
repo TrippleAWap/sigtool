@@ -317,7 +317,14 @@ impl ScanKeys {
     }
 
     /// `compare_with_keys` when [`accepts`] takes it, else `None`.
-    fn accept(&self, signature: &Signature, present: &HashSet<String>) -> Option<MatchScore> {
+    /// `waive_shape` is asked only when the shape gate alone would reject
+    /// the candidate (see [`scan_in`]).
+    fn accept(
+        &self,
+        signature: &Signature,
+        present: &HashSet<String>,
+        waive_shape: &dyn Fn() -> bool,
+    ) -> Option<MatchScore> {
         if self.required_weight <= 0.0 {
             let result = compare_with_keys(signature, &self.keys, present);
             return accepts(signature, &result).then_some(result);
@@ -379,7 +386,7 @@ impl ScanKeys {
                 }
                 agrees.iter().filter(|agrees| **agrees).count() as f64 / self.dimensions as f64
             };
-            if agreement < MIN_SHAPE_AGREEMENT {
+            if agreement < MIN_SHAPE_AGREEMENT && !waive_shape() {
                 return None;
             }
         }
@@ -578,6 +585,7 @@ pub fn scan_candidates<S: ByteSource + ?Sized>(
         None,
         None,
         budget,
+        None,
     )
 }
 
@@ -943,6 +951,30 @@ pub fn scan_in<S: ByteSource + ?Sized>(
         context.prepare_frequencies(source, hints);
     }
     let hits = anchor_hits(source, signature);
+    let signature_neighbours: HashSet<&str> =
+        signature.neighbours.iter().map(String::as_str).collect();
+    // Hint-free, a candidate of a low-information signature that fails only
+    // the shape gate is still offered when it shares one of the signature's
+    // neighbour keys: across compilers and levels the shape buckets are what
+    // changes, while the strings and constants of the callers and callees
+    // stay. The neighbour gates below then treat it like any match with
+    // shared neighbour evidence. It must also reach
+    // `MIN_WAIVED_SHAPE_SIMILARITY`.
+    let shares_neighbour = |start: u64, similarity: f64| {
+        similarity >= MIN_WAIVED_SHAPE_SIMILARITY
+            && context
+                .neighbour_keys(source, start, hints)
+                .iter()
+                .any(|key| signature_neighbours.contains(key.as_str()))
+    };
+    // Like the other hint-free gates, only on images large enough for
+    // frequencies (the gates that follow need them).
+    let gated = !hints
+        && context.frequencies[usize::from(hints)]
+            .get_or_init(|| Frequencies::build(source, &context.features, hints))
+            .is_some();
+    let waiver: Option<&dyn Fn(u64, f64) -> bool> =
+        (gated && !signature_neighbours.is_empty()).then_some(&shares_neighbour);
     let matches = scan_candidates_with(
         source,
         signature,
@@ -954,6 +986,7 @@ pub fn scan_in<S: ByteSource + ?Sized>(
         Some(&context.code),
         Some(&context.features),
         None,
+        waiver,
     );
     // Image-relative specificity: a match made only of features that many of
     // this image's functions carry (common imports, boilerplate constants,
@@ -977,8 +1010,6 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     let Some(frequencies) = frequencies else {
         return matches;
     };
-    let signature_neighbours: HashSet<&str> =
-        signature.neighbours.iter().map(String::as_str).collect();
     let mut kept: Vec<Match> = matches
         .into_iter()
         .filter(|found| found.similarity >= MIN_SIMILARITY)
@@ -1028,6 +1059,20 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     });
     kept
 }
+
+/// Similarity a hint-free candidate needs when a shared neighbour key, not
+/// shape agreement, corroborates a low-information signature ([`scan_in`]).
+/// Simulated on the stripped real corpus (`bench --fp-report`, x64 + arm64,
+/// `--max-functions 4`, every waived match logged): with no floor, top-1
+/// hits same arch cross opt 293 -> 327, other compiler 98 -> 112, other arch
+/// 956 -> 1050, but identified precision 0.976 -> 0.972 (7 of 70 waived
+/// answers wrong, all below 0.39) and one more hint-free FP signature (a
+/// two-hop `0x7fffffff`). 0.3: 317 / 106 / 1011, precision 0.972, FP
+/// unchanged; 0.35: 313 / 102 / 1001, 0.974; 0.4: 307 / 100 / 988, 0.976,
+/// FP unchanged; 0.45: 305 / 100 / 979. Hop-1 keys only cost hits at every
+/// floor and, from 0.3 up, changed nothing else. 0.4 is the lowest floor
+/// that keeps precision; the bench confirmed the simulated 0.4 numbers.
+pub const MIN_WAIVED_SHAPE_SIMILARITY: f64 = 0.4;
 
 /// Prefix of a matched neighbour key in [`Match::matched`].
 pub const NEIGHBOUR_PREFIX: &str = "near:";
@@ -1328,6 +1373,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
     code: Option<&CodeIndex>,
     cache: Option<&FeatureCache>,
     budget: Option<&mut RecoveryBudget>,
+    shape_waiver: Option<&dyn Fn(u64, f64) -> bool>,
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
@@ -1347,7 +1393,12 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
         let Some(candidate) = candidate else {
             continue;
         };
-        if let Some(result) = keys.accept(signature, &candidate.keys) {
+        let waive = || {
+            shape_waiver.is_some_and(|waiver| {
+                waiver(candidate.start, similarity(signature, &candidate.weighted))
+            })
+        };
+        if let Some(result) = keys.accept(signature, &candidate.keys, &waive) {
             matches.push(Match {
                 address: candidate.start,
                 end: candidate.end,
@@ -1660,6 +1711,7 @@ pub fn self_test_in<S: ByteSource + ?Sized>(
         references,
         code,
         Some(&context.features),
+        None,
         None,
     );
     if let Some(found) = matches.iter().find(|item| item.address == start) {

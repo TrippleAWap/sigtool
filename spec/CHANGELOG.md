@@ -14,6 +14,15 @@ records and need the bump before release.
   hint-free on the stripped real corpus (`--max-functions 4`, ARM32 + Thumb
   cells only): same arch other compiler 0.208 -> 0.263, cross opt 0.202 ->
   0.259, same build 0.796 -> 0.833, ARM32<->Thumb same build 0.404 -> 0.458.
+* Hint-free acceptance (SPEC.md §8): a low-information signature's
+  candidate that fails only shape corroboration is accepted when it shares
+  a neighbour key and reaches similarity 0.4. Simulated on a `bench
+  --fp-report` dump (x64 + arm64, every waived match logged): top-1 same
+  arch cross opt 293 -> 307, other compiler 98 -> 100, other arch 956 ->
+  988, identified precision 0.976 -> 0.976, hint-free FP signatures
+  unchanged. Lost: no floor (+34 / +14 / +94 hits, but precision 0.972 and
+  one more FP signature on a two-hop `0x7fffffff`), 0.3 (precision 0.972),
+  0.35 (0.974), hop-1 neighbour keys only (fewer hits at every floor).
 
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 

@@ -484,7 +484,13 @@ unwind-table functions), a hint-free match must also pass:
   at least 6 matched features, unless they share a neighbour key;
 * a shape-only match that shares none of the signature's neighbour keys is
   rejected when the signature has at least 2 of them;
-* a shape-only match needs similarity at least 0.3.
+* a shape-only match needs similarity at least 0.3;
+* a candidate of a low-information signature that fails only shape
+  corroboration is still accepted when it shares a neighbour key with the
+  signature and its similarity is at least 0.4: across compilers and
+  optimization levels the shape buckets change, the evidence of callers and
+  callees does not. The gates above then apply as to any match sharing a
+  neighbour key.
 
 **Hinted acceptance.** On an image with at least 32 known function starts, a
 hinted match that is shape-only needs at least 6 matched features and
