@@ -100,6 +100,23 @@ fn dropped_constants<S: ByteSource + ?Sized>(
     out.into_iter().collect()
 }
 
+/// Unbucketed shape: op-class counts and CFG sizes, for simulating other
+/// bucketings and class mappings offline.
+fn raw_shape(recovered: &RecoveredFunction) -> Value {
+    let mut ops: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for insn in recovered.blocks.iter().flat_map(|b| b.insns.iter()) {
+        if insn.kind != Kind::Ignored {
+            *ops.entry(insn.op.as_str()).or_insert(0) += 1;
+        }
+    }
+    json!({
+        "ops": ops,
+        "blocks": recovered.block_count(),
+        "edges": recovered.edge_count(),
+        "loops": recovered.loop_count(),
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let corpus = Path::new(&args[0]);
@@ -173,9 +190,12 @@ fn main() {
         };
         let signature = result.signature;
         let source_callees = callee_evidence(&image.source, &contexts[*i].0, *start, true);
-        let source_dropped = recover(&image.source, *start, None, true)
-            .map(|r| dropped_constants(&image.source, &r))
+        let source_recovered = recover(&image.source, *start, None, true).ok();
+        let source_dropped = source_recovered
+            .as_ref()
+            .map(|r| dropped_constants(&image.source, r))
             .unwrap_or_default();
+        let source_shape = source_recovered.as_ref().map(raw_shape);
         let features: Vec<Value> = signature
             .features
             .iter()
@@ -237,6 +257,8 @@ fn main() {
                     "src_dropped": source_dropped,
                     "dst_dropped": dropped_constants(&target.stripped, &recovered),
                     "dst_neighbours": target_neighbours,
+                    "src_shape": source_shape,
+                    "dst_shape": raw_shape(&recovered),
                 })
                 .to_string(),
             );
