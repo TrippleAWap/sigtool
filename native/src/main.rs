@@ -35,7 +35,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::Value;
 
 use sigtool_native::db::{DbView, MappedDb, SignatureDb};
@@ -58,7 +58,6 @@ const EXIT_SELF_TEST: u8 = 4;
 #[derive(Parser)]
 #[command(
     name = "sigtool-native",
-    version,
     about = "Native scanner for sigtool feature signatures",
     disable_help_subcommand = true
 )]
@@ -303,8 +302,22 @@ impl CliError {
     }
 }
 
+/// `--version` names the spec version too: a front-end shipped beside the
+/// binary (the IDA plugin) checks it to warn about a stale or mismatched copy.
+fn version_line() -> String {
+    format!(
+        "{} (spec {})",
+        env!("CARGO_PKG_VERSION"),
+        sigtool_native::spec::SPEC_VERSION
+    )
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // The version string is built at runtime, so clap gets it here rather
+    // than from the derive attribute.
+    let version: &'static str = Box::leak(version_line().into_boxed_str());
+    let matches = Cli::command().version(version).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let result = match cli.command {
         Command::Gen(args) => run_gen(args),
         Command::Locate(args) => run_locate(args),

@@ -5,7 +5,9 @@ plain Python: ``python -m unittest tests/test_ida_plugin.py``."""
 from __future__ import annotations
 
 import importlib
+import re
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -143,6 +145,111 @@ class ChooseRenamesTests(unittest.TestCase):
         self.assertEqual(plugin._chosen(-1), [])
         self.assertEqual(plugin._chosen(2), [2])
         self.assertEqual(plugin._chosen([0, 3]), [0, 3])
+
+
+class RenameBlockerTests(unittest.TestCase):
+    def blocker(self, start, is_code=True, created=None):
+        calls = []
+
+        def add():
+            calls.append(True)
+            return created
+
+        return plugin.rename_blocker(0x200, start, is_code, add), calls
+
+    def test_existing_function_start_is_renamed_without_creating(self):
+        self.assertEqual(self.blocker(0x200), (None, []))
+
+    def test_mid_function_is_skipped(self):
+        reason, calls = self.blocker(0x180)
+        self.assertEqual(reason, "+0x200 is inside the function at +0x180")
+        self.assertEqual(calls, [])
+
+    def test_data_is_skipped_without_creating(self):
+        reason, calls = self.blocker(None, is_code=False, created=0x200)
+        self.assertIn("no function at +0x200", reason)
+        self.assertEqual(calls, [])
+
+    def test_code_needs_a_function_created_at_the_address(self):
+        self.assertEqual(self.blocker(None, created=0x200), (None, [True]))
+        for created in (None, 0x1F0):
+            reason, _ = self.blocker(None, created=created)
+            self.assertIn("could not create", reason)
+
+
+class ProvenanceTests(unittest.TestCase):
+    def proposal(self):
+        return plugin.Proposal(0x200, "inflate", 0.91234, "identified", "sub_200", "abc123")
+
+    def test_comment_is_appended_once(self):
+        first = plugin.provenance_comment("", self.proposal(), "zlib.db")
+        self.assertEqual(
+            first, "sigtool: inflate from zlib.db (signature abc123, score 0.912, identified)"
+        )
+        self.assertEqual(plugin.provenance_comment(first, self.proposal(), "zlib.db"), first)
+        kept = plugin.provenance_comment("analyst note\n", self.proposal(), "zlib.db")
+        self.assertEqual(kept, f"analyst note\n{first}")
+
+    def test_proposals_carry_the_signature_id(self):
+        proposals, _ = choose([hit("inflate", 0x200, signature_id="sig-1")])
+        self.assertEqual(proposals[0].signature_id, "sig-1")
+
+
+class MatchRowTests(unittest.TestCase):
+    def test_rows_map_rvas_through_the_idb_base(self):
+        rows = plugin.match_rows(
+            [
+                {
+                    "address": "0x1200",
+                    "rva": "0x200",
+                    "score": 0.91234,
+                    "evidence": "identified",
+                    "label": "inflate",
+                    "matched": ["str:a", "const:b"],
+                },
+                {"address": "0x9000", "score": 0.5, "evidence": "candidate", "label": None},
+            ],
+            base=0x140000000,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].ea, 0x140000200)
+        self.assertEqual(rows[0].cells, ("0x140000200", "0.912", "identified", "inflate", "2"))
+
+
+class NativeDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def find(self, environ=None, on_path=None, windows=True):
+        return plugin.find_native(environ or {}, self.dir, lambda _name: on_path, windows)
+
+    def test_override_wins(self):
+        (self.dir / "sigtool-native.exe").write_bytes(b"")
+        self.assertEqual(self.find({"SIGTOOL_NATIVE": "C:/x.exe"}, "C:/path.exe"), "C:/x.exe")
+
+    def test_bundled_copy_beats_path(self):
+        (self.dir / "sigtool-native.exe").write_bytes(b"")
+        self.assertEqual(self.find(on_path="C:/stale.exe"), str(self.dir / "sigtool-native.exe"))
+        self.assertEqual(self.find(on_path="/usr/bin/x", windows=False), "/usr/bin/x")
+
+    def test_path_then_error(self):
+        self.assertEqual(self.find(on_path="C:/path.exe"), "C:/path.exe")
+        with self.assertRaises(plugin.SigtoolError):
+            self.find()
+
+    def test_version_problem(self):
+        expected = plugin.EXPECTED_SPEC_VERSION
+        self.assertIsNone(plugin.version_problem(f"sigtool-native 0.1.0 (spec {expected})\n"))
+        self.assertIn("expects spec", plugin.version_problem("sigtool-native 0.1.0 (spec 99)"))
+        self.assertIn("does not report", plugin.version_problem("sigtool-native 0.1.0"))
+
+    def test_expected_spec_matches_the_crate(self):
+        spec = (Path(__file__).resolve().parent.parent / "native" / "src" / "spec.rs").read_text()
+        match = re.search(r'pub const SPEC_VERSION: &str = "([^"]+)";', spec)
+        self.assertIsNotNone(match)
+        self.assertEqual(plugin.EXPECTED_SPEC_VERSION, match.group(1))
 
 
 if __name__ == "__main__":

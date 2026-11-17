@@ -730,3 +730,17 @@ fn db_build_signs_a_function_list_and_scan_reports_rvas() {
     );
     assert_eq!(best.unwrap()["evidence"], "identified", "{hits}");
 }
+
+#[test]
+fn version_names_the_spec_version() {
+    // The IDA plugin parses this line to warn about a mismatched binary.
+    let text = run(&["--version"]);
+    assert_eq!(
+        text.trim(),
+        format!(
+            "sigtool-native {} (spec {})",
+            env!("CARGO_PKG_VERSION"),
+            sigtool_native::spec::SPEC_VERSION
+        )
+    );
+}

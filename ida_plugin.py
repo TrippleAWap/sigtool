@@ -9,8 +9,13 @@ RVAs (``ea - imagebase``), which keeps rebased databases correct.
 Install (IDA 8.4+ / 9.x, Python 3.10+, no extra packages):
 
     cargo build --release --manifest-path native/Cargo.toml
-    # put native/target/release/sigtool-native on PATH, or set SIGTOOL_NATIVE
-    # to its full path, then copy this file into %IDAUSR%/plugins
+    # copy this file into %IDAUSR%/plugins and native/target/release/sigtool-native
+    # next to it (or on PATH, or set SIGTOOL_NATIVE to its full path)
+
+The binary is looked up as ``SIGTOOL_NATIVE``, then next to this file (where a
+packaged release puts it), then PATH. On first use the plugin runs
+``sigtool-native --version`` and warns when it writes another signature spec
+than this plugin expects.
 
 Actions land under Edit > Plugins and on the right-click menus of the
 disassembly and Functions views:
@@ -75,6 +80,10 @@ APPLY_LABEL = "sigtool: apply names from a DB"
 # so a pathological input cannot hang the IDA UI thread forever. Whole-IDB
 # runs have no fixed bound; they show a wait box with a cancel button instead.
 TIMEOUT_SECONDS = 300
+# The signature spec this plugin was released with (native/src/spec.rs
+# SPEC_VERSION; a unit test keeps them equal). A CLI writing another spec
+# still runs, but its signatures and DBs will not load in a matching build.
+EXPECTED_SPEC_VERSION = "4"
 
 # Stubs this small (`ret`, `xor eax, eax; ret`, one AArch64 instruction) carry
 # no evidence a signature could match on; a five-byte x64 body still can,
@@ -148,6 +157,7 @@ class Proposal:
     score: float
     evidence: str
     current: str
+    signature_id: str = ""
 
 
 def choose_renames(
@@ -217,36 +227,159 @@ def choose_renames(
                 score=float(hit.get("score") or 0.0),
                 evidence=str(hit.get("evidence")),
                 current=current,
+                signature_id=str(hit.get("signature_id") or ""),
             )
         )
     return proposals, sorted(skipped)
 
 
+def rename_blocker(
+    rva: int,
+    function_start: int | None,
+    is_code: bool,
+    add_function: Callable[[], int | None],
+) -> str | None:
+    """Why the function at ``rva`` must not be renamed, or ``None`` to rename it.
+
+    ``function_start`` is the RVA of the IDB function containing ``rva`` (or
+    ``None``); ``add_function`` asks IDA to create one at ``rva`` and returns
+    its start RVA, or ``None`` when IDA refuses. A match is applied only to a
+    function starting exactly there, or to code IDA agrees to make one at:
+    a rename at data or mid-function would invent a function IDA never saw.
+    """
+    if function_start == rva:
+        return None
+    if function_start is not None:
+        return f"+{rva:#x} is inside the function at +{function_start:#x}"
+    if not is_code:
+        return f"no function at +{rva:#x} (not code in this IDB)"
+    if add_function() != rva:
+        return f"no function at +{rva:#x} (IDA could not create one there)"
+    return None
+
+
+def provenance_comment(existing: str, proposal: Proposal, source: str) -> str:
+    """``existing`` function comment plus a line recording where a rename came from.
+
+    The line names the signature, score, and evidence so a later reader can
+    tell a sigtool rename from an analyst's; applying the same DB twice does
+    not repeat it.
+    """
+    line = (
+        f"sigtool: {proposal.name} from {source} "
+        f"(signature {proposal.signature_id or '?'}, score {proposal.score:.3f}, "
+        f"{proposal.evidence})"
+    )
+    if line in existing.splitlines():
+        return existing
+    return f"{existing.rstrip()}\n{line}" if existing.strip() else line
+
+
+@dataclass(frozen=True)
+class Row:
+    """One chooser row: the address a double-click jumps to, and its cells."""
+
+    ea: int
+    cells: tuple[str, ...]
+
+
+def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
+    """Chooser rows for ``locate --json`` matches, best first.
+
+    A match maps back through its ``rva`` (the IDB may be rebased); one
+    without a module has no ``rva`` and cannot be placed, so it is dropped.
+    """
+    rows = []
+    for match in matches:
+        rva = match.get("rva")
+        if rva is None:
+            continue
+        ea = base + int(str(rva), 16)
+        rows.append(
+            Row(
+                ea=ea,
+                cells=(
+                    f"{ea:#x}",
+                    f"{float(match.get('score') or 0.0):.3f}",
+                    str(match.get("evidence") or ""),
+                    str(match.get("label") or ""),
+                    str(len(match.get("matched") or [])),
+                ),
+            )
+        )
+    return rows
+
+
 # -- CLI glue -----------------------------------------------------------------
 
 
-def _native() -> str:
-    configured = os.environ.get("SIGTOOL_NATIVE")
+def find_native(
+    environ: dict[str, str] | os._Environ,
+    plugin_dir: Path,
+    which: Callable[[str], str | None],
+    windows: bool,
+) -> str:
+    """Where ``sigtool-native`` is: ``SIGTOOL_NATIVE``, beside the plugin, PATH.
+
+    A packaged release ships the binary next to this file, and that copy is
+    the one built with this plugin; a stale copy on PATH must not win over it.
+    """
+    configured = environ.get("SIGTOOL_NATIVE")
     if configured:
         return configured
-    found = shutil.which("sigtool-native")
+    sibling = plugin_dir / ("sigtool-native.exe" if windows else "sigtool-native")
+    if sibling.is_file():
+        return str(sibling)
+    found = which("sigtool-native")
     if found:
         return found
-    sibling = Path(__file__).with_name(
-        "sigtool-native.exe" if os.name == "nt" else "sigtool-native"
+    raise SigtoolError(
+        "sigtool-native not found: put it next to ida_plugin.py, on PATH, "
+        "or set SIGTOOL_NATIVE to its full path"
     )
-    if sibling.exists():
-        return str(sibling)
-    raise SigtoolError("sigtool-native not found: put it on PATH or set SIGTOOL_NATIVE")
 
 
-def _run(*args: str) -> str:
-    result = subprocess.run(
-        [_native(), *args], capture_output=True, text=True, timeout=TIMEOUT_SECONDS
-    )
-    if result.returncode != 0:
-        raise SigtoolError(result.stderr.strip() or f"exit code {result.returncode}")
-    return result.stderr
+def version_problem(text: str, expected_spec: str = EXPECTED_SPEC_VERSION) -> str | None:
+    """Why ``sigtool-native --version`` output does not fit this plugin, or ``None``."""
+    match = re.search(r"\(spec ([^)\s]+)\)", text)
+    if match is None:
+        return (
+            f"{text.strip() or 'sigtool-native'} does not report a spec version "
+            f"(older than this plugin, which expects spec {expected_spec})"
+        )
+    if match.group(1) != expected_spec:
+        return (
+            f"{text.strip()} writes spec {match.group(1)}; this plugin expects spec {expected_spec}"
+        )
+    return None
+
+
+_native_checked: str | None = None
+
+
+def _native() -> str:
+    """The CLI path, checking its version the first time each path is used."""
+    global _native_checked
+    path = find_native(os.environ, Path(__file__).resolve().parent, shutil.which, os.name == "nt")
+    if path != _native_checked:
+        _native_checked = path
+        try:
+            result = subprocess.run(
+                [path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            problem = version_problem(result.stdout)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            _native_checked = None
+            raise SigtoolError(f"cannot run {path}: {error}") from error
+        ida_kernwin.msg(f"sigtool: using {path} ({result.stdout.strip()})\n")
+        if problem is not None:
+            ida_kernwin.msg(f"sigtool: warning: {problem}\n")
+            ida_kernwin.warning(f"sigtool: {problem}\n\nBinary: {path}")
+    return path
 
 
 def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = (0,)) -> str:
@@ -322,7 +455,9 @@ def _function_start(ea: int) -> int:
 
 
 def _save_yaml(text: str, suggested: str) -> str | None:
-    path = ida_kernwin.ask_file(True, "*.yaml", "Save signature as", suggested)
+    # ask_file takes (for_saving, mask or default file name, prompt); there is
+    # no separate default-name argument.
+    path = ida_kernwin.ask_file(True, suggested, "Save signature as")
     if not path:
         return None
     Path(path).write_text(text, encoding="utf-8")
@@ -345,6 +480,14 @@ def _has_user_name(ea: int) -> bool:
     return bool(ida_bytes.has_user_name(ida_bytes.get_flags(ea))) and is_meaningful_name(
         ida_name.get_ea_name(ea)
     )
+
+
+def _add_function(ea: int, base: int) -> int | None:
+    """Create a function at ``ea``; the RVA it starts at, or ``None``."""
+    if not ida_funcs.add_func(ea):
+        return None
+    function = ida_funcs.get_func(ea)
+    return None if function is None else int(function.start_ea) - base
 
 
 def _named_functions() -> list[dict[str, str]]:
@@ -395,8 +538,21 @@ class GenerateHandler(_Handler):
         rva = _rva(_function_start(int(ida_kernwin.get_screen_ea())))
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "signature.yaml"
-            report = _run(
-                "gen", "--file", image, "--rva", hex(rva), "--tool", "IDA", "--output", str(output)
+            # Signing builds the image's call graph first, which takes a while
+            # on a large image: run it behind the cancellable wait box.
+            report = _run_cancellable(
+                [
+                    "gen",
+                    "--file",
+                    image,
+                    "--rva",
+                    hex(rva),
+                    "--tool",
+                    "IDA",
+                    "--output",
+                    str(output),
+                ],
+                f"sigtool: signing the function at +{rva:#x}",
             )
             text = output.read_text(encoding="utf-8")
         ida_kernwin.info(report.strip())
@@ -423,7 +579,7 @@ class GenerateHandler(_Handler):
             arguments = ["merge", "--output", str(output)]
             for sample in samples:
                 arguments += ["--sample", sample]
-            report = _run(*arguments)
+            report = _run_cancellable(arguments, f"sigtool: merging {len(samples)} samples")
             text = output.read_text(encoding="utf-8")
         ida_kernwin.info(report.strip())
         merged_path = _save_yaml(text, f"{name}.merged.yaml")
@@ -432,38 +588,50 @@ class GenerateHandler(_Handler):
 
 
 class LocateHandler(_Handler):
-    """Scan this IDB's input file with a saved signature and jump to the best match."""
+    """Scan this IDB's input file with a saved signature and list the matches."""
 
     def run(self) -> None:
         signature = ida_kernwin.ask_file(False, "*.yaml;*.yml", "Signature file")
         if not signature:
             return
+        image = _input_file()
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "matches.json"
-            _run(
-                "locate",
-                "--signature",
-                signature,
-                "--file",
-                _input_file(),
-                "--json",
-                str(output),
-                "--yes",
+            # Exit 1 is "no accepted match"; the JSON is written either way.
+            _run_cancellable(
+                [
+                    "locate",
+                    "--signature",
+                    signature,
+                    "--file",
+                    image,
+                    "--json",
+                    str(output),
+                    "--yes",
+                ],
+                f"sigtool: locating {Path(signature).name} in this IDB",
+                ok_codes=(0, 1),
             )
-            result = json.loads(output.read_text(encoding="utf-8"))
-        matches = result.get("matches", [])
-        if not matches:
-            ida_kernwin.warning(f"sigtool: no match for {result.get('signature')!r} in this IDB")
+            result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+        name = str(result.get("signature") or Path(signature).stem)
+        rows = match_rows(result.get("matches", []), int(ida_nalt.get_imagebase()))
+        if not rows:
+            ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB")
             return
-        base = int(ida_nalt.get_imagebase())
-        lines = [f"{result.get('signature')}: {len(matches)} match(es)"]
-        for index, match in enumerate(matches, start=1):
-            ea = base + int(match["rva"], 16)
-            label = match.get("label") or "unlabelled"
-            evidence = match.get("evidence", "")
-            lines.append(f"{index}. {ea:#x} score {match['score']:.3f} {evidence} {label}")
-        ida_kernwin.info("\n".join(lines))
-        ida_kernwin.jumpto(base + int(matches[0]["rva"], 16))
+        for row in rows:
+            ida_kernwin.msg(f"sigtool: {name}: {' '.join(row.cells)}\n")
+        show_results(
+            f"sigtool: matches for {name}",
+            [
+                ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
+                ["Score", 8],
+                ["Evidence", 10],
+                ["Label", 32],
+                ["Matched", 8],
+            ],
+            rows,
+        )
+        ida_kernwin.jumpto(rows[0].ea)
 
 
 class SignAllHandler(_Handler):
@@ -480,7 +648,7 @@ class SignAllHandler(_Handler):
             != 1
         ):
             return
-        path = ida_kernwin.ask_file(True, "*.db", "Save signatures DB as", f"{Path(image).stem}.db")
+        path = ida_kernwin.ask_file(True, f"{Path(image).stem}.db", "Save signatures DB as")
         if not path:
             return
         with tempfile.TemporaryDirectory() as temp:
@@ -512,8 +680,55 @@ class SignAllHandler(_Handler):
         ida_kernwin.info(f"{summarize_build(report)}\n\nDB: {path}")
 
 
+class ResultChooser(ida_kernwin.Choose):
+    """A non-modal list of addresses; Enter or a double-click jumps to the row."""
+
+    def __init__(self, title: str, columns: list[list], rows: list[Row]) -> None:
+        super().__init__(title, columns)
+        self.rows = rows
+
+    def OnGetSize(self) -> int:
+        return len(self.rows)
+
+    def OnGetLine(self, n: int) -> list[str]:
+        return list(self.rows[n].cells)
+
+    def OnGetEA(self, n: int) -> int:
+        return self.rows[n].ea
+
+    def OnSelectLine(self, n):
+        index = n[0] if isinstance(n, list) else n
+        if 0 <= index < len(self.rows):
+            ida_kernwin.jumpto(self.rows[index].ea)
+        return (ida_kernwin.Choose.NOTHING_CHANGED,)
+
+    def OnClose(self) -> None:
+        # A replaced chooser may report its close after the new one opened.
+        if _OPEN_CHOOSERS.get(self.title) is self:
+            del _OPEN_CHOOSERS[self.title]
+
+
+# A non-modal chooser lives on after its action returns; holding it here keeps
+# Python from collecting it while the window is open.
+_OPEN_CHOOSERS: dict[str, ResultChooser] = {}
+
+
+def show_results(title: str, columns: list[list], rows: list[Row]) -> None:
+    """Open ``rows`` in a non-modal chooser, replacing one with the same title.
+
+    IDA reactivates an open chooser of the same title instead of showing new
+    rows, so the old one is closed first.
+    """
+    previous = _OPEN_CHOOSERS.pop(title, None)
+    if previous is not None:
+        previous.Close()
+    chooser = ResultChooser(title, columns, rows)
+    _OPEN_CHOOSERS[title] = chooser
+    chooser.Show()
+
+
 class RenameChooser(ida_kernwin.Choose):
-    """The proposed renames; the selected rows are applied."""
+    """The proposed renames, all selected; the rows still selected are applied."""
 
     def __init__(self, proposals: list[Proposal], base: int) -> None:
         super().__init__(
@@ -525,7 +740,7 @@ class RenameChooser(ida_kernwin.Choose):
                 ["Score", 8],
                 ["Evidence", 10],
             ],
-            flags=ida_kernwin.Choose.CH_MULTI | ida_kernwin.Choose.CH_MODAL,
+            flags=ida_kernwin.Choose.CH_MULTI,
             deflt=list(range(len(proposals))),
         )
         self.items = [
@@ -538,6 +753,7 @@ class RenameChooser(ida_kernwin.Choose):
             ]
             for item in proposals
         ]
+        self.selection: list[int] = []
 
     def OnGetSize(self) -> int:
         return len(self.items)
@@ -545,9 +761,21 @@ class RenameChooser(ida_kernwin.Choose):
     def OnGetLine(self, n: int) -> list[str]:
         return self.items[n]
 
+    def OnSelectLine(self, n):
+        # A modal multi-select chooser hands the confirmed rows to this
+        # callback; Show() itself returns one index (or < 0 on cancel).
+        self.selection = _chosen(n)
+        return (ida_kernwin.Choose.NOTHING_CHANGED,)
+
+    def ask(self) -> list[int]:
+        """Show the chooser modally: the confirmed rows, or none on cancel."""
+        if self.Show(modal=True) < 0:
+            return []
+        return self.selection
+
 
 def _chosen(selection) -> list[int]:
-    """Normalize what a modal multi-select chooser returns across IDA versions."""
+    """Normalize a chooser selection (one index or a list of them)."""
     if selection is None:
         return []
     if isinstance(selection, int):
@@ -611,21 +839,61 @@ class ApplyNamesHandler(_Handler):
                 "see the Output window)"
             )
             return
-        chosen = _chosen(RenameChooser(proposals, base).show())
-        renamed = 0
+        chosen = RenameChooser(proposals, base).ask()
+        source = Path(db).name
+        rows = []
         for index in chosen:
             item = proposals[index]
             ea = base + item.rva
-            if ida_funcs.get_func(ea) is None:
-                ida_funcs.add_func(ea)
+            function = ida_funcs.get_func(ea)
+            problem = rename_blocker(
+                item.rva,
+                None if function is None else int(function.start_ea) - base,
+                bool(ida_bytes.is_code(ida_bytes.get_flags(ea))),
+                lambda ea=ea: _add_function(ea, base),
+            )
+            if problem is not None:
+                ida_kernwin.msg(f"sigtool: not renaming {item.name}: {problem}\n")
+                continue
             # SN_NOCHECK replaces characters IDA does not allow in names (a
             # name from another toolchain's mangling) instead of failing.
-            if ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
-                renamed += 1
-            else:
+            if not ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
                 ida_kernwin.msg(f"sigtool: IDA refused to rename {ea:#x} to {item.name}\n")
-        ida_kernwin.msg(f"sigtool: renamed {renamed} of {len(proposals)} proposed functions\n")
+                continue
+            function = ida_funcs.get_func(ea)
+            if function is not None:
+                # A regular, not repeatable, comment: it stays on the function
+                # instead of repeating at every call site.
+                existing = ida_funcs.get_func_cmt(function, False) or ""
+                ida_funcs.set_func_cmt(function, provenance_comment(existing, item, source), False)
+            rows.append(
+                Row(
+                    ea=ea,
+                    cells=(
+                        f"{ea:#x}",
+                        item.current,
+                        item.name,
+                        f"{item.score:.3f}",
+                        item.evidence,
+                        item.signature_id,
+                    ),
+                )
+            )
+        ida_kernwin.msg(f"sigtool: renamed {len(rows)} of {len(proposals)} proposed functions\n")
         ida_kernwin.refresh_idaview_anyway()
+        if rows:
+            show_results(
+                f"sigtool: renamed from {source}",
+                [
+                    ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
+                    ["Old name", 24],
+                    ["New name", 32],
+                    ["Score", 8],
+                    ["Evidence", 10],
+                    ["Signature", 20],
+                ],
+                rows,
+            )
 
 
 ACTIONS = (
@@ -665,9 +933,9 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
             ida_kernwin.register_action(
                 ida_kernwin.action_desc_t(action, label, handler(), hotkey or None)
             )
-            ida_kernwin.attach_action_to_menu(
-                f"Edit/Plugins/{label}", action, ida_kernwin.SETMENU_APP
-            )
+            # The path names the submenu (trailing slash); a path ending in
+            # an item name means "next to that item", and ours do not exist.
+            ida_kernwin.attach_action_to_menu("Edit/Plugins/", action, ida_kernwin.SETMENU_APP)
         self._hooks = PopupHooks()
         self._hooks.hook()
         return ida_idaapi.PLUGIN_KEEP
