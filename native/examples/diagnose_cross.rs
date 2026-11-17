@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 use sigtool_native::elf::FileSource;
 use sigtool_native::features::{const_words, extract, string_at, FeatureKind};
 use sigtool_native::generate::generate_in;
-use sigtool_native::matcher::{accepts, compare_keys, explain_candidates, similarity, ScanContext};
+use sigtool_native::matcher::{
+    accepts_on, compare_keys, cross_isa, explain_candidates, similarity, ScanContext,
+};
 use sigtool_native::normalize::Kind;
 use sigtool_native::recover::recover;
 use sigtool_native::recover::RecoveredFunction;
@@ -220,7 +222,11 @@ fn main() {
                 .map(|item| (item.key(), item.weight))
                 .collect();
             let score = compare_keys(&signature, &candidate_keys);
-            let accepted = accepts(&signature, &score);
+            let accepted = accepts_on(
+                &signature,
+                &score,
+                cross_isa(&signature, target.stripped.arch()),
+            );
             let in_candidates = explain_candidates(&target.stripped, &signature, context, false)
                 .contains(true_start);
             let neighbours: HashSet<&str> =
