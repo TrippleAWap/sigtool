@@ -147,6 +147,27 @@ class ChooseRenamesTests(unittest.TestCase):
         self.assertEqual(plugin._chosen([0, 3]), [0, 3])
 
 
+class MatchRowTests(unittest.TestCase):
+    def test_rows_map_rvas_through_the_idb_base(self):
+        rows = plugin.match_rows(
+            [
+                {
+                    "address": "0x1200",
+                    "rva": "0x200",
+                    "score": 0.91234,
+                    "evidence": "identified",
+                    "label": "inflate",
+                    "matched": ["str:a", "const:b"],
+                },
+                {"address": "0x9000", "score": 0.5, "evidence": "candidate", "label": None},
+            ],
+            base=0x140000000,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].ea, 0x140000200)
+        self.assertEqual(rows[0].cells, ("0x140000200", "0.912", "identified", "inflate", "2"))
+
+
 class NativeDiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

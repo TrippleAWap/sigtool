@@ -231,6 +231,41 @@ def choose_renames(
     return proposals, sorted(skipped)
 
 
+@dataclass(frozen=True)
+class Row:
+    """One chooser row: the address a double-click jumps to, and its cells."""
+
+    ea: int
+    cells: tuple[str, ...]
+
+
+def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
+    """Chooser rows for ``locate --json`` matches, best first.
+
+    A match maps back through its ``rva`` (the IDB may be rebased); one
+    without a module has no ``rva`` and cannot be placed, so it is dropped.
+    """
+    rows = []
+    for match in matches:
+        rva = match.get("rva")
+        if rva is None:
+            continue
+        ea = base + int(str(rva), 16)
+        rows.append(
+            Row(
+                ea=ea,
+                cells=(
+                    f"{ea:#x}",
+                    f"{float(match.get('score') or 0.0):.3f}",
+                    str(match.get("evidence") or ""),
+                    str(match.get("label") or ""),
+                    str(len(match.get("matched") or [])),
+                ),
+            )
+        )
+    return rows
+
+
 # -- CLI glue -----------------------------------------------------------------
 
 
@@ -301,15 +336,6 @@ def _native() -> str:
             ida_kernwin.msg(f"sigtool: warning: {problem}\n")
             ida_kernwin.warning(f"sigtool: {problem}\n\nBinary: {path}")
     return path
-
-
-def _run(*args: str) -> str:
-    result = subprocess.run(
-        [_native(), *args], capture_output=True, text=True, timeout=TIMEOUT_SECONDS
-    )
-    if result.returncode != 0:
-        raise SigtoolError(result.stderr.strip() or f"exit code {result.returncode}")
-    return result.stderr
 
 
 def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = (0,)) -> str:
@@ -385,7 +411,9 @@ def _function_start(ea: int) -> int:
 
 
 def _save_yaml(text: str, suggested: str) -> str | None:
-    path = ida_kernwin.ask_file(True, "*.yaml", "Save signature as", suggested)
+    # ask_file takes (for_saving, mask or default file name, prompt); there is
+    # no separate default-name argument.
+    path = ida_kernwin.ask_file(True, suggested, "Save signature as")
     if not path:
         return None
     Path(path).write_text(text, encoding="utf-8")
@@ -458,8 +486,21 @@ class GenerateHandler(_Handler):
         rva = _rva(_function_start(int(ida_kernwin.get_screen_ea())))
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "signature.yaml"
-            report = _run(
-                "gen", "--file", image, "--rva", hex(rva), "--tool", "IDA", "--output", str(output)
+            # Signing builds the image's call graph first, which takes a while
+            # on a large image: run it behind the cancellable wait box.
+            report = _run_cancellable(
+                [
+                    "gen",
+                    "--file",
+                    image,
+                    "--rva",
+                    hex(rva),
+                    "--tool",
+                    "IDA",
+                    "--output",
+                    str(output),
+                ],
+                f"sigtool: signing the function at +{rva:#x}",
             )
             text = output.read_text(encoding="utf-8")
         ida_kernwin.info(report.strip())
@@ -486,7 +527,7 @@ class GenerateHandler(_Handler):
             arguments = ["merge", "--output", str(output)]
             for sample in samples:
                 arguments += ["--sample", sample]
-            report = _run(*arguments)
+            report = _run_cancellable(arguments, f"sigtool: merging {len(samples)} samples")
             text = output.read_text(encoding="utf-8")
         ida_kernwin.info(report.strip())
         merged_path = _save_yaml(text, f"{name}.merged.yaml")
@@ -495,38 +536,50 @@ class GenerateHandler(_Handler):
 
 
 class LocateHandler(_Handler):
-    """Scan this IDB's input file with a saved signature and jump to the best match."""
+    """Scan this IDB's input file with a saved signature and list the matches."""
 
     def run(self) -> None:
         signature = ida_kernwin.ask_file(False, "*.yaml;*.yml", "Signature file")
         if not signature:
             return
+        image = _input_file()
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "matches.json"
-            _run(
-                "locate",
-                "--signature",
-                signature,
-                "--file",
-                _input_file(),
-                "--json",
-                str(output),
-                "--yes",
+            # Exit 1 is "no accepted match"; the JSON is written either way.
+            _run_cancellable(
+                [
+                    "locate",
+                    "--signature",
+                    signature,
+                    "--file",
+                    image,
+                    "--json",
+                    str(output),
+                    "--yes",
+                ],
+                f"sigtool: locating {Path(signature).name} in this IDB",
+                ok_codes=(0, 1),
             )
-            result = json.loads(output.read_text(encoding="utf-8"))
-        matches = result.get("matches", [])
-        if not matches:
-            ida_kernwin.warning(f"sigtool: no match for {result.get('signature')!r} in this IDB")
+            result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+        name = str(result.get("signature") or Path(signature).stem)
+        rows = match_rows(result.get("matches", []), int(ida_nalt.get_imagebase()))
+        if not rows:
+            ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB")
             return
-        base = int(ida_nalt.get_imagebase())
-        lines = [f"{result.get('signature')}: {len(matches)} match(es)"]
-        for index, match in enumerate(matches, start=1):
-            ea = base + int(match["rva"], 16)
-            label = match.get("label") or "unlabelled"
-            evidence = match.get("evidence", "")
-            lines.append(f"{index}. {ea:#x} score {match['score']:.3f} {evidence} {label}")
-        ida_kernwin.info("\n".join(lines))
-        ida_kernwin.jumpto(base + int(matches[0]["rva"], 16))
+        for row in rows:
+            ida_kernwin.msg(f"sigtool: {name}: {' '.join(row.cells)}\n")
+        show_results(
+            f"sigtool: matches for {name}",
+            [
+                ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
+                ["Score", 8],
+                ["Evidence", 10],
+                ["Label", 32],
+                ["Matched", 8],
+            ],
+            rows,
+        )
+        ida_kernwin.jumpto(rows[0].ea)
 
 
 class SignAllHandler(_Handler):
@@ -543,7 +596,7 @@ class SignAllHandler(_Handler):
             != 1
         ):
             return
-        path = ida_kernwin.ask_file(True, "*.db", "Save signatures DB as", f"{Path(image).stem}.db")
+        path = ida_kernwin.ask_file(True, f"{Path(image).stem}.db", "Save signatures DB as")
         if not path:
             return
         with tempfile.TemporaryDirectory() as temp:
@@ -573,6 +626,53 @@ class SignAllHandler(_Handler):
                 ida_kernwin.msg(f"sigtool: {line}\n")
         ida_kernwin.msg(f"sigtool: wrote {path}\n")
         ida_kernwin.info(f"{summarize_build(report)}\n\nDB: {path}")
+
+
+class ResultChooser(ida_kernwin.Choose):
+    """A non-modal list of addresses; Enter or a double-click jumps to the row."""
+
+    def __init__(self, title: str, columns: list[list], rows: list[Row]) -> None:
+        super().__init__(title, columns)
+        self.rows = rows
+
+    def OnGetSize(self) -> int:
+        return len(self.rows)
+
+    def OnGetLine(self, n: int) -> list[str]:
+        return list(self.rows[n].cells)
+
+    def OnGetEA(self, n: int) -> int:
+        return self.rows[n].ea
+
+    def OnSelectLine(self, n):
+        index = n[0] if isinstance(n, list) else n
+        if 0 <= index < len(self.rows):
+            ida_kernwin.jumpto(self.rows[index].ea)
+        return (ida_kernwin.Choose.NOTHING_CHANGED,)
+
+    def OnClose(self) -> None:
+        # A replaced chooser may report its close after the new one opened.
+        if _OPEN_CHOOSERS.get(self.title) is self:
+            del _OPEN_CHOOSERS[self.title]
+
+
+# A non-modal chooser lives on after its action returns; holding it here keeps
+# Python from collecting it while the window is open.
+_OPEN_CHOOSERS: dict[str, ResultChooser] = {}
+
+
+def show_results(title: str, columns: list[list], rows: list[Row]) -> None:
+    """Open ``rows`` in a non-modal chooser, replacing one with the same title.
+
+    IDA reactivates an open chooser of the same title instead of showing new
+    rows, so the old one is closed first.
+    """
+    previous = _OPEN_CHOOSERS.pop(title, None)
+    if previous is not None:
+        previous.Close()
+    chooser = ResultChooser(title, columns, rows)
+    _OPEN_CHOOSERS[title] = chooser
+    chooser.Show()
 
 
 class RenameChooser(ida_kernwin.Choose):
@@ -728,9 +828,9 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
             ida_kernwin.register_action(
                 ida_kernwin.action_desc_t(action, label, handler(), hotkey or None)
             )
-            ida_kernwin.attach_action_to_menu(
-                f"Edit/Plugins/{label}", action, ida_kernwin.SETMENU_APP
-            )
+            # The path names the submenu (trailing slash); a path ending in
+            # an item name means "next to that item", and ours do not exist.
+            ida_kernwin.attach_action_to_menu("Edit/Plugins/", action, ida_kernwin.SETMENU_APP)
         self._hooks = PopupHooks()
         self._hooks.hook()
         return ida_idaapi.PLUGIN_KEEP
