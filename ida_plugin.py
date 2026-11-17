@@ -9,8 +9,13 @@ RVAs (``ea - imagebase``), which keeps rebased databases correct.
 Install (IDA 8.4+ / 9.x, Python 3.10+, no extra packages):
 
     cargo build --release --manifest-path native/Cargo.toml
-    # put native/target/release/sigtool-native on PATH, or set SIGTOOL_NATIVE
-    # to its full path, then copy this file into %IDAUSR%/plugins
+    # copy this file into %IDAUSR%/plugins and native/target/release/sigtool-native
+    # next to it (or on PATH, or set SIGTOOL_NATIVE to its full path)
+
+The binary is looked up as ``SIGTOOL_NATIVE``, then next to this file (where a
+packaged release puts it), then PATH. On first use the plugin runs
+``sigtool-native --version`` and warns when it writes another signature spec
+than this plugin expects.
 
 Actions land under Edit > Plugins and on the right-click menus of the
 disassembly and Functions views:
@@ -75,6 +80,10 @@ APPLY_LABEL = "sigtool: apply names from a DB"
 # so a pathological input cannot hang the IDA UI thread forever. Whole-IDB
 # runs have no fixed bound; they show a wait box with a cancel button instead.
 TIMEOUT_SECONDS = 300
+# The signature spec this plugin was released with (native/src/spec.rs
+# SPEC_VERSION; a unit test keeps them equal). A CLI writing another spec
+# still runs, but its signatures and DBs will not load in a matching build.
+EXPECTED_SPEC_VERSION = "4"
 
 # Stubs this small (`ret`, `xor eax, eax; ret`, one AArch64 instruction) carry
 # no evidence a signature could match on; a five-byte x64 body still can,
@@ -225,19 +234,73 @@ def choose_renames(
 # -- CLI glue -----------------------------------------------------------------
 
 
-def _native() -> str:
-    configured = os.environ.get("SIGTOOL_NATIVE")
+def find_native(
+    environ: dict[str, str] | os._Environ,
+    plugin_dir: Path,
+    which: Callable[[str], str | None],
+    windows: bool,
+) -> str:
+    """Where ``sigtool-native`` is: ``SIGTOOL_NATIVE``, beside the plugin, PATH.
+
+    A packaged release ships the binary next to this file, and that copy is
+    the one built with this plugin; a stale copy on PATH must not win over it.
+    """
+    configured = environ.get("SIGTOOL_NATIVE")
     if configured:
         return configured
-    found = shutil.which("sigtool-native")
+    sibling = plugin_dir / ("sigtool-native.exe" if windows else "sigtool-native")
+    if sibling.is_file():
+        return str(sibling)
+    found = which("sigtool-native")
     if found:
         return found
-    sibling = Path(__file__).with_name(
-        "sigtool-native.exe" if os.name == "nt" else "sigtool-native"
+    raise SigtoolError(
+        "sigtool-native not found: put it next to ida_plugin.py, on PATH, "
+        "or set SIGTOOL_NATIVE to its full path"
     )
-    if sibling.exists():
-        return str(sibling)
-    raise SigtoolError("sigtool-native not found: put it on PATH or set SIGTOOL_NATIVE")
+
+
+def version_problem(text: str, expected_spec: str = EXPECTED_SPEC_VERSION) -> str | None:
+    """Why ``sigtool-native --version`` output does not fit this plugin, or ``None``."""
+    match = re.search(r"\(spec ([^)\s]+)\)", text)
+    if match is None:
+        return (
+            f"{text.strip() or 'sigtool-native'} does not report a spec version "
+            f"(older than this plugin, which expects spec {expected_spec})"
+        )
+    if match.group(1) != expected_spec:
+        return (
+            f"{text.strip()} writes spec {match.group(1)}; this plugin expects spec {expected_spec}"
+        )
+    return None
+
+
+_native_checked: str | None = None
+
+
+def _native() -> str:
+    """The CLI path, checking its version the first time each path is used."""
+    global _native_checked
+    path = find_native(os.environ, Path(__file__).resolve().parent, shutil.which, os.name == "nt")
+    if path != _native_checked:
+        _native_checked = path
+        try:
+            result = subprocess.run(
+                [path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            problem = version_problem(result.stdout)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            _native_checked = None
+            raise SigtoolError(f"cannot run {path}: {error}") from error
+        ida_kernwin.msg(f"sigtool: using {path} ({result.stdout.strip()})\n")
+        if problem is not None:
+            ida_kernwin.msg(f"sigtool: warning: {problem}\n")
+            ida_kernwin.warning(f"sigtool: {problem}\n\nBinary: {path}")
+    return path
 
 
 def _run(*args: str) -> str:

@@ -5,7 +5,9 @@ plain Python: ``python -m unittest tests/test_ida_plugin.py``."""
 from __future__ import annotations
 
 import importlib
+import re
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -143,6 +145,42 @@ class ChooseRenamesTests(unittest.TestCase):
         self.assertEqual(plugin._chosen(-1), [])
         self.assertEqual(plugin._chosen(2), [2])
         self.assertEqual(plugin._chosen([0, 3]), [0, 3])
+
+
+class NativeDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def find(self, environ=None, on_path=None, windows=True):
+        return plugin.find_native(environ or {}, self.dir, lambda _name: on_path, windows)
+
+    def test_override_wins(self):
+        (self.dir / "sigtool-native.exe").write_bytes(b"")
+        self.assertEqual(self.find({"SIGTOOL_NATIVE": "C:/x.exe"}, "C:/path.exe"), "C:/x.exe")
+
+    def test_bundled_copy_beats_path(self):
+        (self.dir / "sigtool-native.exe").write_bytes(b"")
+        self.assertEqual(self.find(on_path="C:/stale.exe"), str(self.dir / "sigtool-native.exe"))
+        self.assertEqual(self.find(on_path="/usr/bin/x", windows=False), "/usr/bin/x")
+
+    def test_path_then_error(self):
+        self.assertEqual(self.find(on_path="C:/path.exe"), "C:/path.exe")
+        with self.assertRaises(plugin.SigtoolError):
+            self.find()
+
+    def test_version_problem(self):
+        expected = plugin.EXPECTED_SPEC_VERSION
+        self.assertIsNone(plugin.version_problem(f"sigtool-native 0.1.0 (spec {expected})\n"))
+        self.assertIn("expects spec", plugin.version_problem("sigtool-native 0.1.0 (spec 99)"))
+        self.assertIn("does not report", plugin.version_problem("sigtool-native 0.1.0"))
+
+    def test_expected_spec_matches_the_crate(self):
+        spec = (Path(__file__).resolve().parent.parent / "native" / "src" / "spec.rs").read_text()
+        match = re.search(r'pub const SPEC_VERSION: &str = "([^"]+)";', spec)
+        self.assertIsNotNone(match)
+        self.assertEqual(plugin.EXPECTED_SPEC_VERSION, match.group(1))
 
 
 if __name__ == "__main__":
