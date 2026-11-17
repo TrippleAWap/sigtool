@@ -16,6 +16,13 @@ scans before building).
   false hit matched without it. 87 of 173 signatures stay strong, with 1
   false positive (0.011); 3 identifying features keep 85 with none; 1
   changes nothing.
+* Unanchored matches (the signature has identifying required features, the
+  match holds none of them) need similarity 0.25 in both modes
+  (`matcher::MIN_UNANCHORED_SIMILARITY`). Simulated: hint-free any-verdict FP
+  0.154 -> 0.146, strong FP 0.040 -> 0.035 (0.011 -> 0.000 under the rule
+  above), hint-free top-1 3704 -> 3705, hinted 4177 -> 4176. 0.22-0.3 remove
+  the same false positives; 0.3 costs 8 hint-free top-1, 0.35 costs 15 / 27
+  for 3 more signatures, rejecting every unanchored match 107 / 102.
 
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
