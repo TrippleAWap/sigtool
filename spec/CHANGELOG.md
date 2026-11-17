@@ -1,5 +1,22 @@
 # Spec changelog
 
+## v5 (unreleased)
+
+Draft: `SPEC_VERSION` is still `4`; these entries are bumped together when
+v5 is cut. Measured on the tuning corpus only (`corpus/build-real`,
+`bench --max-functions 4 --fp-report`, simulated offline on the logged
+scans before building).
+
+### Trust (G3)
+
+* `strong` needs at least 2 required features that identify a function by
+  themselves (`validate::STRONG_MIN_IDENTIFYING`). All 7 strong signatures
+  with a corpus false positive had exactly one (a hash constant or an
+  in-image callee) beside `memset`/`memcpy` and the constants 0-5, and every
+  false hit matched without it. 87 of 173 signatures stay strong, with 1
+  false positive (0.011); 3 identifying features keep 85 with none; 1
+  changes nothing.
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,
