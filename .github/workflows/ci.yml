@@ -69,8 +69,11 @@ jobs:
       - name: Lint build scripts and the IDA plugin
         run: |
           python -m pip install ruff
-          python -m ruff format --check corpus tests/vectors ida_plugin.py
-          python -m ruff check corpus tests/vectors ida_plugin.py
+          python -m ruff format --check corpus tests/vectors tests/test_ida_plugin.py ida_plugin.py
+          python -m ruff check corpus tests/vectors tests/test_ida_plugin.py ida_plugin.py
+
+      - name: Test the IDA plugin's IDA-free parts
+        run: python -m unittest tests/test_ida_plugin.py
 
       - name: Build corpus
         run: python corpus/build.py

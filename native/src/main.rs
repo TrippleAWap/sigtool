@@ -16,6 +16,7 @@
 //! sigtool-native scan --file image.elf --db signatures.db
 //! sigtool-native merge --sample a.elf:0x1000 --sample b.elf:0x2c40 --name fn
 //! sigtool-native db build --signature fn.yaml --output signatures.db
+//! sigtool-native db build --file image.elf --functions names.json --output signatures.db
 //! ```
 //!
 //! The signature YAML goes to stdout (or `--output`) so it can be piped; the
@@ -212,8 +213,21 @@ enum DbCommand {
 #[derive(Args)]
 struct DbBuildArgs {
     /// Signature YAML file (repeatable)
-    #[arg(long, value_name = "FILE", required = true)]
+    #[arg(long, value_name = "FILE", required_unless_present = "functions")]
     signature: Vec<PathBuf>,
+    /// ELF or PE image whose --functions are signed into the DB
+    #[arg(long, value_name = "IMAGE", requires = "functions")]
+    file: Option<PathBuf>,
+    /// JSON list of functions to sign in --file, each as `gen --rva` would:
+    /// `[{"rva": "0x1130", "name": "top"}, ...]` (`name` optional)
+    #[arg(long, value_name = "FILE", requires = "file")]
+    functions: Option<PathBuf>,
+    /// Provenance only, for --functions: compiler or tool name
+    #[arg(long, requires = "functions")]
+    tool: Option<String>,
+    /// Write what happened to each of --functions as JSON
+    #[arg(long, value_name = "FILE", requires = "functions")]
+    report: Option<PathBuf>,
     /// Output database path
     #[arg(long, value_name = "DB")]
     output: PathBuf,
@@ -792,6 +806,15 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
                 Value::String(format!("0x{:x}", hit.address)),
             );
             entry.insert("end".to_string(), Value::String(format!("0x{:x}", hit.end)));
+            // As in `locate --json`: front-ends with a rebased view of the
+            // image (an IDB, a live process) map a hit back through the rva.
+            if let Some(module) = source.module_for(hit.address) {
+                entry.insert("module".to_string(), Value::String(module.name.clone()));
+                entry.insert(
+                    "rva".to_string(),
+                    Value::String(format!("0x{:x}", module.rva(hit.address))),
+                );
+            }
             entry.insert("score".to_string(), json_number(hit.score));
             entry.insert(
                 "evidence".to_string(),
@@ -832,6 +855,18 @@ fn run_db_build(args: DbBuildArgs) -> Result<u8, CliError> {
         db.push_yaml(&text)
             .map_err(|error| CliError::input(format!("{}: {error}", path.display())))?;
     }
+    if let (Some(image), Some(functions)) = (&args.file, &args.functions) {
+        let signed = sign_functions(
+            image,
+            functions,
+            args.tool.as_deref(),
+            args.report.as_deref(),
+        )?;
+        for signature in &signed {
+            db.push(signature)
+                .map_err(|error| CliError::input(error.to_string()))?;
+        }
+    }
     let bytes = db.encode();
     std::fs::write(&args.output, &bytes).map_err(|error| {
         CliError::input(format!("cannot write {}: {error}", args.output.display()))
@@ -844,6 +879,163 @@ fn run_db_build(args: DbBuildArgs) -> Result<u8, CliError> {
         sigtool_native::spec::SPEC_VERSION
     );
     Ok(EXIT_OK)
+}
+
+/// One entry of a `db build --functions` list.
+struct FunctionEntry {
+    rva: String,
+    name: Option<String>,
+}
+
+fn load_function_list(path: &Path) -> Result<Vec<FunctionEntry>, CliError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?;
+    let document: Value = serde_json::from_str(&text)
+        .map_err(|error| CliError::input(format!("{}: {error}", path.display())))?;
+    let Some(items) = document.as_array() else {
+        return Err(CliError::input(format!(
+            "{}: expected a JSON array of {{\"rva\": ..., \"name\": ...}}",
+            path.display()
+        )));
+    };
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let rva = match item.get("rva") {
+                Some(Value::String(text)) => text.clone(),
+                Some(Value::Number(number)) if number.is_u64() => {
+                    format!("0x{:x}", number.as_u64().unwrap_or_default())
+                }
+                _ => {
+                    return Err(CliError::input(format!(
+                        "{}: entry {index} needs an \"rva\" string or integer",
+                        path.display()
+                    )))
+                }
+            };
+            parse_address(&rva, "rva")?;
+            let name = match item.get("name") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(text)) if !text.is_empty() => Some(text.clone()),
+                Some(_) => {
+                    return Err(CliError::input(format!(
+                        "{}: entry {index} has a \"name\" that is not a non-empty string",
+                        path.display()
+                    )))
+                }
+            };
+            Ok(FunctionEntry { rva, name })
+        })
+        .collect()
+}
+
+/// Sign every function of a `--functions` list in one image, as `gen --file
+/// IMAGE --rva RVA --name NAME` would, sharing one scan context instead of
+/// one process and one image index per function. A function that cannot be
+/// signed (self-test refusal, unmapped RVA, undecodable code) is reported and
+/// skipped; the build fails only when nothing was signed.
+fn sign_functions(
+    image: &Path,
+    functions: &Path,
+    tool: Option<&str>,
+    report: Option<&Path>,
+) -> Result<Vec<Signature>, CliError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let entries = load_function_list(functions)?;
+    let source = load_file(image)?;
+    let context = ScanContext::build(&source);
+    let total = entries.len();
+    let done = AtomicUsize::new(0);
+    // Functions share only the context's caches, so they sign in parallel;
+    // results keep list order, so the report and the DB are deterministic.
+    let results: Vec<Result<GenerationResult, CliError>> =
+        sigtool_native::parallel::map(total, |index| {
+            let entry = &entries[index];
+            let result = resolve_address(&source, None, Some(&entry.rva), None).and_then(|addr| {
+                generate_in(
+                    &source,
+                    addr,
+                    entry.name.as_deref(),
+                    None,
+                    tool,
+                    None,
+                    None,
+                    Some(&context),
+                )
+                .map_err(classify_generate_error)
+            });
+            // Front-ends read these lines to show progress and allow cancel.
+            eprintln!(
+                "progress {}/{total}",
+                done.fetch_add(1, Ordering::Relaxed) + 1
+            );
+            result
+        });
+
+    let mut signed = Vec::new();
+    let mut rows = Vec::new();
+    for (entry, result) in entries.iter().zip(results) {
+        let mut row: BTreeMap<String, Value> = BTreeMap::new();
+        row.insert("rva".to_string(), Value::String(entry.rva.clone()));
+        row.insert(
+            "name".to_string(),
+            entry.name.clone().map(Value::String).unwrap_or(Value::Null),
+        );
+        match result {
+            Ok(result) => {
+                row.insert("status".to_string(), Value::String("signed".to_string()));
+                row.insert(
+                    "signature_id".to_string(),
+                    Value::String(result.signature.signature_id().unwrap_or_default()),
+                );
+                row.insert(
+                    "verdict".to_string(),
+                    Value::String(result.report.verdict.clone()),
+                );
+                row.insert(
+                    "confidence".to_string(),
+                    Value::String(result.signature.confidence.clone()),
+                );
+                signed.push(result.signature);
+            }
+            Err(error) => {
+                let status = match error.code {
+                    EXIT_SELF_TEST => "refused",
+                    EXIT_UNSUPPORTED => "unsupported",
+                    _ => "error",
+                };
+                eprintln!(
+                    "skipped {} {}: {}",
+                    entry.rva,
+                    entry.name.as_deref().unwrap_or("-"),
+                    error.message
+                );
+                row.insert("status".to_string(), Value::String(status.to_string()));
+                row.insert("error".to_string(), Value::String(error.message));
+            }
+        }
+        rows.push(Value::Object(row.into_iter().collect()));
+    }
+    let failed = total - signed.len();
+    if let Some(path) = report {
+        let mut document: BTreeMap<String, Value> = BTreeMap::new();
+        document.insert("signed".to_string(), Value::Number(signed.len().into()));
+        document.insert("failed".to_string(), Value::Number(failed.into()));
+        document.insert("functions".to_string(), Value::Array(rows));
+        write_json(path, &document)?;
+    }
+    eprintln!(
+        "signed {} of {total} functions ({failed} skipped)",
+        signed.len()
+    );
+    if signed.is_empty() && total > 0 {
+        return Err(CliError::input(
+            "no function in --functions could be signed",
+        ));
+    }
+    Ok(signed)
 }
 
 fn load_db_signatures(path: &Path) -> Result<Vec<Signature>, CliError> {

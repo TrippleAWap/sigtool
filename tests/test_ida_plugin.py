@@ -1,0 +1,149 @@
+"""Tests for the IDA-free parts of ida_plugin.py: name filtering, CLI output
+parsing, and choosing renames. IDA's modules are stubbed, so this runs with a
+plain Python: ``python -m unittest tests/test_ida_plugin.py``."""
+
+from __future__ import annotations
+
+import importlib
+import sys
+import types
+import unittest
+from pathlib import Path
+
+
+def _load_plugin():
+    for name in (
+        "ida_bytes",
+        "ida_funcs",
+        "ida_idaapi",
+        "ida_kernwin",
+        "ida_nalt",
+        "ida_name",
+        "ida_segment",
+        "idautils",
+    ):
+        sys.modules.setdefault(name, types.ModuleType(name))
+    kernwin = sys.modules["ida_kernwin"]
+    for base in ("action_handler_t", "Choose", "UI_Hooks"):
+        if not hasattr(kernwin, base):
+            setattr(kernwin, base, type(base, (), {}))
+    idaapi = sys.modules["ida_idaapi"]
+    if not hasattr(idaapi, "plugin_t"):
+        idaapi.plugin_t = type("plugin_t", (), {})
+        idaapi.PLUGIN_KEEP = 2
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    try:
+        return importlib.import_module("ida_plugin")
+    finally:
+        sys.path.pop(0)
+
+
+plugin = _load_plugin()
+
+
+def hit(name, rva, evidence="identified", score=0.9, signature_id=None):
+    return {
+        "signature_id": signature_id or f"id-{name}",
+        "name": name,
+        "rva": f"{rva:#x}",
+        "evidence": evidence,
+        "score": score,
+    }
+
+
+def choose(hits, names=None, user=(), overwrite=False):
+    names = names or {}
+    owners = {name: rva for rva, name in names.items()}
+    return plugin.choose_renames(
+        hits,
+        current_name=lambda rva: names.get(rva, f"sub_{rva:X}"),
+        user_named=lambda rva: rva in user,
+        name_owner=owners.get,
+        overwrite_user=overwrite,
+    )
+
+
+class NameTests(unittest.TestCase):
+    def test_auto_names_are_not_meaningful(self):
+        for name in ("", None, "sub_401000", "nullsub_3", "j_sub_401000", "unknown_libname_12"):
+            self.assertFalse(plugin.is_meaningful_name(name), name)
+        for name in ("_sub_401000", "?sub_1F00_1"):
+            self.assertFalse(plugin.is_meaningful_name(name), name)
+
+    def test_resolved_names_are_meaningful(self):
+        for name in ("inflate", "_ZN3foo3barEv", "lua_pushnumber", "submit", "sub_total"):
+            self.assertTrue(plugin.is_meaningful_name(name), name)
+
+    def test_progress_lines(self):
+        self.assertEqual(plugin.parse_progress("progress 3/40\n"), (3, 40))
+        self.assertIsNone(plugin.parse_progress("skipped 0x10 f: no"))
+
+    def test_build_summary_lists_skipped(self):
+        text = plugin.summarize_build(
+            {
+                "signed": 1,
+                "functions": [
+                    {"rva": "0x10", "name": "a", "status": "signed"},
+                    {"rva": "0x20", "name": "b", "status": "refused", "error": "self-test"},
+                ],
+            }
+        )
+        self.assertIn("signed 1 of 2", text)
+        self.assertIn("0x20 b: refused (self-test)", text)
+
+
+class ChooseRenamesTests(unittest.TestCase):
+    def test_first_identified_hit_per_signature_is_proposed(self):
+        proposals, skipped = choose(
+            [hit("inflate", 0x200, score=0.8), hit("inflate", 0x300, "candidate")]
+        )
+        self.assertEqual([(p.rva, p.name) for p in proposals], [(0x200, "inflate")])
+        self.assertEqual(proposals[0].current, "sub_200")
+        self.assertEqual(skipped, [])
+
+    def test_untrusted_evidence_is_skipped(self):
+        proposals, skipped = choose([hit("a", 0x10, "candidate"), hit("b", 0x20, "shape-only")])
+        self.assertEqual(proposals, [])
+        self.assertEqual([name for name, _ in skipped], ["a", "b"])
+
+    def test_user_names_kept_unless_opted_in(self):
+        hits = [hit("inflate", 0x200)]
+        proposals, skipped = choose(hits, names={0x200: "my_inflate"}, user={0x200})
+        self.assertEqual(proposals, [])
+        self.assertIn("user name", skipped[0][1])
+        proposals, _ = choose(hits, names={0x200: "my_inflate"}, user={0x200}, overwrite=True)
+        self.assertEqual([p.name for p in proposals], ["inflate"])
+
+    def test_already_named_and_name_in_use_are_skipped(self):
+        proposals, skipped = choose(
+            [hit("inflate", 0x200), hit("deflate", 0x300)],
+            names={0x200: "inflate", 0x500: "deflate"},
+        )
+        self.assertEqual(proposals, [])
+        self.assertEqual(
+            skipped, [("deflate", "name already used at +0x500"), ("inflate", "already named")]
+        )
+
+    def test_conflicting_claims_are_skipped(self):
+        proposals, skipped = choose(
+            [
+                hit("a", 0x10),
+                hit("b", 0x10),
+                hit("c", 0x20, signature_id="c1"),
+                hit("c", 0x30, signature_id="c2"),
+                hit("d", 0x40, signature_id="d1", score=0.5),
+                hit("d", 0x40, signature_id="d2", score=0.7),
+            ]
+        )
+        self.assertEqual([(p.rva, p.name, p.score) for p in proposals], [(0x40, "d", 0.7)])
+        self.assertEqual(sorted(name for name, _ in skipped), ["a", "b", "c", "c"])
+
+    def test_chooser_selection_is_normalized(self):
+        self.assertEqual(plugin._chosen(None), [])
+        self.assertEqual(plugin._chosen(-1), [])
+        self.assertEqual(plugin._chosen(2), [2])
+        self.assertEqual(plugin._chosen([0, 3]), [0, 3])
+
+
+if __name__ == "__main__":
+    unittest.main()
