@@ -172,6 +172,13 @@ pub(crate) struct ArmState {
     /// with the slot: `-fno-plt` calls go `ldr x8, [x8, :got_lo12:f]; blr
     /// x8`, so the slot names the callee.
     slots: Vec<(u16, u64)>,
+    /// Registers loaded from a literal pool with a word inside the module.
+    /// It is an absolute pointer or, in PIC code, an offset the next
+    /// `add rd, pc` turns into one: GNU ld places arm32 `.rodata` after
+    /// `.text` in one segment, so gcc's PC-relative string offsets are small
+    /// positive numbers that also pass for in-module addresses. Never a
+    /// constant either way, so it is kept apart from `values`.
+    offsets: Vec<(u16, u64)>,
 }
 
 impl ArmState {
@@ -205,6 +212,7 @@ impl ArmState {
             .collect();
         values.sort_unstable();
         self.values.retain(|(_, pending)| pending.is_page);
+        self.offsets.clear();
         values
     }
 
@@ -215,6 +223,7 @@ impl ArmState {
     /// register must leave that register's partial value pending; flushing it
     /// would split one constant into two unrelated fragments.
     pub(crate) fn take_consts_in(&mut self, registers: &[u16]) -> Vec<u64> {
+        self.offsets.retain(|(held, _)| !registers.contains(held));
         let mut values: Vec<u64> = Vec::new();
         self.values.retain(|(register, pending)| {
             if pending.is_page || !registers.contains(register) {
@@ -230,6 +239,22 @@ impl ArmState {
     pub(crate) fn clear(&mut self) {
         self.values.clear();
         self.slots.clear();
+        self.offsets.clear();
+    }
+
+    /// Remember an in-module pooled word loaded into `register` (see
+    /// `offsets`).
+    pub(crate) fn insert_offset(&mut self, register: u16, value: u64) {
+        self.offsets.retain(|(held, _)| *held != register);
+        self.offsets.push((register, value));
+    }
+
+    pub(crate) fn take_offset(&mut self, register: u16) -> Option<u64> {
+        let index = self
+            .offsets
+            .iter()
+            .position(|(held, _)| *held == register)?;
+        Some(self.offsets.swap_remove(index).1)
     }
 
     pub(crate) fn insert_slot(&mut self, register: u16, slot: u64) {

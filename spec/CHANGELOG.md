@@ -1,5 +1,32 @@
 # Spec changelog
 
+## v5 (unreleased)
+
+Draft: `SPEC_VERSION` is not bumped yet; these entries change feature
+records and need the bump before release.
+
+* ARM32/Thumb: a literal-pool word inside the image stays available as a
+  PC-relative offset for a following `add rd, pc` (SPEC.md §2). GNU ld puts
+  `.rodata` after `.text`, so gcc's `ldr r0, =.LC0-(.LPIC0+8); add r0, pc,
+  r0` pools a small positive offset that passed for an in-image pointer and
+  lost the string: none of the 120 gcc ARM32 and Thumb signatures in the
+  real bench had a `str` feature, 12 do now (clang's offsets are negative
+  and were unaffected). The offset is only ever consumed as an address,
+  never flushed as a constant (AGENTS.md rule 4). Full real bench
+  (`--max-functions 4 --joint`, stripped targets), hint-free top-1: same
+  build 0.817 -> 0.835, other compiler 0.308 -> 0.335, cross opt 0.254 ->
+  0.282, other arch 0.306 -> 0.351, other arch other compiler 0.216 ->
+  0.253, other arch cross opt 0.183 -> 0.224, merged held-out arch 0.397 ->
+  0.459 (3704 -> 4208 hits); hinted 4177 -> 4720 hits. FP: strong 0.040 ->
+  0.017, any-verdict hinted 0.111 -> 0.094, hint-free 0.154 -> 0.132,
+  negative 0.000. Joint: other arch other compiler 0.571 -> 0.605, other
+  arch cross opt 0.466 -> 0.487, the rest unchanged; joint false hits
+  unchanged. Identified precision hinted 0.987 -> 0.990, hint-free 0.981 ->
+  0.973 (3507 of 3605): the new wrong answers are
+  `cJSONUtils_GeneratePatches` answered with its twin
+  `cJSONUtils_GeneratePatchesCaseSensitive` (the same source but a `false`
+  / `true` argument), 20 -> 66, which the gcc ARM strings now reach.
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,
