@@ -99,19 +99,92 @@ pub fn rank(found: &Match) -> usize {
     }
 }
 
-/// The target functions a link from a function placed at `anchor` allows:
-/// `callee` links (`out:`) name functions the anchor calls.
-fn linked<S: ByteSource + ?Sized>(
-    source: &S,
-    context: &ScanContext,
-    anchor: u64,
-    callee: bool,
-    hints: bool,
-) -> Vec<u64> {
-    if callee {
-        context.callees_of(source, anchor, hints)
-    } else {
-        context.callers_of(source, anchor, hints)
+/// The target's call graph as joint resolution reads it: each function's
+/// callees ([`ScanContext::callees_of`]) and its callers, where the callers
+/// are [`ScanContext::callers_of`] plus every function of the universe whose
+/// callees include it.
+///
+/// `callers_of` comes from the code index's call sites, which hold direct
+/// calls only, while `callees_of` also holds tail calls (`b`/`jmp` to a
+/// function, as clang emits for thin wrappers such as cJSON's
+/// `cJSONUtils_GenerateMergePatch`). Without the reverse edges an `out:`
+/// link to a tail-called neighbour was counted as preserved by the module
+/// gate but never earned [`LINK_BONUS`], so identical wrappers of different
+/// helpers stayed tied on similarity. Simulated on the real corpus joint dump
+/// (`bench --joint-report`, v4, hint-free) and confirmed by the full real
+/// bench (`--max-functions 4 --joint`): other arch same build 0.777 ->
+/// 0.792, other compiler 0.571 -> 0.579, other opt 0.466 -> 0.475, same arch
+/// other compiler 0.702 -> 0.709, same arch other opt 0.540 -> 0.545; joint
+/// false hits unchanged in every library. Capping the merged caller list at
+/// [`crate::matcher::MAX_NEIGHBOURS`] like `callers_of` gains less (0.789 /
+/// 0.576 / 0.471).
+struct CallGraph {
+    callees: HashMap<u64, Vec<u64>>,
+    callers: HashMap<u64, Vec<u64>>,
+}
+
+impl CallGraph {
+    fn build<S: ByteSource + ?Sized>(
+        source: &S,
+        context: &ScanContext,
+        functions: &[Arc<Candidate>],
+        hints: bool,
+    ) -> (CallGraph, Vec<(usize, usize)>) {
+        let starts: Vec<u64> = functions.iter().map(|candidate| candidate.start).collect();
+        let lists: Vec<(Vec<u64>, Vec<u64>)> = crate::parallel::map(starts.len(), |index| {
+            (
+                context.callees_of(source, starts[index], hints),
+                context.callers_of(source, starts[index], hints),
+            )
+        });
+        let mut callers: HashMap<u64, Vec<u64>> = HashMap::new();
+        for (start, (_, into)) in starts.iter().zip(&lists) {
+            callers
+                .entry(*start)
+                .or_default()
+                .extend(into.iter().copied());
+        }
+        for (start, (out, _)) in starts.iter().zip(&lists) {
+            for callee in out {
+                if callee != start {
+                    callers.entry(*callee).or_default().push(*start);
+                }
+            }
+        }
+        for list in callers.values_mut() {
+            list.sort_unstable();
+            list.dedup();
+        }
+        // Degree agreement keeps the context's own counts, as measured.
+        let degrees = lists
+            .iter()
+            .map(|(out, into)| (out.len(), into.len()))
+            .collect();
+        let callees = starts
+            .into_iter()
+            .zip(lists)
+            .map(|(start, (out, _))| (start, out))
+            .collect();
+        (CallGraph { callees, callers }, degrees)
+    }
+
+    /// The target functions a link from a function placed at `anchor` allows:
+    /// `callee` links (`out:`) name functions the anchor calls.
+    /// A seeded scan answer outside the universe falls back to the context.
+    fn linked<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        context: &ScanContext,
+        anchor: u64,
+        callee: bool,
+        hints: bool,
+    ) -> Vec<u64> {
+        let map = if callee { &self.callees } else { &self.callers };
+        match map.get(&anchor) {
+            Some(list) => list.clone(),
+            None if callee => context.callees_of(source, anchor, hints),
+            None => context.callers_of(source, anchor, hints),
+        }
     }
 }
 
@@ -237,6 +310,7 @@ struct Group<'a, S: ?Sized> {
     /// Global signature index to position in `group`.
     position: HashMap<usize, usize>,
     edges: &'a [Vec<(bool, usize)>],
+    graph: &'a CallGraph,
     rows: Vec<Row>,
 }
 
@@ -263,7 +337,10 @@ impl<S: ByteSource + ?Sized> Group<'_, S> {
                 };
                 // This function calls `other` when the link is `out:`, so it
                 // is among the neighbour's callers; `in:` the reverse.
-                for candidate in linked(self.source, self.context, theirs, !*callee, self.hints) {
+                for candidate in
+                    self.graph
+                        .linked(self.source, self.context, theirs, !*callee, self.hints)
+                {
                     let Some(start) = self.start(candidate) else {
                         continue;
                     };
@@ -286,7 +363,8 @@ impl<S: ByteSource + ?Sized> Group<'_, S> {
                 continue;
             };
             let list = neighbours[usize::from(*callee)].get_or_insert_with(|| {
-                linked(self.source, self.context, address, *callee, self.hints)
+                self.graph
+                    .linked(self.source, self.context, address, *callee, self.hints)
             });
             if list.contains(&theirs) {
                 count += 1;
@@ -343,19 +421,14 @@ pub fn resolve<S: ByteSource + ?Sized>(
         return;
     }
     let functions = universe(source, context, hints);
-    let degrees: Vec<(usize, usize)> = crate::parallel::map(functions.len(), |index| {
-        let start = functions[index].start;
-        (
-            context.callees_of(source, start, hints).len(),
-            context.callers_of(source, start, hints).len(),
-        )
-    });
+    let (graph, degrees) = CallGraph::build(source, context, &functions, hints);
     for group in &groups {
         if group.len().saturating_mul(functions.len()) > MAX_PAIRS {
             continue;
         }
         resolve_group(
-            source, context, signatures, matches, hints, &edges, group, &functions, &degrees,
+            source, context, signatures, matches, hints, &edges, &graph, group, &functions,
+            &degrees,
         );
     }
 }
@@ -368,6 +441,7 @@ fn resolve_group<S: ByteSource + ?Sized>(
     matches: &mut [Vec<Match>],
     hints: bool,
     edges: &[Vec<(bool, usize)>],
+    graph: &CallGraph,
     group: &[usize],
     functions: &[Arc<Candidate>],
     degrees: &[(usize, usize)],
@@ -426,6 +500,7 @@ fn resolve_group<S: ByteSource + ?Sized>(
             .map(|(local, index)| (*index, local))
             .collect(),
         edges,
+        graph,
         rows,
     };
     let base: Vec<Vec<f64>> = state
