@@ -304,6 +304,8 @@ documented.
 
 - Spec frozen as the v1 format; DB compatibility promise documented.
 - Release binaries for Linux and Windows (x64, arm64), `cargo install`.
+  Tagged builds and the IDA plugin bundles: `.github/workflows/release.yml`
+  (§8).
 - User documentation for the three workflows in §1.
 
 *Exit:* every G1-G6 goal met on the held-out corpus.
@@ -474,5 +476,17 @@ As of 2026-11-16, `native-first` branch, spec v4.
   66 s on 8 cores (idle machine; 221 s recorded at v4 under load),
   peak 1.10 GB; confirmed on main (64 s), real baseline re-saved for the
   joint section. Not yet run on held-out.
+- M14, release builds (2026-11-17, `release-ci` branch): a `v*` tag runs
+  `.github/workflows/release.yml`, which builds `sigtool-native` for
+  linux-x86_64, linux-aarch64, windows-x86_64, windows-aarch64, and
+  macos-aarch64 (arm64 Linux and Windows cross-compiled; arm64 runners are
+  not free for private repos), packages each with `packaging/package.py`
+  into an HCLI / Plugin Manager plugin zip (`sigtool/` with
+  `ida-plugin.json` listing that one platform, `ida_plugin.py`, and the
+  binary beside it) plus a standalone CLI archive, lints the plugin zip with
+  `hcli plugin lint`, and uploads everything with `SHA256SUMS` to the
+  release. `workflow_dispatch` builds the same artifacts without publishing.
+  The repository manifest lives in `packaging/` so the source zipball is
+  not indexed as a plugin without its binary. Not yet run in CI.
 - Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
   rule decision on in-module constants (M10).
