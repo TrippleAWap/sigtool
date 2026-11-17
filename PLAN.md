@@ -51,10 +51,10 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Other arch, same build settings | 0.763 | 0.85 |
-| Other arch, other compiler | 0.493 | 0.65 |
-| Other arch, other optimization level | 0.402 | 0.50 |
-| Same arch, other compiler | 0.633 | 0.70 |
+| Other arch, same build settings | 0.777 | 0.85 |
+| Other arch, other compiler | 0.571 | 0.65 |
+| Other arch, other optimization level | 0.466 | 0.50 |
+| Same arch, other compiler | 0.702 | 0.70 |
 
 ### G3. Trust
 
@@ -466,6 +466,7 @@ As of 2026-11-16, `native-first` branch, spec v4.
   Cost: inherited evidence cached per callee and acceptance decided before
   building match results, outputs unchanged; full real bench `--joint`
   66 s on 8 cores (idle machine; 221 s recorded at v4 under load),
-  peak 1.10 GB. Not yet run on held-out.
+  peak 1.10 GB; confirmed on main (64 s), real baseline re-saved for the
+  joint section. Not yet run on held-out.
 - Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
   rule decision on in-module constants (M10).
