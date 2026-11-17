@@ -843,8 +843,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 7,
+      "hits": 9,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -852,125 +852,125 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-Os",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-Os",
-      "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O0",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O0",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O2",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O2",
-      "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-Os",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-Os",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O0",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O0",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O2",
-      "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O2",
-      "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "arm32->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-Os",
-      "discovery": "hint-free",
-      "hits": 6,
+      "hits": 7,
       "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "discovery": "hinted",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "discovery": "hinted",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "clang-O0",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "clang-O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "clang-O2",
+      "discovery": "hint-free",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "clang-O2",
+      "discovery": "hinted",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "arm32->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "clang-Os",
+      "discovery": "hint-free",
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 20
     },
     {
@@ -1095,8 +1095,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -1221,8 +1221,8 @@
       "source_opt": "gcc-O2",
       "target_opt": "gcc-O2",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -1239,8 +1239,8 @@
       "source_opt": "gcc-O2",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 20
     },
     {
@@ -1347,8 +1347,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 4,
+      "hits": 7,
+      "top_hits": 6,
       "attempts": 20
     },
     {
@@ -2013,8 +2013,8 @@
       "source_opt": "clang-O0",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -2391,8 +2391,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 20
     },
     {
@@ -3435,8 +3435,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hint-free",
-      "hits": 9,
-      "top_hits": 9,
+      "hits": 10,
+      "top_hits": 10,
       "attempts": 20
     },
     {
@@ -3444,8 +3444,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 6,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 20
     },
     {
@@ -3561,8 +3561,8 @@
       "source_opt": "clang-Os",
       "target_opt": "clang-Os",
       "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 20
     },
     {
@@ -3687,8 +3687,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 6,
-      "top_hits": 6,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 20
     },
     {
@@ -3813,8 +3813,8 @@
       "source_opt": "gcc-O2",
       "target_opt": "gcc-O2",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -3921,8 +3921,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-O2",
       "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 20
     },
     {
@@ -3939,8 +3939,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 4,
+      "hits": 7,
+      "top_hits": 6,
       "attempts": 20
     },
     {
@@ -3957,8 +3957,8 @@
       "source_opt": "clang-O0",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 10,
-      "top_hits": 10,
+      "hits": 11,
+      "top_hits": 11,
       "attempts": 20
     },
     {
@@ -4335,8 +4335,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -4569,8 +4569,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-O2",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 20
     },
     {
@@ -4587,8 +4587,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 3,
+      "hits": 6,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -4596,8 +4596,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 4,
+      "hits": 7,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -4929,8 +4929,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 20
     },
     {
@@ -4983,8 +4983,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 9,
-      "top_hits": 9,
+      "hits": 10,
+      "top_hits": 10,
       "attempts": 20
     },
     {
@@ -5181,8 +5181,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "clang-Os",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 4,
+      "hits": 6,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -5190,8 +5190,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "clang-Os",
       "discovery": "hinted",
-      "hits": 8,
-      "top_hits": 6,
+      "hits": 9,
+      "top_hits": 7,
       "attempts": 20
     },
     {
@@ -5235,8 +5235,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 6,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 6,
       "attempts": 20
     },
     {
@@ -5244,8 +5244,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 4,
+      "hits": 7,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -5253,8 +5253,8 @@
       "source_opt": "clang-O0",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 6,
-      "top_hits": 5,
+      "hits": 8,
+      "top_hits": 7,
       "attempts": 14
     },
     {
@@ -5379,8 +5379,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hint-free",
-      "hits": 10,
-      "top_hits": 10,
+      "hits": 11,
+      "top_hits": 11,
       "attempts": 17
     },
     {
@@ -5388,8 +5388,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 17
     },
     {
@@ -5631,8 +5631,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 15
     },
     {
@@ -6549,8 +6549,8 @@
       "source_opt": "clang-O0",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 9,
-      "top_hits": 9,
+      "hits": 10,
+      "top_hits": 10,
       "attempts": 14
     },
     {
@@ -6675,8 +6675,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hint-free",
-      "hits": 10,
-      "top_hits": 10,
+      "hits": 11,
+      "top_hits": 11,
       "attempts": 17
     },
     {
@@ -6684,8 +6684,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 17
     },
     {
@@ -6927,8 +6927,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 15
     },
     {
@@ -7125,8 +7125,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "clang-Os",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 17
     },
     {
@@ -7134,8 +7134,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "clang-Os",
       "discovery": "hinted",
-      "hits": 10,
-      "top_hits": 9,
+      "hits": 11,
+      "top_hits": 10,
       "attempts": 17
     },
     {
@@ -7179,8 +7179,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 6,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 6,
       "attempts": 17
     },
     {
@@ -7188,8 +7188,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hinted",
-      "hits": 8,
-      "top_hits": 5,
+      "hits": 9,
+      "top_hits": 6,
       "attempts": 17
     },
     {
@@ -9141,8 +9141,8 @@
       "source_opt": "clang-O0",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -9393,8 +9393,8 @@
       "source_opt": "clang-Os",
       "target_opt": "clang-Os",
       "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 10,
+      "top_hits": 10,
       "attempts": 20
     },
     {
@@ -9402,301 +9402,625 @@
       "source_opt": "clang-Os",
       "target_opt": "clang-Os",
       "discovery": "hinted",
+      "hits": 11,
+      "top_hits": 10,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "gcc-O0",
+      "discovery": "hint-free",
+      "hits": 6,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "gcc-O0",
+      "discovery": "hinted",
+      "hits": 8,
+      "top_hits": 8,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "gcc-O2",
+      "discovery": "hint-free",
+      "hits": 6,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "gcc-O2",
+      "discovery": "hinted",
+      "hits": 9,
+      "top_hits": 9,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "gcc-Os",
+      "discovery": "hint-free",
+      "hits": 6,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "clang-Os",
+      "target_opt": "gcc-Os",
+      "discovery": "hinted",
+      "hits": 9,
+      "top_hits": 8,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "clang-O0",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "clang-O0",
+      "discovery": "hinted",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "clang-O2",
+      "discovery": "hint-free",
+      "hits": 1,
+      "top_hits": 1,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "clang-O2",
+      "discovery": "hinted",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "clang-Os",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "clang-Os",
+      "discovery": "hinted",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "gcc-O0",
+      "discovery": "hint-free",
+      "hits": 6,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "gcc-O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "gcc-O2",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "gcc-O2",
+      "discovery": "hinted",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "gcc-Os",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O0",
+      "target_opt": "gcc-Os",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "clang-O0",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "clang-O0",
+      "discovery": "hinted",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "clang-O2",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "clang-O2",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "clang-Os",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "clang-Os",
+      "discovery": "hinted",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "gcc-O0",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "gcc-O0",
+      "discovery": "hinted",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "gcc-O2",
+      "discovery": "hint-free",
+      "hits": 7,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "gcc-O2",
+      "discovery": "hinted",
+      "hits": 7,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "gcc-Os",
+      "discovery": "hint-free",
+      "hits": 6,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-O2",
+      "target_opt": "gcc-Os",
+      "discovery": "hinted",
+      "hits": 5,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "clang-O0",
+      "discovery": "hint-free",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "clang-O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "clang-O2",
+      "discovery": "hint-free",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "clang-O2",
+      "discovery": "hinted",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "clang-Os",
+      "discovery": "hint-free",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "clang-Os",
+      "discovery": "hinted",
+      "hits": 9,
+      "top_hits": 8,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "gcc-O0",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "gcc-O0",
+      "discovery": "hinted",
+      "hits": 6,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "gcc-O2",
+      "discovery": "hint-free",
+      "hits": 7,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "gcc-O2",
+      "discovery": "hinted",
+      "hits": 9,
+      "top_hits": 7,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->arm64",
+      "source_opt": "gcc-Os",
+      "target_opt": "gcc-Os",
+      "discovery": "hint-free",
       "hits": 10,
       "top_hits": 9,
       "attempts": 20
     },
     {
       "arch": "thumb->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "gcc-O0",
-      "discovery": "hint-free",
-      "hits": 6,
-      "top_hits": 6,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "gcc-O0",
+      "source_opt": "gcc-Os",
+      "target_opt": "gcc-Os",
       "discovery": "hinted",
-      "hits": 8,
+      "hits": 11,
       "top_hits": 8,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "gcc-O2",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "clang-O0",
       "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "clang-O0",
+      "discovery": "hinted",
       "hits": 6,
-      "top_hits": 6,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "gcc-O2",
-      "discovery": "hinted",
-      "hits": 9,
-      "top_hits": 9,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "gcc-Os",
-      "discovery": "hint-free",
-      "hits": 6,
-      "top_hits": 6,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "clang-Os",
-      "target_opt": "gcc-Os",
-      "discovery": "hinted",
-      "hits": 9,
-      "top_hits": 8,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "clang-O0",
-      "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "clang-O0",
-      "discovery": "hinted",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "clang-O2",
-      "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "clang-O2",
-      "discovery": "hinted",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "clang-Os",
-      "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "clang-Os",
-      "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "gcc-O0",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "gcc-O0",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "gcc-O2",
-      "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "gcc-O2",
-      "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "gcc-Os",
-      "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O0",
-      "target_opt": "gcc-Os",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "clang-O0",
-      "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "clang-O0",
-      "discovery": "hinted",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "clang-O2",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "clang-O2",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "clang-Os",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "clang-Os",
-      "discovery": "hinted",
-      "hits": 5,
       "top_hits": 5,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "gcc-O0",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "clang-O2",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "gcc-O0",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "clang-O2",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "gcc-O2",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "clang-Os",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 6,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "gcc-O2",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "clang-Os",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 6,
+      "hits": 5,
+      "top_hits": 3,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "gcc-Os",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "gcc-O0",
       "discovery": "hint-free",
       "hits": 5,
       "top_hits": 5,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-O2",
-      "target_opt": "gcc-Os",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "gcc-O0",
+      "discovery": "hinted",
+      "hits": 7,
+      "top_hits": 6,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "gcc-O2",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "gcc-O2",
       "discovery": "hinted",
       "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "gcc-Os",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O0",
+      "target_opt": "gcc-Os",
+      "discovery": "hinted",
+      "hits": 4,
       "top_hits": 4,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O0",
+      "discovery": "hinted",
       "hits": 2,
       "top_hits": 2,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
-      "target_opt": "clang-O0",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "discovery": "hint-free",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-O2",
+      "discovery": "hinted",
+      "hits": 5,
+      "top_hits": 5,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "clang-Os",
       "discovery": "hinted",
       "hits": 3,
       "top_hits": 3,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O0",
+      "discovery": "hinted",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-O2",
+      "discovery": "hinted",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "discovery": "hint-free",
+      "hits": 3,
+      "top_hits": 3,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-O2",
+      "target_opt": "gcc-Os",
+      "discovery": "hinted",
+      "hits": 2,
+      "top_hits": 2,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-Os",
+      "target_opt": "clang-O0",
+      "discovery": "hint-free",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-Os",
+      "target_opt": "clang-O0",
+      "discovery": "hinted",
+      "hits": 4,
+      "top_hits": 4,
+      "attempts": 20
+    },
+    {
+      "arch": "thumb->x64",
+      "source_opt": "clang-Os",
       "target_opt": "clang-O2",
       "discovery": "hint-free",
       "hits": 4,
@@ -9704,8 +10028,8 @@
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
+      "arch": "thumb->x64",
+      "source_opt": "clang-Os",
       "target_opt": "clang-O2",
       "discovery": "hinted",
       "hits": 4,
@@ -9713,17 +10037,17 @@
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
+      "arch": "thumb->x64",
+      "source_opt": "clang-Os",
       "target_opt": "clang-Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
+      "arch": "thumb->x64",
+      "source_opt": "clang-Os",
       "target_opt": "clang-Os",
       "discovery": "hinted",
       "hits": 8,
@@ -9731,330 +10055,6 @@
       "attempts": 20
     },
     {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
-      "target_opt": "gcc-O0",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
-      "target_opt": "gcc-O0",
-      "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 6,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
-      "target_opt": "gcc-O2",
-      "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 6,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
-      "target_opt": "gcc-O2",
-      "discovery": "hinted",
-      "hits": 9,
-      "top_hits": 7,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
-      "target_opt": "gcc-Os",
-      "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 7,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->arm64",
-      "source_opt": "gcc-Os",
-      "target_opt": "gcc-Os",
-      "discovery": "hinted",
-      "hits": 10,
-      "top_hits": 7,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "clang-O0",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "clang-O0",
-      "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "clang-O2",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "clang-O2",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "clang-Os",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "clang-Os",
-      "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "gcc-O0",
-      "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "gcc-O0",
-      "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 6,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "gcc-O2",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "gcc-O2",
-      "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "gcc-Os",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O0",
-      "target_opt": "gcc-Os",
-      "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-O0",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-O0",
-      "discovery": "hinted",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-O2",
-      "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-O2",
-      "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-Os",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "clang-Os",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O0",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O0",
-      "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O2",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-O2",
-      "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-Os",
-      "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-O2",
-      "target_opt": "gcc-Os",
-      "discovery": "hinted",
-      "hits": 2,
-      "top_hits": 2,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O0",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O0",
-      "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O2",
-      "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-O2",
-      "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-Os",
-      "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
-      "attempts": 20
-    },
-    {
-      "arch": "thumb->x64",
-      "source_opt": "clang-Os",
-      "target_opt": "clang-Os",
-      "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 6,
-      "attempts": 20
-    },
-    {
       "arch": "thumb->x64",
       "source_opt": "clang-Os",
       "target_opt": "gcc-O0",
@@ -10167,8 +10167,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -10176,8 +10176,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 20
     },
     {
@@ -10419,8 +10419,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 3,
+      "hits": 5,
+      "top_hits": 4,
       "attempts": 20
     },
     {
@@ -10428,8 +10428,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 4,
+      "hits": 7,
+      "top_hits": 5,
       "attempts": 20
     },
     {
@@ -11085,8 +11085,8 @@
       "source_opt": "clang-O0",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 6,
+      "hits": 10,
+      "top_hits": 9,
       "attempts": 20
     },
     {
@@ -11463,8 +11463,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 20
     },
     {
@@ -11787,8 +11787,8 @@
       "source_opt": "clang-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 10,
-      "top_hits": 10,
+      "hits": 11,
+      "top_hits": 11,
       "attempts": 20
     },
     {
@@ -12111,8 +12111,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 11,
-      "top_hits": 11,
+      "hits": 12,
+      "top_hits": 12,
       "attempts": 20
     },
     {
@@ -12291,8 +12291,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "clang-O2",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 20
     },
     {
@@ -12300,8 +12300,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "clang-O2",
       "discovery": "hinted",
-      "hits": 6,
-      "top_hits": 6,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 20
     },
     {
@@ -12363,8 +12363,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 7,
+      "hits": 9,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -12372,8 +12372,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hinted",
-      "hits": 10,
-      "top_hits": 7,
+      "hits": 11,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -12759,8 +12759,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hint-free",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -12768,8 +12768,8 @@
       "source_opt": "gcc-O0",
       "target_opt": "gcc-O0",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 20
     },
     {
@@ -13011,8 +13011,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 2,
+      "hits": 5,
+      "top_hits": 3,
       "attempts": 20
     },
     {
@@ -13020,8 +13020,8 @@
       "source_opt": "gcc-Os",
       "target_opt": "gcc-Os",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 4,
+      "hits": 8,
+      "top_hits": 5,
       "attempts": 20
     }
   ],
@@ -13169,7 +13169,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 108,
-      "independent_top": 32,
+      "independent_top": 33,
       "joint_top": 64
     },
     {
@@ -13277,7 +13277,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 108,
-      "independent_top": 27,
+      "independent_top": 28,
       "joint_top": 62
     },
     {
@@ -13367,7 +13367,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
       "attempts": 150,
-      "independent_top": 36,
+      "independent_top": 37,
       "joint_top": 79
     },
     {
@@ -13376,7 +13376,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 91,
+      "independent_top": 92,
       "joint_top": 133
     },
     {
@@ -13385,8 +13385,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 150,
-      "independent_top": 63,
-      "joint_top": 104
+      "independent_top": 66,
+      "joint_top": 105
     },
     {
       "library": "lua",
@@ -13394,7 +13394,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
       "attempts": 150,
-      "independent_top": 25,
+      "independent_top": 26,
       "joint_top": 76
     },
     {
@@ -13430,7 +13430,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 104,
+      "independent_top": 111,
       "joint_top": 137
     },
     {
@@ -13439,7 +13439,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 150,
-      "independent_top": 69,
+      "independent_top": 74,
       "joint_top": 120
     },
     {
@@ -13448,7 +13448,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
       "attempts": 150,
-      "independent_top": 49,
+      "independent_top": 50,
       "joint_top": 79
     },
     {
@@ -13457,7 +13457,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
       "attempts": 150,
-      "independent_top": 79,
+      "independent_top": 80,
       "joint_top": 118
     },
     {
@@ -13466,7 +13466,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
       "attempts": 150,
-      "independent_top": 59,
+      "independent_top": 60,
       "joint_top": 104
     },
     {
@@ -13484,7 +13484,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 90,
+      "independent_top": 92,
       "joint_top": 126
     },
     {
@@ -13493,8 +13493,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 150,
-      "independent_top": 66,
-      "joint_top": 100
+      "independent_top": 68,
+      "joint_top": 101
     },
     {
       "library": "lua",
@@ -13502,7 +13502,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
       "attempts": 150,
-      "independent_top": 26,
+      "independent_top": 27,
       "joint_top": 73
     },
     {
@@ -13511,7 +13511,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
       "attempts": 150,
-      "independent_top": 44,
+      "independent_top": 45,
       "joint_top": 105
     },
     {
@@ -13520,7 +13520,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
       "attempts": 150,
-      "independent_top": 31,
+      "independent_top": 32,
       "joint_top": 86
     },
     {
@@ -13637,7 +13637,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 58,
+      "independent_top": 60,
       "joint_top": 115
     },
     {
@@ -13790,7 +13790,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 54,
+      "independent_top": 57,
       "joint_top": 112
     },
     {
@@ -13799,7 +13799,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 150,
-      "independent_top": 25,
+      "independent_top": 26,
       "joint_top": 68
     },
     {
@@ -13844,7 +13844,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 64,
+      "independent_top": 74,
       "joint_top": 117
     },
     {
@@ -13853,7 +13853,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 150,
-      "independent_top": 39,
+      "independent_top": 40,
       "joint_top": 86
     },
     {
@@ -13898,7 +13898,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 56,
+      "independent_top": 61,
       "joint_top": 103
     },
     {
@@ -13907,7 +13907,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 150,
-      "independent_top": 26,
+      "independent_top": 28,
       "joint_top": 69
     },
     {
@@ -13997,7 +13997,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 120,
-      "independent_top": 63,
+      "independent_top": 64,
       "joint_top": 100
     },
     {
@@ -14051,7 +14051,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 120,
-      "independent_top": 74,
+      "independent_top": 77,
       "joint_top": 108
     },
     {
@@ -14060,7 +14060,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 120,
-      "independent_top": 56,
+      "independent_top": 57,
       "joint_top": 99
     },
     {
@@ -14069,7 +14069,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O0",
       "attempts": 120,
-      "independent_top": 41,
+      "independent_top": 42,
       "joint_top": 86
     },
     {
@@ -14105,7 +14105,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 120,
-      "independent_top": 67,
+      "independent_top": 68,
       "joint_top": 104
     },
     {
@@ -14132,7 +14132,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
       "attempts": 120,
-      "independent_top": 35,
+      "independent_top": 36,
       "joint_top": 88
     },
     {
@@ -14243,28 +14243,28 @@
       "library": "cjson",
       "discovery": "hint-free",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 25,
+      "top_hits": 27,
       "attempts": 80
     },
     {
       "library": "cjson",
       "discovery": "hint-free",
       "row": "other arch, other compiler",
-      "top_hits": 51,
+      "top_hits": 53,
       "attempts": 288
     },
     {
       "library": "cjson",
       "discovery": "hint-free",
       "row": "other arch, other optimization level",
-      "top_hits": 168,
+      "top_hits": 170,
       "attempts": 1152
     },
     {
       "library": "cjson",
       "discovery": "hint-free",
       "row": "other arch, same build settings",
-      "top_hits": 62,
+      "top_hits": 72,
       "attempts": 288
     },
     {
@@ -14292,28 +14292,28 @@
       "library": "cjson",
       "discovery": "hinted",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 32,
+      "top_hits": 34,
       "attempts": 80
     },
     {
       "library": "cjson",
       "discovery": "hinted",
       "row": "other arch, other compiler",
-      "top_hits": 66,
+      "top_hits": 68,
       "attempts": 288
     },
     {
       "library": "cjson",
       "discovery": "hinted",
       "row": "other arch, other optimization level",
-      "top_hits": 169,
+      "top_hits": 171,
       "attempts": 1152
     },
     {
       "library": "cjson",
       "discovery": "hinted",
       "row": "other arch, same build settings",
-      "top_hits": 81,
+      "top_hits": 91,
       "attempts": 288
     },
     {
@@ -14439,7 +14439,7 @@
       "library": "lz4",
       "discovery": "hint-free",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 28,
+      "top_hits": 31,
       "attempts": 76
     },
     {
@@ -14453,14 +14453,14 @@
       "library": "lz4",
       "discovery": "hint-free",
       "row": "other arch, other optimization level",
-      "top_hits": 267,
+      "top_hits": 271,
       "attempts": 1152
     },
     {
       "library": "lz4",
       "discovery": "hint-free",
       "row": "other arch, same build settings",
-      "top_hits": 91,
+      "top_hits": 103,
       "attempts": 288
     },
     {
@@ -14488,7 +14488,7 @@
       "library": "lz4",
       "discovery": "hinted",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 37,
+      "top_hits": 39,
       "attempts": 76
     },
     {
@@ -14509,7 +14509,7 @@
       "library": "lz4",
       "discovery": "hinted",
       "row": "other arch, same build settings",
-      "top_hits": 114,
+      "top_hits": 116,
       "attempts": 288
     },
     {
@@ -14537,7 +14537,7 @@
       "library": "sqlite",
       "discovery": "hint-free",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 25,
+      "top_hits": 29,
       "attempts": 88
     },
     {
@@ -14558,7 +14558,7 @@
       "library": "sqlite",
       "discovery": "hint-free",
       "row": "other arch, same build settings",
-      "top_hits": 98,
+      "top_hits": 114,
       "attempts": 288
     },
     {
@@ -14635,14 +14635,14 @@
       "library": "zlib",
       "discovery": "hint-free",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 9,
+      "top_hits": 11,
       "attempts": 76
     },
     {
       "library": "zlib",
       "discovery": "hint-free",
       "row": "other arch, other compiler",
-      "top_hits": 10,
+      "top_hits": 12,
       "attempts": 288
     },
     {
@@ -14656,7 +14656,7 @@
       "library": "zlib",
       "discovery": "hint-free",
       "row": "other arch, same build settings",
-      "top_hits": 28,
+      "top_hits": 43,
       "attempts": 288
     },
     {
@@ -14735,41 +14735,41 @@
     "phases": [
       {
         "phase": "load",
-        "millis": 1605,
-        "peak_memory_bytes": 116690944
+        "millis": 9924,
+        "peak_memory_bytes": 117026816
       },
       {
         "phase": "indexes",
-        "millis": 9843,
-        "peak_memory_bytes": 349777920
+        "millis": 33685,
+        "peak_memory_bytes": 346714112
       },
       {
         "phase": "samples",
-        "millis": 6228,
-        "peak_memory_bytes": 541143040
+        "millis": 12874,
+        "peak_memory_bytes": 533098496
       },
       {
         "phase": "merge",
-        "millis": 3822,
-        "peak_memory_bytes": 547897344
+        "millis": 9887,
+        "peak_memory_bytes": 538333184
       },
       {
         "phase": "recall",
-        "millis": 16147,
-        "peak_memory_bytes": 1075322880
+        "millis": 53606,
+        "peak_memory_bytes": 1140596736
       },
       {
         "phase": "false positives",
-        "millis": 13100,
-        "peak_memory_bytes": 1153650688
+        "millis": 58546,
+        "peak_memory_bytes": 1187786752
       },
       {
         "phase": "joint",
-        "millis": 13456,
-        "peak_memory_bytes": 1159151616
+        "millis": 260931,
+        "peak_memory_bytes": 1293135872
       }
     ],
-    "total_millis": 64205,
-    "peak_memory_bytes": 1159151616
+    "total_millis": 439455,
+    "peak_memory_bytes": 1293135872
   }
 }
