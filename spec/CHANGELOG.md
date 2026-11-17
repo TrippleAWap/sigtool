@@ -4,8 +4,8 @@
 
 Draft: `SPEC_VERSION` is still `4`; these entries are bumped together when
 v5 is cut. Measured on the tuning corpus only (`corpus/build-real`,
-`bench --max-functions 4 --fp-report`, simulated offline on the logged
-scans before building).
+`bench --max-functions 4 --joint --fp-report`, simulated offline on the
+logged scans, then built and benched).
 
 ### Trust (G3)
 
@@ -16,6 +16,20 @@ scans before building).
   false hit matched without it. 87 of 173 signatures stay strong, with 1
   false positive (0.011); 3 identifying features keep 85 with none; 1
   changes nothing.
+* Unanchored matches (the signature has identifying required features, the
+  match holds none of them) need similarity 0.25 in both modes
+  (`matcher::MIN_UNANCHORED_SIMILARITY`). Measured (full real bench,
+  `--joint`): hint-free any-verdict FP 0.154 -> 0.146, hinted any-verdict
+  0.111 -> 0.109, strong 0.011 -> 0.000 (under the rule above), joint sets'
+  false-hit signatures cjson 21 -> 20 and zlib 8 -> 6, hint-free top-1 3704
+  -> 3705, hinted 4177 -> 4176. Dropped past tolerance: merged->arm64
+  clang-O2 -> clang-O0 hint-free top-1 0.412 -> 0.353 (`pagerWriteLargeSector`,
+  a true match at similarity 0.228). Lost: 0.22 (built and benched) sits in
+  the single signatures' gap (their false hits reach 0.218) and keeps that
+  match and hinted 4177, but removes none of the joint sets' false hits
+  (0.232-0.244); simulated 0.3 costs 8 hint-free top-1, 0.35 costs 15 / 27
+  for 3 more signatures, rejecting every unanchored match 107 / 102; 0.21
+  removes 1 of the 5 hint-free signatures.
 
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
