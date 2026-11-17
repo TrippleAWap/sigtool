@@ -5,8 +5,8 @@
     {
       "arch": "arm32",
       "signatures": 120,
-      "signatures_with_hits": 23,
-      "hits": 665
+      "signatures_with_hits": 22,
+      "hits": 662
     },
     {
       "arch": "arm64",
@@ -17,20 +17,20 @@
     {
       "arch": "merged",
       "signatures": 97,
-      "signatures_with_hits": 11,
-      "hits": 50
+      "signatures_with_hits": 10,
+      "hits": 45
     },
     {
       "arch": "thumb",
       "signatures": 120,
-      "signatures_with_hits": 26,
-      "hits": 402
+      "signatures_with_hits": 24,
+      "hits": 398
     },
     {
       "arch": "x64",
       "signatures": 120,
-      "signatures_with_hits": 16,
-      "hits": 259
+      "signatures_with_hits": 15,
+      "hits": 258
     }
   ],
   "signatures": 577,
@@ -39,28 +39,28 @@
   "verdicts": {
     "arm32": {
       "small": 37,
-      "strong": 38,
-      "weak": 45
+      "strong": 15,
+      "weak": 68
     },
     "arm64": {
       "small": 38,
-      "strong": 36,
-      "weak": 46
+      "strong": 19,
+      "weak": 63
     },
     "merged": {
       "small": 14,
-      "strong": 31,
-      "weak": 52
+      "strong": 19,
+      "weak": 64
     },
     "thumb": {
       "small": 35,
-      "strong": 37,
-      "weak": 48
+      "strong": 15,
+      "weak": 70
     },
     "x64": {
       "small": 37,
-      "strong": 31,
-      "weak": 52
+      "strong": 19,
+      "weak": 64
     }
   },
   "recall": [
@@ -2806,7 +2806,7 @@
       "target_opt": "clang-Os",
       "discovery": "hint-free",
       "hits": 12,
-      "top_hits": 11,
+      "top_hits": 12,
       "attempts": 20
     },
     {
@@ -3426,8 +3426,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 20
     },
     {
@@ -6009,8 +6009,8 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O0",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 17
     },
     {
@@ -10582,7 +10582,7 @@
       "target_opt": "clang-Os",
       "discovery": "hint-free",
       "hits": 10,
-      "top_hits": 8,
+      "top_hits": 9,
       "attempts": 20
     },
     {
@@ -13028,31 +13028,31 @@
   "false_positives": [
     {
       "arch": "arm32",
-      "signatures": 38,
-      "signatures_with_hits": 3,
-      "hits": 4
+      "signatures": 15,
+      "signatures_with_hits": 0,
+      "hits": 0
     },
     {
       "arch": "arm64",
-      "signatures": 36,
+      "signatures": 19,
       "signatures_with_hits": 0,
       "hits": 0
     },
     {
       "arch": "merged",
-      "signatures": 31,
-      "signatures_with_hits": 1,
-      "hits": 2
+      "signatures": 19,
+      "signatures_with_hits": 0,
+      "hits": 0
     },
     {
       "arch": "thumb",
-      "signatures": 37,
-      "signatures_with_hits": 3,
-      "hits": 8
+      "signatures": 15,
+      "signatures_with_hits": 0,
+      "hits": 0
     },
     {
       "arch": "x64",
-      "signatures": 31,
+      "signatures": 19,
       "signatures_with_hits": 0,
       "hits": 0
     }
@@ -13060,31 +13060,31 @@
   "negative_false_positives": [
     {
       "arch": "arm32",
-      "signatures": 38,
+      "signatures": 15,
       "signatures_with_hits": 0,
       "hits": 0
     },
     {
       "arch": "arm64",
-      "signatures": 36,
+      "signatures": 19,
       "signatures_with_hits": 0,
       "hits": 0
     },
     {
       "arch": "merged",
-      "signatures": 31,
+      "signatures": 19,
       "signatures_with_hits": 0,
       "hits": 0
     },
     {
       "arch": "thumb",
-      "signatures": 37,
+      "signatures": 15,
       "signatures_with_hits": 0,
       "hits": 0
     },
     {
       "arch": "x64",
-      "signatures": 31,
+      "signatures": 19,
       "signatures_with_hits": 0,
       "hits": 0
     }
@@ -13105,8 +13105,8 @@
     {
       "arch": "merged",
       "signatures": 97,
-      "signatures_with_hits": 3,
-      "hits": 7
+      "signatures_with_hits": 2,
+      "hits": 5
     },
     {
       "arch": "thumb",
@@ -13403,7 +13403,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
       "attempts": 150,
-      "independent_top": 40,
+      "independent_top": 41,
       "joint_top": 103
     },
     {
@@ -13790,7 +13790,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-O2",
       "attempts": 150,
-      "independent_top": 54,
+      "independent_top": 53,
       "joint_top": 112
     },
     {
@@ -13817,7 +13817,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
       "attempts": 150,
-      "independent_top": 8,
+      "independent_top": 7,
       "joint_top": 51
     },
     {
@@ -13880,7 +13880,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
       "attempts": 150,
-      "independent_top": 16,
+      "independent_top": 17,
       "joint_top": 54
     },
     {
@@ -13952,7 +13952,7 @@
       "source_opt": "clang-O2",
       "target_opt": "clang-Os",
       "attempts": 150,
-      "independent_top": 61,
+      "independent_top": 63,
       "joint_top": 102
     },
     {
@@ -14033,7 +14033,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
       "attempts": 120,
-      "independent_top": 33,
+      "independent_top": 34,
       "joint_top": 86
     },
     {
@@ -14132,7 +14132,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-O2",
       "attempts": 120,
-      "independent_top": 35,
+      "independent_top": 36,
       "joint_top": 88
     },
     {
@@ -14141,7 +14141,7 @@
       "source_opt": "clang-O2",
       "target_opt": "gcc-Os",
       "attempts": 120,
-      "independent_top": 27,
+      "independent_top": 28,
       "joint_top": 81
     },
     {
@@ -14194,8 +14194,8 @@
     {
       "library": "cjson",
       "signatures": 432,
-      "independent_with_hits": 21,
-      "joint_with_hits": 21
+      "independent_with_hits": 20,
+      "joint_with_hits": 20
     },
     {
       "library": "lua",
@@ -14218,8 +14218,8 @@
     {
       "library": "zlib",
       "signatures": 480,
-      "independent_with_hits": 8,
-      "joint_with_hits": 8
+      "independent_with_hits": 6,
+      "joint_with_hits": 6
     }
   ],
   "identified": [
@@ -14572,7 +14572,7 @@
       "library": "sqlite",
       "discovery": "hint-free",
       "row": "same arch, other optimization level",
-      "top_hits": 56,
+      "top_hits": 58,
       "attempts": 384
     },
     {
@@ -14600,7 +14600,7 @@
       "library": "sqlite",
       "discovery": "hinted",
       "row": "other arch, other optimization level",
-      "top_hits": 22,
+      "top_hits": 21,
       "attempts": 1152
     },
     {
@@ -14735,41 +14735,41 @@
     "phases": [
       {
         "phase": "load",
-        "millis": 1605,
+        "millis": 3119,
         "peak_memory_bytes": 116690944
       },
       {
         "phase": "indexes",
-        "millis": 9843,
-        "peak_memory_bytes": 349777920
+        "millis": 25751,
+        "peak_memory_bytes": 346636288
       },
       {
         "phase": "samples",
-        "millis": 6228,
-        "peak_memory_bytes": 541143040
+        "millis": 13746,
+        "peak_memory_bytes": 532926464
       },
       {
         "phase": "merge",
-        "millis": 3822,
-        "peak_memory_bytes": 547897344
+        "millis": 12732,
+        "peak_memory_bytes": 538673152
       },
       {
         "phase": "recall",
-        "millis": 16147,
-        "peak_memory_bytes": 1075322880
+        "millis": 68983,
+        "peak_memory_bytes": 1061728256
       },
       {
         "phase": "false positives",
-        "millis": 13100,
-        "peak_memory_bytes": 1153650688
+        "millis": 50443,
+        "peak_memory_bytes": 1143521280
       },
       {
         "phase": "joint",
-        "millis": 13456,
-        "peak_memory_bytes": 1159151616
+        "millis": 97475,
+        "peak_memory_bytes": 1150124032
       }
     ],
-    "total_millis": 64205,
-    "peak_memory_bytes": 1159151616
+    "total_millis": 272251,
+    "peak_memory_bytes": 1150124032
   }
 }
