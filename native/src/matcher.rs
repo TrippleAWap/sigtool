@@ -1231,8 +1231,10 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
         // Hinted scans skip the frequency gates, but a shape-only lookalike
         // is no less a coincidence in an unstripped image: the hinted
         // candidate list is every symbol start, so the same floors apply
-        // (measured: see `MIN_SHAPE_ONLY_SIMILARITY`). Small images are
-        // exempt for the same reason as in hint-free mode.
+        // (measured: see `MIN_SHAPE_ONLY_SIMILARITY`), and a match resting
+        // on constants alone needs hint-free's similarity floor (see
+        // `MIN_CONSTANT_ANCHORED_SIMILARITY`). Small images are exempt for
+        // the same reason as in hint-free mode.
         if source.function_starts().len() < MIN_FREQUENCY_FUNCTIONS {
             return matches;
         }
@@ -1241,6 +1243,7 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
             .into_iter()
             .filter(enough_evidence)
             .filter(|found| anchored_enough(&identifying, found))
+            .filter(constants_enough)
             .collect();
     }
     let identifying = identifying_required(signature);
@@ -1550,6 +1553,46 @@ pub const MIN_SIMILARITY: f64 = 0.2;
 /// and 27 hinted for 3 more signatures, rejecting every unanchored match
 /// 107 / 102; 0.21 removes 1 of the 5 hint-free signatures, 0.2 none.
 pub const MIN_UNANCHORED_SIMILARITY: f64 = 0.25;
+
+/// Minimum similarity of a hinted match whose identifying evidence is
+/// constants alone (no string, in-image callee, or neighbour key), on images
+/// large enough for frequencies. It is the floor hint-free mode already
+/// applies to every match ([`MIN_SIMILARITY`]); hinted mode had none, so a
+/// distinctive-looking constant carried a match at any similarity. Since
+/// in-module constants are kept (spec v5) `LZ4_loadDict`'s `0x10000` and
+/// `0x4000` and `inflateCopy`'s `0x558` occur in sqlite
+/// and lz4 too, and those hits at similarity 0.01-0.12 were
+/// the three strong false positives (0.025).
+///
+/// Simulated on the real corpus (`bench --max-functions 4 --joint
+/// --fp-report`, hinted recall scans and unrelated-library hits): every
+/// constant-anchored hit in an unrelated library is below 0.19 (172 hits),
+/// the lowest constant-anchored true top-1 match is 0.223
+/// (`inflateCodesUsed`), and the lowest true one at any rank 0.193. At 0.2:
+/// strong FP 0.025 -> 0.000, hinted any-verdict 0.105 -> 0.075, top-1
+/// unchanged (4750), one true match below the top lost. Lost: the same floor
+/// on every hinted match costs 47 top-1 hits (callee-anchored true matches
+/// reach down to 0.132, `pagerWriteLargeSector` across ISAs); on every match
+/// 0.13 is the highest that keeps top-1 (strong 0.000, any-verdict 0.081)
+/// but sits 0.002 below that true match; constants-only 0.15 leaves
+/// any-verdict 0.077, and 0.25 costs 2 top-1 hits (`inflateCodesUsed`).
+pub const MIN_CONSTANT_ANCHORED_SIMILARITY: f64 = MIN_SIMILARITY;
+
+/// Whether `found` is identified by constants alone.
+fn constant_anchored(found: &Match) -> bool {
+    let mut identifying = found
+        .matched
+        .iter()
+        .filter(|key| identifying_key(key))
+        .peekable();
+    identifying.peek().is_some() && identifying.all(|key| key.starts_with("const:"))
+}
+
+/// Whether a hinted `found` is not [`constant_anchored`], or else similar
+/// enough (see [`MIN_CONSTANT_ANCHORED_SIMILARITY`]).
+fn constants_enough(found: &Match) -> bool {
+    !constant_anchored(found) || found.similarity >= MIN_CONSTANT_ANCHORED_SIMILARITY
+}
 
 /// The signature's required features that identify a function by
 /// themselves, as keys.
@@ -3030,5 +3073,43 @@ mod tests {
         ));
         // A signature without identifying evidence is left to the shape gates.
         assert!(anchored_enough(&[], &found(1, 0.068, &lookalike)));
+    }
+
+    #[test]
+    fn a_constant_anchored_hinted_match_needs_similarity() {
+        // Thumb `LZ4_loadDict` (lz4, clang -O2), a strong signature, in a
+        // hinted scan of Thumb sqlite (clang -O2), from the real corpus: it
+        // holds the identifying constants 0x10000 and 0x4000, at similarity
+        // 0.121.
+        let lookalike = [
+            "callee:*!memset",
+            "const:0x0",
+            "const:0x10000",
+            "const:0x14",
+            "const:0x2",
+            "const:0x3",
+            "const:0x4",
+            "const:0x4000",
+        ];
+        assert!(constant_anchored(&found(1, 0.121, &lookalike)));
+        assert!(!constants_enough(&found(1, 0.121, &lookalike)));
+        // The lowest constant-anchored true top-1 match: arm32
+        // `inflateCodesUsed` (zlib, clang -O0) in Thumb zlib (clang -O2).
+        let codes_used = ["const:0x0", "const:0x534", "const:0xffffffff", "ops:ret:2"];
+        assert!(constants_enough(&found(1, 0.226, &codes_used)));
+        // An in-image callee names the function at any similarity: arm64
+        // `pagerWriteLargeSector` (sqlite, clang -Os) in Thumb sqlite.
+        let pager = [
+            "callee:pager_write",
+            "const:0x1",
+            "const:0x4",
+            "const:0x8",
+            "ops:ret:2",
+        ];
+        assert!(!constant_anchored(&found(1, 0.132, &pager)));
+        assert!(constants_enough(&found(1, 0.132, &pager)));
+        // Shape-only matches are left to their own floor.
+        let shape = ["const:0x1", "ops:ret:2"];
+        assert!(!constant_anchored(&found(1, 0.1, &shape)));
     }
 }

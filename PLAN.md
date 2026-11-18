@@ -31,7 +31,7 @@ costs their trust and can send an analysis the wrong way.
 ## 2. Goals for v1.0
 
 Every goal is a number the bench measures. "Now" is the current baseline
-(2026-11-18, spec v5, `integrate-matcher`). All recall figures are top-1: the expected function must be the
+(2026-11-18, spec v5, `integrate-matcher`; strong FP from `strong-fp-floor`). All recall figures are top-1: the expected function must be the
 single best match, and ties count as misses. Hint-free figures scan
 `strip --strip-all` copies.
 
@@ -62,7 +62,7 @@ single best match, and ties count as misses. Hint-free figures scan
 |---|---|---|
 | Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.993, hinted 0.994 | ≥ 0.98 |
 | Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.115 | ≤ 0.05 |
-| Strong-signature false-positive rate, corpus | 0.025 | ≤ 0.01 |
+| Strong-signature false-positive rate, corpus | 0.000 | ≤ 0.01 |
 | Strong-signature false-positive rate, negative corpus | 0.000 | 0.000 |
 | Joint resolution false hits in unrelated libraries | equal to scanned alone in every library | no higher than the same set scanned alone |
 
@@ -330,13 +330,13 @@ documented.
 
 ## 8. Status
 
-As of 2026-11-18, `integrate-matcher` branch, spec v5.
+As of 2026-11-18, `strong-fp-floor` branch, spec v5.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
   same build 0.690, other arch 0.374, other arch other compiler 0.307.
 - Whole-module sets: the "Now" column of G2.
-- False positives: strong 0.025 (corpus) and 0.000 (negative), any-verdict
-  hinted 0.105, hint-free 0.115.
+- False positives: strong 0.000 (corpus) and 0.000 (negative), any-verdict
+  hinted 0.075, hint-free 0.115.
 - What moved the numbers, in order, with measurements:
   [`docs/history/PLAN-v0.5.md`](docs/history/PLAN-v0.5.md) §13 and
   [`spec/CHANGELOG.md`](spec/CHANGELOG.md).
@@ -604,6 +604,19 @@ As of 2026-11-18, `integrate-matcher` branch, spec v5.
   simulation; not built). Cells below tolerance: listed in the baseline
   commit (mostly in-module constants' 32-bit-target and merged cells).
   Not yet run on held-out.
-- Next: M8 exit (weekly workflow green), strong FP (hinted low-similarity
-  anchored matches, then held-out), and pointer-width-dependent constants
-  (M10).
+- Strong FP (2026-11-18, `strong-fp-floor` branch, tuning corpus only): a
+  hinted match whose identifying keys are all constants needs similarity
+  0.2, the floor every hint-free match has (SPEC.md §8). Simulated on the
+  v5 `--fp-report` logs first (sweep and losers in `spec/CHANGELOG.md` v5):
+  every constant-anchored hinted hit in an unrelated library is below 0.19,
+  the lowest such true top-1 match 0.223. The integration entry's 0.13 on
+  every hinted match also keeps top-1, but sits 0.002 below a true
+  callee-anchored match (0.132) and leaves any-verdict at 0.081. Full real
+  bench `--joint`: strong FP 0.025 -> 0.000 (G3 met on the tuning corpus),
+  hinted any-verdict 0.105 -> 0.075, negative 0.000; every top-1 cell,
+  hint-free cell, identified precision (0.993 / 0.994), and joint row
+  unchanged. Dropped past tolerance: one hinted found-anywhere cell,
+  merged->arm64 clang-O0 -> gcc-O2 0.562 -> 0.500 (a second-ranked true
+  match at 0.193). Held-out strong FP was 0.113 at v4; not yet re-run.
+- Next: M8 exit (weekly workflow green), strong FP on the held-out corpus
+  (milestone exit), and pointer-width-dependent constants (M10).

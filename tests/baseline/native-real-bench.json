@@ -5982,7 +5982,7 @@
       "source_opt": "clang-O0",
       "target_opt": "gcc-O2",
       "discovery": "hinted",
-      "hits": 9,
+      "hits": 8,
       "top_hits": 6,
       "attempts": 16
     },
@@ -13041,14 +13041,14 @@
     {
       "arch": "merged",
       "signatures": 23,
-      "signatures_with_hits": 2,
-      "hits": 7
+      "signatures_with_hits": 0,
+      "hits": 0
     },
     {
       "arch": "thumb",
       "signatures": 25,
-      "signatures_with_hits": 1,
-      "hits": 1
+      "signatures_with_hits": 0,
+      "hits": 0
     },
     {
       "arch": "x64",
@@ -13093,26 +13093,26 @@
     {
       "arch": "arm32",
       "signatures": 120,
-      "signatures_with_hits": 20,
-      "hits": 176
+      "signatures_with_hits": 14,
+      "hits": 144
     },
     {
       "arch": "arm64",
       "signatures": 120,
-      "signatures_with_hits": 12,
-      "hits": 229
+      "signatures_with_hits": 10,
+      "hits": 119
     },
     {
       "arch": "merged",
       "signatures": 103,
-      "signatures_with_hits": 7,
-      "hits": 23
+      "signatures_with_hits": 2,
+      "hits": 4
     },
     {
       "arch": "thumb",
       "signatures": 120,
-      "signatures_with_hits": 14,
-      "hits": 158
+      "signatures_with_hits": 10,
+      "hits": 147
     },
     {
       "arch": "x64",
@@ -14735,41 +14735,41 @@
     "phases": [
       {
         "phase": "load",
-        "millis": 1046,
-        "peak_memory_bytes": 118743040
+        "millis": 1052,
+        "peak_memory_bytes": 118751232
       },
       {
         "phase": "indexes",
-        "millis": 6934,
-        "peak_memory_bytes": 336166912
+        "millis": 6924,
+        "peak_memory_bytes": 337129472
       },
       {
         "phase": "samples",
-        "millis": 4114,
-        "peak_memory_bytes": 541224960
+        "millis": 4124,
+        "peak_memory_bytes": 541732864
       },
       {
         "phase": "merge",
-        "millis": 4165,
-        "peak_memory_bytes": 543637504
+        "millis": 4194,
+        "peak_memory_bytes": 544141312
       },
       {
         "phase": "recall",
-        "millis": 29762,
-        "peak_memory_bytes": 1464324096
+        "millis": 29562,
+        "peak_memory_bytes": 1447809024
       },
       {
         "phase": "false positives",
-        "millis": 25145,
-        "peak_memory_bytes": 1464324096
+        "millis": 25208,
+        "peak_memory_bytes": 1447809024
       },
       {
         "phase": "joint",
-        "millis": 27009,
-        "peak_memory_bytes": 1505230848
+        "millis": 20994,
+        "peak_memory_bytes": 1447809024
       }
     ],
-    "total_millis": 98179,
-    "peak_memory_bytes": 1505230848
+    "total_millis": 92061,
+    "peak_memory_bytes": 1447809024
   }
 }
