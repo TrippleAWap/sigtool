@@ -31,7 +31,7 @@ costs their trust and can send an analysis the wrong way.
 ## 2. Goals for v1.0
 
 Every goal is a number the bench measures. "Now" is the current baseline
-(2026-11-17, spec v4). All recall figures are top-1: the expected function must be the
+(2026-11-18, spec v5, `integrate-matcher`). All recall figures are top-1: the expected function must be the
 single best match, and ties count as misses. Hint-free figures scan
 `strip --strip-all` copies.
 
@@ -39,30 +39,30 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Same arch, same build | 0.817 | 0.95 |
-| Same arch, other compiler, same level | 0.308 | 0.55 |
-| Same arch, other optimization level | 0.254 | 0.45 |
-| Other arch, same build settings | 0.342 | 0.60 |
-| Other arch, other compiler | 0.219 | 0.45 |
-| Other arch, other optimization level | 0.184 | 0.35 |
-| Merged x64+arm64 signature, held-out arch, same level | 0.448 | 0.70 |
+| Same arch, same build | 0.835 | 0.95 |
+| Same arch, other compiler, same level | 0.412 | 0.55 |
+| Same arch, other optimization level | 0.365 | 0.45 |
+| Other arch, same build settings | 0.433 | 0.60 |
+| Other arch, other compiler | 0.287 | 0.45 |
+| Other arch, other optimization level | 0.259 | 0.35 |
+| Merged x64+arm64 signature, held-out arch, same level | 0.558 | 0.70 |
 
 ### G2. Find: whole-module sets (real corpus, hint-free, `bench --joint`)
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Other arch, same build settings | 0.793 | 0.85 |
-| Other arch, other compiler | 0.624 | 0.65 |
-| Other arch, other optimization level | 0.522 | 0.50 |
-| Same arch, other compiler | 0.708 | 0.70 |
+| Other arch, same build settings | 0.810 | 0.85 |
+| Other arch, other compiler | 0.630 | 0.65 |
+| Other arch, other optimization level | 0.531 | 0.50 |
+| Same arch, other compiler | 0.714 | 0.70 |
 
 ### G3. Trust
 
 | Measure | Now | v1.0 |
 |---|---|---|
-| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.981, hinted 0.989 | ≥ 0.98 |
-| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.117 | ≤ 0.05 |
-| Strong-signature false-positive rate, corpus | 0.017 | ≤ 0.01 |
+| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.993, hinted 0.994 | ≥ 0.98 |
+| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.115 | ≤ 0.05 |
+| Strong-signature false-positive rate, corpus | 0.025 | ≤ 0.01 |
 | Strong-signature false-positive rate, negative corpus | 0.000 | 0.000 |
 | Joint resolution false hits in unrelated libraries | equal to scanned alone in every library | no higher than the same set scanned alone |
 
@@ -330,13 +330,13 @@ documented.
 
 ## 8. Status
 
-As of 2026-11-17, `in-module-constants` branch, spec v5.
+As of 2026-11-18, `integrate-matcher` branch, spec v5.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
-  same build 0.671, other arch 0.338, other arch other compiler 0.269.
+  same build 0.690, other arch 0.374, other arch other compiler 0.307.
 - Whole-module sets: the "Now" column of G2.
-- False positives: strong 0.017 (corpus) and 0.000 (negative), any-verdict
-  hinted 0.105, hint-free 0.117.
+- False positives: strong 0.025 (corpus) and 0.000 (negative), any-verdict
+  hinted 0.105, hint-free 0.115.
 - What moved the numbers, in order, with measurements:
   [`docs/history/PLAN-v0.5.md`](docs/history/PLAN-v0.5.md) §13 and
   [`spec/CHANGELOG.md`](spec/CHANGELOG.md).
@@ -573,6 +573,37 @@ As of 2026-11-17, `in-module-constants` branch, spec v5.
   gate (score and required evidence pass, shape agreement below 0.8; 27 of
   them reach 0.7, 62 reach 0.6). Loosening that gate needs an FP simulation
   first; not built. Not yet run on held-out.
-- Next: M8 exit (weekly workflow green), strong FP on held-out, identified
-  precision after in-module constants (M12), and pointer-width-dependent
-  constants (M10).
+- Integration (2026-11-18, `integrate-matcher` branch, tuning corpus only):
+  `fp-reduction`, `merged-joint`, `in-module-constants`, and
+  `cross-compiler`'s shape waiver merged onto `native-first`
+  (`cross-compiler`'s ARM32 PIC change was not merged: in-module constants
+  resolve those offsets through relocations, and its extra absolute
+  reference read string tails out of `.dynstr`). Merged as is, hint-free
+  identified precision was 0.974 (3497 / 3592). Two label rules, simulated
+  on `--fp-report` logs first (`spec/CHANGELOG.md` v5, with the losers):
+  waived matches are never `identified` (0.974 -> 0.981: the waiver's 31
+  wrong answers include 15 in unrelated libraries on neighbour constants
+  `0x10000` and `0xffff`), and a first match with a rival holding the same
+  identifying keys within similarity 0.1 is a `candidate` (0.981 -> 0.993,
+  hinted 0.989 -> 0.994; source twins such as
+  `cJSONUtils_GeneratePatches` / `..CaseSensitive`). Only labels and joint
+  seeds move. Against the `native-first` baseline (full real bench
+  `--joint`), hint-free top-1: same build 0.817 -> 0.835, other compiler
+  0.308 -> 0.412, cross opt 0.254 -> 0.365, other arch 0.342 -> 0.433,
+  other arch other compiler 0.219 -> 0.287, other arch cross opt 0.184 ->
+  0.259, merged held-out arch 0.448 -> 0.558 (3778 -> 4879 hits; hinted
+  4197 -> 4750). G2: 0.777 -> 0.810, 0.571 -> 0.630, 0.466 -> 0.531, 0.702
+  -> 0.714; joint false hits equal scanned alone (46 -> 41). Identified
+  precision hint-free 0.981 -> 0.993 (2747 -> 3163 correct), hinted 0.987
+  -> 0.994. FP hint-free 0.154 -> 0.115, any-verdict 0.111 -> 0.105,
+  strong 0.040 -> 0.025: the three strong false positives are hinted
+  `LZ4_loadDict` / `inflateCopy` matches at similarity 0.01-0.12, anchored
+  by `0x10000` / `0x558` now that in-module constants are kept, which
+  `fp-reduction`'s unanchored floor no longer reaches (a hinted similarity
+  floor of 0.13 removes all three with no top-1 loss in a quick
+  simulation; not built). Cells below tolerance: listed in the baseline
+  commit (mostly in-module constants' 32-bit-target and merged cells).
+  Not yet run on held-out.
+- Next: M8 exit (weekly workflow green), strong FP (hinted low-similarity
+  anchored matches, then held-out), and pointer-width-dependent constants
+  (M10).

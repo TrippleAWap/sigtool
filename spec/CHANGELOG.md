@@ -1,9 +1,14 @@
 # Spec changelog
 
-## v5 — in-module constants
+## v5 — in-module constants, matcher and trust rules
 
 `SPEC_VERSION` is `5`. `const` records change for ELF shared objects and
-PIEs, so a v4 document or DB is refused.
+PIEs, so a v4 document or DB is refused. The matching, trust-label, and
+joint rules below were developed on separate branches from v4 and merged
+with it (`integrate-matcher`); each entry gives the numbers it was measured
+with, and the last section the combined result.
+
+### In-module constants
 
 * A value is an address only when the code uses it as one (SPEC.md §2.2):
   PC-relative or absolute memory references, as before, and in an image that
@@ -17,8 +22,9 @@ PIEs, so a v4 document or DB is refused.
   the user on 2026-11-17 (AGENTS.md hard rule 4, PLAN.md rule 15).
 * ARM32/Thumb: an unrelocated in-image pool word now stays pending, so gcc's
   PIC `ldr r0, =.LC0-(.LPIC0+8); add r0, pc, r0` resolves to the string
-  instead of to the raw offset (the case `cross-compiler`'s 0b8b60d handles
-  separately). `ldr rd, [pc, rm]` resolves its GOT slot before the offset
+  instead of to the raw offset. (The `cross-compiler` branch had resolved
+  the same offsets while also keeping the word as an absolute reference,
+  which read string tails out of `.dynstr`; that change was not merged.) `ldr rd, [pc, rm]` resolves its GOT slot before the offset
   register is flushed; before, a GOT offset outside the span leaked as a
   constant (`0x103d4` in the `arm32-pic` vectors at a high base).
 * AArch64: a load from an `adrp` page into another register leaves the page
@@ -95,14 +101,12 @@ identified precision 0.970 -> 0.981 (answers 3787 -> 3385, correct 3672 ->
 3321; v4 had 2801 / 2747), every G1 row and FP rate unchanged, joint rows within
 0.001 (cross arch cross opt 0.523 -> 0.522, other compiler 0.625 -> 0.624,
 same build 0.792 -> 0.793, same arch cross opt 0.587 -> 0.588).
-## v5 (unreleased)
 
-Draft: `SPEC_VERSION` is still `4`; these entries are bumped together when
-v5 is cut. Measured on the tuning corpus only (`corpus/build-real`,
-`bench --max-functions 4 --joint --fp-report`, simulated offline on the
-logged scans, then built and benched).
+### Strong verdict and unanchored matches (measured on v4)
 
-### Trust (G3)
+Measured on the tuning corpus only (`corpus/build-real`, `bench
+--max-functions 4 --joint --fp-report`, simulated offline on the logged
+scans, then built and benched).
 
 * `strong` needs at least 2 required features that identify a function by
   themselves (`validate::STRONG_MIN_IDENTIFYING`). All 7 strong signatures
@@ -125,10 +129,8 @@ logged scans, then built and benched).
   (0.232-0.244); simulated 0.3 costs 8 hint-free top-1, 0.35 costs 15 / 27
   for 3 more signatures, rejecting every unanchored match 107 / 102; 0.21
   removes 1 of the 5 hint-free signatures.
-## v4 — cross-ISA shape corroboration
 
-Matching only; extraction, feature records, and the signature document are
-unchanged, so `SPEC_VERSION` stays `4`.
+### Cross-ISA shape corroboration (measured on v4)
 
 * A low-information signature scanned in an image of another ISA family
   (`x64`, `arm64`, `arm32`; Thumb is `arm32`) also corroborates its shape on
@@ -165,11 +167,8 @@ unchanged, so `SPEC_VERSION` stays `4`.
   dropped 0.415 / 70 (2-6 pairs; not built). Floor 4 keeps the false hits
   within 0.003 of the rule's absence (all shape-only) for 0.022 more
   acceptance than floor 5.
-## Unreleased
 
-`SPEC_VERSION` stays `4`: joint resolution's output changes, but feature
-records, the signature document, and single-signature acceptance do not
-(SPEC.md §8), so v4 documents keep their meaning.
+### Joint tail-call edges (measured on v4)
 
 * The call graph joint resolution reads is symmetric: a function's callers
   are its direct-call sites plus every candidate whose callees include it.
@@ -187,6 +186,79 @@ records, the signature document, and single-signature acceptance do not
   every library); wrong joint top-1 answers 4515 -> 4495. Every other bench
   section unchanged. Capping the merged caller list at 16 like
   `callers_of` gained less in simulation (0.789 / 0.576 / 0.471).
+
+### Shape waiver on a shared neighbour key (measured on v4)
+
+* Hint-free acceptance (SPEC.md §8): a low-information signature's
+  candidate that fails only shape corroboration is accepted when it shares
+  a neighbour key and reaches similarity 0.4. Full real bench
+  (`--max-functions 4 --joint`) on top of the unmerged ARM32 PIC change, hint-free
+  top-1: other compiler 0.335 -> 0.356, cross opt 0.282 -> 0.303, other
+  arch 0.351 -> 0.387, other arch other compiler 0.253 -> 0.267, other arch
+  cross opt 0.224 -> 0.243, merged held-out arch 0.459 -> 0.521, same build
+  0.835 unchanged (4208 -> 4487 hits); hinted unchanged. Every FP rate and
+  joint false hits unchanged; joint rows within 0.001. Identified precision
+  hint-free 0.973 -> 0.969: 21 of the 225 waived identified answers are
+  wrong, 13 of them `LZ4_loadDict` on one shared caller constant. Floors
+  swept offline on the waived matches (`bench --fp-report`): 0.45 4379 hits,
+  precision 0.970; 0.5 4296, 0.971; 0.6 4221, 0.972; at least two neighbour
+  keys 4222, 0.972; a direct callee's key 4228, 0.973. Rejecting waived
+  matches whose only neighbour key is one caller constant keeps all 4487
+  hits at precision 0.972, but rests on that one function: not built.
+  Earlier x64 + arm64 slice simulation (before that change, not
+  re-measured): no floor and 0.3 / 0.35 lost precision.
+
+### Trust labels after the merge (measured on v5)
+
+Simulated on the merged tree's logs (`bench --fp-report`, both modes), then
+built and benched; only labels and the joint seeds move, never top-1.
+
+* A waived match (above) is never `identified` unless joint resolution
+  placed it with preserved links (`joint:N`, `N ≥ 1`). Waived answers were
+  175 correct and 31 wrong hint-free: `LZ4_loadDict` 13 in lz4 and 11 in
+  unrelated libraries on the neighbour constant `0x10000` (kept since
+  in-module constants), `adler32_combine` 4 unrelated on `0xffff`.
+  Identified precision hint-free 0.974 -> 0.981 (3497 / 3592 -> 3322 /
+  3386), hinted 0.989 unchanged; joint other arch cross opt 0.528 -> 0.529,
+  same build 0.808 -> 0.809.
+* A first match with a close *rival* is a `candidate` (SPEC.md §8): another
+  function holding every identifying key it holds (own keys from the
+  frequency postings; call-graph siblings for neighbour-only evidence) and
+  resembling the signature within 0.1 of it (`matcher::RIVAL_MARGIN`).
+  `cJSONUtils_GeneratePatches` and its `CaseSensitive` twin hold the same
+  keys; gcc's arm32 copy materialises its `false` argument from a
+  comparison (`moveq r6, #1`), so its signature requires `0x1` and lands on
+  the twin, with the true function as the rival. Swept, precision hint-free
+  / hinted (correct answers): none 0.981 (3322) / 0.989 (2349); 0.02 0.982
+  (3316) / 0.991 (2348); 0.05 0.986 (3244) / 0.993 (2345); 0.1, built,
+  0.993 (3163) / 0.994 (2267); 0.2 0.993 (3015) / 0.995 (2185). The answers
+  with a rival 0.05-0.1 below were 77% right hint-free (81 / 24), short of
+  the promise; the 0.1-0.2 band was 148 correct for 1 wrong. Measured:
+  hint-free 0.981 -> 0.993 (3163 / 3184), hinted 0.989 -> 0.994 (2267 /
+  2280); joint other arch cross opt 0.529 -> 0.531, other compiler 0.629 ->
+  0.630, same build 0.809 -> 0.810, same arch cross opt 0.592 -> 0.593;
+  every FP rate and top-1 cell unchanged. Lost, simulated first on the v4
+  `cross-compiler` logs (neighbour floor 0.3): requiring the
+  runner-up in the ranked list to hold a superset of the first's
+  identifying keys (any margin) cost 289-702 correct answers for 15-38
+  wrong, because ordinary library siblings share callees too, and it misses
+  twins the acceptance gates removed; relabelling neighbour-only answers
+  with fewer than two keys cost 364 correct for 22 wrong.
+
+### Combined (measured on v5)
+
+Real corpus, `bench --max-functions 4 --joint`, against the `native-first`
+v4 baseline (cross-ISA shape included): hint-free top-1 same build 0.817 ->
+0.835, other compiler 0.308 -> 0.412, cross opt 0.254 -> 0.365, other arch
+0.342 -> 0.433, other arch other compiler 0.219 -> 0.287, other arch cross
+opt 0.184 -> 0.259, merged held-out arch 0.448 -> 0.558 (3778 -> 4879
+hits); hinted 4197 -> 4750 hits. Joint other arch same build 0.777 ->
+0.810, other compiler 0.571 -> 0.630, cross opt 0.466 -> 0.531, same arch
+other compiler 0.702 -> 0.714; joint false hits equal scanned alone (46 ->
+41). Identified precision hint-free 0.981 -> 0.993 (2747 / 2801 -> 3163 /
+3184), hinted 0.987 -> 0.994 (1774 / 1797 -> 2267 / 2280). FP hint-free
+0.154 -> 0.115, hinted any-verdict 0.111 -> 0.105, strong 0.040 -> 0.025,
+negative 0.000.
 
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
