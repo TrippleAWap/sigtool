@@ -81,6 +81,9 @@ pub struct Match {
     /// Weighted Jaccard of signature and candidate features; ranks matches.
     pub similarity: f64,
     pub matched: Vec<String>,
+    /// Accepted only because a shared neighbour key waived the shape gate
+    /// (see [`MIN_WAIVED_SHAPE_SIMILARITY`]).
+    pub waived: bool,
 }
 
 /// Encode the signature's data anchors for Tier 0 scanning.
@@ -1182,6 +1185,13 @@ pub fn scan_in<S: ByteSource + ?Sized>(
 /// 0.5 4296, 0.971; 0.6 4221, 0.972. An earlier x64 + arm64 slice
 /// simulation found that lower floors (none, 0.3, 0.35) cost precision and,
 /// with no floor, one more FP signature (a two-hop `0x7fffffff`).
+///
+/// A waived match is never `identified` ([`identified_answer`]): the shape
+/// that failed plus a shared neighbour key is a candidate, not a name
+/// (PLAN.md §4 rule 8). At spec v5 waived answers were 175 correct and 31
+/// wrong hint-free (11 of those in unrelated libraries, on neighbour
+/// constants like `0x10000`), so labelling them `candidate` raises
+/// identified precision 0.974 -> 0.981; top-1 is unchanged.
 pub const MIN_WAIVED_SHAPE_SIMILARITY: f64 = 0.4;
 
 /// Prefix of a matched neighbour key in [`Match::matched`].
@@ -1324,6 +1334,11 @@ pub fn identified_answer(matches: &[Match]) -> bool {
         .get(1)
         .is_some_and(|next| rank_key(next) == rank_key(first))
     {
+        return false;
+    }
+    // Preserved call-graph links are evidence of their own; without them a
+    // waived shape gate leaves only shape to name the function.
+    if first.waived && crate::joint::votes(first) == 0 {
         return false;
     }
     let named_by_string = first.matched.iter().any(|key| key.starts_with("str:"));
@@ -1557,10 +1572,13 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
         let Some(candidate) = candidate else {
             continue;
         };
+        let waived = std::cell::Cell::new(false);
         let waive = || {
-            shape_waiver.is_some_and(|waiver| {
+            let waive = shape_waiver.is_some_and(|waiver| {
                 waiver(candidate.start, similarity(signature, &candidate.weighted))
-            })
+            });
+            waived.set(waive);
+            waive
         };
         if let Some(result) = keys.accept(signature, &candidate.keys, &waive) {
             matches.push(Match {
@@ -1569,6 +1587,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
                 score: result.score,
                 similarity: similarity(signature, &candidate.weighted),
                 matched: result.matched,
+                waived: waived.get(),
             });
         }
     }
@@ -1936,6 +1955,7 @@ fn structural_self_test<S: ByteSource + ?Sized>(
         score: result.score,
         similarity: similarity(signature, &weighted),
         matched: result.matched,
+        waived: false,
     })
 }
 
@@ -2770,6 +2790,7 @@ mod tests {
             score: 1.0,
             similarity,
             matched: matched.iter().map(|key| key.to_string()).collect(),
+            waived: false,
         }
     }
 
@@ -2792,6 +2813,25 @@ mod tests {
         let ranked = [found(1, 0.9, &["str:x"]), found(2, 0.8, &["cfg:blocks:1"])];
         assert_eq!(evidence(&ranked, 0), Evidence::Identified);
         assert_eq!(evidence(&ranked, 1), Evidence::ShapeOnly);
+    }
+
+    #[test]
+    fn a_waived_shape_is_no_answer() {
+        let waived = Match {
+            waived: true,
+            ..found(1, 0.9, &["str:x"])
+        };
+        assert!(!identified_answer(&[waived]));
+        assert_eq!(
+            evidence(&[found(1, 0.9, &["str:x"])], 0),
+            Evidence::Identified
+        );
+        // Preserved call-graph links still name it.
+        let placed = Match {
+            waived: true,
+            ..found(1, 0.9, &["str:x", "joint:2"])
+        };
+        assert!(identified_answer(&[placed]));
     }
 
     #[test]

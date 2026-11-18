@@ -682,6 +682,8 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                         "logp": target.scan_source(false).1.key_frequencies(&m.matched),
                         "carriers": target.scan_source(false).1.key_carriers(&m.matched),
                         "matched": m.matched,
+                        "address": m.address,
+                        "waived": m.waived,
                     })
                 })
                 .collect();
@@ -1148,6 +1150,7 @@ fn write_fp_report(
                 "logp": target.scan_source(false).1.key_frequencies(&found.matched),
                 "carriers": target.scan_source(false).1.key_carriers(&found.matched),
                 "matched": found.matched,
+                "waived": found.waived,
                 "label": label,
                 "neighbours": sample.signature.neighbours,
             });
