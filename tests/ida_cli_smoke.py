@@ -21,8 +21,10 @@ assertion holds; the renames' precision against ground truth is printed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import struct
 import sys
 import tempfile
@@ -39,6 +41,12 @@ class FakeIdb:
 
     def __init__(self, image: Path, functions: dict[int, tuple[str | None, int]]) -> None:
         self.image = image
+        # Where IDA recorded the input file and where the IDB lives; a moved
+        # IDB records a path that no longer exists.
+        self.recorded = str(image)
+        self.idb_path = str(image) + ".i64"
+        self.sha256 = hashlib.sha256(image.read_bytes()).digest()
+        self.size = image.stat().st_size
         self.functions = functions
         self.code = executable_ranges(image)
         self.names = {ea: name for ea, (name, _size) in functions.items() if name}
@@ -75,7 +83,7 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin = module("ida_kernwin")
     kernwin.AST_ENABLE_ALWAYS = 1
     kernwin.SETMENU_APP = 1
-    kernwin.BWN_DISASM = kernwin.BWN_FUNCS = kernwin.BWN_PSEUDOCODE = 0
+    kernwin.BWN_DISASM, kernwin.BWN_FUNCS, kernwin.BWN_PSEUDOCODE = 27, 3, 46
     kernwin.action_handler_t = type("action_handler_t", (), {})
     kernwin.UI_Hooks = type("UI_Hooks", (), {})
     kernwin.msg = lambda text: sys.stdout.write(f"  [ida] {text}")
@@ -116,8 +124,16 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin.Choose = Choose
 
     nalt = module("ida_nalt")
-    nalt.get_input_file_path = lambda: str(idb.image)
+    nalt.get_input_file_path = lambda: idb.recorded
+    nalt.get_root_filename = lambda: Path(idb.image).name
+    nalt.retrieve_input_file_sha256 = lambda: idb.sha256
+    nalt.retrieve_input_file_size = lambda: idb.size
+    nalt.set_root_filename = lambda path: setattr(idb, "recorded", path)
     nalt.get_imagebase = lambda: 0
+
+    loader = module("ida_loader")
+    loader.PATH_TYPE_IDB = 1
+    loader.get_path = lambda _kind: idb.idb_path
 
     class Func:
         def __init__(self, ea: int, size: int) -> None:
@@ -135,6 +151,7 @@ def install_fakes(idb: FakeIdb) -> None:
     funcs = module("ida_funcs")
     funcs.FUNC_THUNK = 0x80
     funcs.get_func = get_func
+    funcs.getn_func = lambda n: get_func(sorted(idb.functions)[n])
     funcs.get_func_name = lambda ea: idb.names.get(ea, f"sub_{ea:X}")
     # The fake IDB already holds every function IDA's analysis would find
     # (ground truth); code outside them is a chunk or tail of one of them, so
@@ -307,18 +324,22 @@ def main() -> int:
         yaml = temp / f"{target}.yaml"
         merged = temp / f"{target}.merged.yaml"
         idb.screen_ea = by_name[target] + 1
-        idb.answer(
-            str(yaml),  # save the signature
-            1,  # merge another sample
-            str(args.corpus / merge_rel),  # sample image
-            f"+{merge_by_name[target]:#x}",  # sample RVA
-            0,  # no further sample
-            str(merged),  # save the merged signature
-        )
+        idb.answer(str(yaml))  # save the signature
         plugin.GenerateHandler().run()
         check(yaml.exists() and "spec_version:" in yaml.read_text(), f"generate wrote {yaml.name}")
-        check(merged.exists(), "merge wrote the two-sample signature")
-        check(not idb.answers and len(idb.infos) == 2, "generate showed two reports")
+        check(not idb.answers and len(idb.infos) == 1, "generate asked once and reported once")
+
+        idb.answer(
+            str(args.corpus / merge_rel),  # other build
+            f"+{merge_by_name[target]:#x}",  # its RVA
+            0,  # no further build
+            str(merged),  # save the merged signature
+        )
+        plugin.MergeHandler().run()
+        check(
+            merged.exists() and merged.read_text().count("- arch:") == 2,
+            "merge wrote the two-sample signature",
+        )
 
         idb.answer(str(yaml))
         plugin.LocateHandler().run()
@@ -329,10 +350,50 @@ def main() -> int:
         )
 
         db = temp / "signatures.db"
-        idb.answer(1, str(db))
+        idb.answer(str(db))
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
+
+        # The Functions view's selection, not the cursor: three named rows
+        # (indices into the sorted function list) sign into one DB.
+        starts = sorted(idb.functions)
+        picked = [i for i, ea in enumerate(starts) if idb.names.get(ea)][:3]
+        selection = types.SimpleNamespace(
+            widget_type=sys.modules["ida_kernwin"].BWN_FUNCS, chooser_selection=picked
+        )
+        selected_db = temp / "selected.db"
+        idb.answer(str(selected_db))
+        plugin.GenerateHandler().run(selection)
+        check(
+            selected_db.exists() and idb.infos[-1].startswith("signed 3 of 3"),
+            "generate on a Functions-view selection signs those rows into a DB",
+        )
+
+        # A moved IDB: the recorded path is gone, the binary sits beside the
+        # IDB. It is found by hash without a dialog and recorded in the IDB.
+        moved = temp / "moved"
+        moved.mkdir()
+        copy = moved / sign_image.name
+        shutil.copyfile(sign_image, copy)
+        idb.recorded = str(temp / "gone" / sign_image.name)
+        idb.idb_path = str(moved / f"{sign_image.name}.i64")
+        relocated = temp / "relocated.yaml"
+        idb.answer(str(relocated))
+        plugin.GenerateHandler().run()
+        check(
+            relocated.exists() and not idb.answers and idb.recorded == str(copy),
+            "a moved IDB finds its input file beside it without asking",
+        )
+        # A same-named file with other bytes is not taken for it.
+        changed = bytearray(copy.read_bytes())
+        changed[-1] ^= 0xFF
+        copy.write_bytes(bytes(changed))
+        idb.recorded = str(temp / "gone" / sign_image.name)
+        plugin._verified_inputs.clear()
+        idb.answer(None)  # the last-resort dialog: cancel
+        plugin.GenerateHandler().activate(None)
+        check(not idb.answers, "a file with another hash is not used without asking")
 
         # The other build, stripped: only its exported functions are named.
         exports = dynamic_functions(apply_image)
@@ -340,7 +401,7 @@ def main() -> int:
             ea: (exports.get(ea), size) for ea, (_name, size) in apply_truth.items()
         }
         idb.__init__(apply_image, apply_idb_functions)
-        idb.answer(str(db), 0)
+        idb.answer(str(db))
         plugin.ApplyNamesHandler().run()
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
         right = sum(1 for ea, name in renamed.items() if apply_truth.get(ea, ("",))[0] == name)

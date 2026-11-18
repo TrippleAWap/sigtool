@@ -19,6 +19,7 @@ def _load_plugin():
         "ida_funcs",
         "ida_idaapi",
         "ida_kernwin",
+        "ida_loader",
         "ida_nalt",
         "ida_name",
         "ida_segment",
@@ -115,6 +116,17 @@ class ChooseRenamesTests(unittest.TestCase):
         self.assertIn("user name", skipped[0][1])
         proposals, _ = choose(hits, names={0x200: "my_inflate"}, user={0x200}, overwrite=True)
         self.assertEqual([p.name for p in proposals], ["inflate"])
+        self.assertTrue(proposals[0].replaces_user_name)
+
+    def test_user_name_replacements_are_listed_but_not_preselected(self):
+        proposals, _ = choose(
+            [hit("inflate", 0x200), hit("deflate", 0x300)],
+            names={0x200: "my_inflate"},
+            user={0x200},
+            overwrite=True,
+        )
+        self.assertEqual([p.name for p in proposals], ["inflate", "deflate"])
+        self.assertEqual(plugin.default_selection(proposals), [1])
 
     def test_already_named_and_name_in_use_are_skipped(self):
         proposals, skipped = choose(
@@ -214,6 +226,44 @@ class MatchRowTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].ea, 0x140000200)
         self.assertEqual(rows[0].cells, ("0x140000200", "0.912", "identified", "inflate", "2"))
+
+
+class InputFileTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def test_candidates_continue_beside_the_idb(self):
+        idb = str(self.dir / "libz.so.i64")
+        self.assertEqual(
+            plugin.input_file_candidates(r"C:\work\build\libz.so", idb, "libz.so"),
+            [r"C:\work\build\libz.so", str(self.dir / "libz.so")],
+        )
+        self.assertEqual(
+            plugin.input_file_candidates("/old/a.out", str(self.dir / "renamed.i64"), "a.out"),
+            ["/old/a.out", str(self.dir / "a.out"), str(self.dir / "renamed")],
+        )
+        self.assertEqual(plugin.input_file_candidates("", "", ""), [])
+
+    def test_only_the_file_with_the_stored_hash_matches(self):
+        import hashlib
+
+        good = self.dir / "good.bin"
+        good.write_bytes(b"ELF" + bytes(60))
+        bad = self.dir / "bad.bin"
+        bad.write_bytes(b"ELF" + bytes(59) + b"")
+        digest = hashlib.sha256(good.read_bytes()).digest()
+        self.assertTrue(plugin.file_matches(str(good), digest, 64))
+        self.assertFalse(plugin.file_matches(str(bad), digest, 64))
+        self.assertFalse(plugin.file_matches(str(good), None, 65))
+        self.assertTrue(plugin.file_matches(str(bad), None, None))
+        self.assertFalse(plugin.file_matches(str(self.dir / "missing"), None, None))
+
+    def test_zero_digest_means_none_stored(self):
+        self.assertIsNone(plugin.known_digest(b""))
+        self.assertIsNone(plugin.known_digest(bytes(32)))
+        self.assertEqual(plugin.known_digest(b"" * 32), b"" * 32)
 
 
 class NativeDiscoveryTests(unittest.TestCase):
