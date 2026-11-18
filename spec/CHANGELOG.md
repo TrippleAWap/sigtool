@@ -27,6 +27,13 @@ PIEs, so a v4 document or DB is refused.
 * New golden vectors: the fixture as `-fPIC -shared` objects (`*-pic-*`) for
   all four architectures, with their relocation slots; `golden.rs` loads each
   at 0 and at `0x40000000` and requires identical features.
+* An identified answer resting on a direct neighbour's evidence (or joint
+  votes) needs similarity 0.42 instead of 0.3
+  (`MIN_ANSWER_SIMILARITY_NEIGHBOUR`). The resolved PIC strings and kept
+  constants give twins and thin wrappers shared neighbour evidence
+  (`cJSONUtils_GeneratePatches` and its `CaseSensitive` sibling call the same
+  helper), which at 0.3 lowered hint-free identified precision 0.981 ->
+  0.970. Only the label and the joint seed move; top-1 recall does not.
 
 Simulated first (`examples/in_module_consts`: in-range values the variants
 keep on the stripped real corpus, all 16272 ground-truth functions; then the
@@ -76,6 +83,18 @@ on Thumb), and the 64-bit signature requires them. In the diagnosis
 function rose in all 16 arch pairs (thumb -> thumb 0.253 -> 0.415, arm64 ->
 thumb 0.283 -> 0.321) and fell for 110 of 11040 pairs.
 
+Neighbour answer floor, simulated on the v5 hint-free logs (`bench
+--fp-report`; hinted answers do not move between 0.3 and 0.5), correct /
+wrong identified answers: 0.3 3672 / 115 (0.970), 0.4 3375 / 74 (0.979),
+0.42 3321 / 64 (0.981, built), 0.45 3256 / 57 (0.983), 0.5 3158 / 48
+(0.985). Of the 73 wrong answers new at 0.3, 46 are
+`cJSONUtils_GeneratePatches` landing on its sibling: v4 resolved the arm32
+gcc PIC strings to string tails (`SON_InsertItemInArray`), so the
+neighbour keys never matched. Built and measured (same bench): hint-free
+identified precision 0.970 -> 0.981 (answers 3787 -> 3385, correct 3672 ->
+3321; v4 had 2801 / 2747), every G1 row and FP rate unchanged, joint rows within
+0.001 (cross arch cross opt 0.523 -> 0.522, other compiler 0.625 -> 0.624,
+same build 0.792 -> 0.793, same arch cross opt 0.587 -> 0.588).
 
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
