@@ -19,9 +19,11 @@ jobs:
   build:
     name: build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    # Linux builds run in Debian 11 so the binaries need only glibc 2.31 (the
-    # runner's own glibc is 2.39, newer than many IDA hosts). Other platforms
-    # build on the runner; an empty container means none.
+    # Linux builds run in Ubuntu 22.04 so the binaries need only glibc 2.35
+    # (the runner's own glibc is 2.39, newer than many IDA hosts). Debian 11
+    # (glibc 2.31) was tried first; its security archive left deb.debian.org at
+    # end of life and apt fails with 404s. Other platforms build on the runner;
+    # an empty container means none.
     container: ${{ matrix.container }}
     strategy:
       fail-fast: false
@@ -29,7 +31,7 @@ jobs:
         include:
           - platform: linux-x86_64
             os: ubuntu-24.04
-            container: debian:bullseye
+            container: ubuntu:22.04
             target: x86_64-unknown-linux-gnu
             exe: sigtool-native
           # arm64 is cross-compiled: GitHub's arm64 runners are free only for
@@ -37,7 +39,7 @@ jobs:
           # cross gcc is both the linker and CC.
           - platform: linux-aarch64
             os: ubuntu-24.04
-            container: debian:bullseye
+            container: ubuntu:22.04
             target: aarch64-unknown-linux-gnu
             exe: sigtool-native
             cross: true
@@ -58,7 +60,7 @@ jobs:
             exe: sigtool-native
     env:
       BINARY: native/target/${{ matrix.target }}/release/${{ matrix.exe }}
-      # Debian ships python3 only; setup-python provides python elsewhere.
+      # The container ships python3 only; setup-python provides python elsewhere.
       PYTHON: ${{ matrix.container && 'python3' || 'python' }}
     steps:
       # Before checkout so it uses git rather than the REST API fallback, and
@@ -66,6 +68,7 @@ jobs:
       - name: Install build tools (container)
         if: matrix.container
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install --no-install-recommends -y \
             build-essential ca-certificates curl git python3
@@ -103,7 +106,7 @@ jobs:
         if: matrix.container
         shell: bash
         env:
-          GLIBC_MAX: "2.31"
+          GLIBC_MAX: "2.35"
         run: |
           versions=$(readelf --dyn-syms -W "$BINARY" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -uV)
           max=$(tail -n1 <<< "$versions")
