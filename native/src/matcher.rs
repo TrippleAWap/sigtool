@@ -81,6 +81,10 @@ pub struct Match {
     /// Weighted Jaccard of signature and candidate features; ranks matches.
     pub similarity: f64,
     pub matched: Vec<String>,
+    /// Similarity of the closest other function in the image that holds
+    /// every identifying key this match holds ([`ScanContext::rival`]).
+    /// Set by [`scan_in`] on its first match only.
+    pub rival: Option<f64>,
     /// Accepted only because a shared neighbour key waived the shape gate
     /// (see [`MIN_WAIVED_SHAPE_SIMILARITY`]).
     pub waived: bool,
@@ -718,6 +722,8 @@ pub struct Frequencies {
     pub document_frequency: HashMap<String, u32>,
     /// Per key, the ordinals of the functions carrying it, ascending.
     pub postings: HashMap<String, Vec<u32>>,
+    /// Start address of each ordinal.
+    pub starts: Vec<u64>,
 }
 
 /// Images with fewer known functions give no usable frequency estimate.
@@ -753,9 +759,11 @@ impl Frequencies {
         let mut document_frequency: HashMap<String, u32> = HashMap::new();
         let mut postings: HashMap<String, Vec<u32>> = HashMap::new();
         let mut functions = 0usize;
+        let mut ordinal_starts: Vec<u64> = Vec::new();
         for candidate in recovered.into_iter().flatten() {
             let ordinal = functions as u32;
             functions += 1;
+            ordinal_starts.push(candidate.start);
             for key in &candidate.keys {
                 *document_frequency.entry(key.clone()).or_insert(0) += 1;
                 postings.entry(key.clone()).or_default().push(ordinal);
@@ -765,6 +773,7 @@ impl Frequencies {
             functions,
             document_frequency,
             postings,
+            starts: ordinal_starts,
         })
     }
 
@@ -996,6 +1005,101 @@ impl ScanContext {
             .get_or_init(|| Frequencies::build(source, &self.features, hints));
     }
 
+    /// Similarity to `signature` of the closest other function in the image
+    /// that holds every identifying key `found` matched: its own keys (held
+    /// directly or inherited) and its shared neighbour keys. Such a function
+    /// is a rival the evidence cannot tell apart from `found`; only shape
+    /// separates them. Candidates are the functions carrying every own
+    /// identifying key (from the frequency postings) or, when the match has
+    /// only neighbour keys, its call-graph siblings (the other callees of
+    /// its callers and the other callers of its callees). At most
+    /// [`MAX_RIVALS`] are compared. `None` when there is none, when the
+    /// match has no identifying key, or on images too small for
+    /// frequencies.
+    pub fn rival<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        signature: &Signature,
+        found: &Match,
+        hints: bool,
+    ) -> Option<f64> {
+        let own: Vec<&str> = found
+            .matched
+            .iter()
+            .filter(|key| {
+                identifying_key(key)
+                    && !key.starts_with(NEIGHBOUR_PREFIX)
+                    && !key.starts_with("joint:")
+            })
+            .map(String::as_str)
+            .collect();
+        let near: Vec<&str> = found
+            .matched
+            .iter()
+            .filter_map(|key| key.strip_prefix(NEIGHBOUR_PREFIX))
+            .collect();
+        if own.is_empty() && near.is_empty() {
+            return None;
+        }
+        let frequencies = self.frequencies[usize::from(hints)]
+            .get_or_init(|| Frequencies::build(source, &self.features, hints))
+            .as_ref()?;
+        let mut pool: Vec<u64> = if own.is_empty() {
+            let mut siblings: Vec<u64> = Vec::new();
+            for caller in self.callers_of(source, found.address, hints) {
+                siblings.extend(self.callees_of(source, caller, hints));
+            }
+            for callee in self.callees_of(source, found.address, hints) {
+                siblings.extend(self.callers_of(source, callee, hints));
+            }
+            siblings
+        } else {
+            let carriers = |key: &str| -> Vec<u32> {
+                let mut list: Vec<u32> = [key.to_string(), format!("{INHERITED_PREFIX}{key}")]
+                    .iter()
+                    .filter_map(|key| frequencies.postings.get(key))
+                    .flatten()
+                    .copied()
+                    .collect();
+                list.sort_unstable();
+                list.dedup();
+                list
+            };
+            let lists: Vec<Vec<u32>> = own.iter().map(|key| carriers(key)).collect();
+            let (first, rest) = lists.split_first()?;
+            first
+                .iter()
+                .filter(|ordinal| rest.iter().all(|list| list.binary_search(ordinal).is_ok()))
+                .filter_map(|ordinal| frequencies.starts.get(*ordinal as usize).copied())
+                .collect()
+        };
+        pool.retain(|start| *start != found.address);
+        pool.sort_unstable();
+        pool.dedup();
+        pool.truncate(MAX_RIVALS);
+        let mut best: Option<f64> = None;
+        for start in pool {
+            let Some(candidate) = self.features.get_or_recover(source, start, hints) else {
+                continue;
+            };
+            // Overlapping recoveries of the match itself are not rivals.
+            if candidate.start < found.end && found.address < candidate.end {
+                continue;
+            }
+            if !near.is_empty() {
+                let keys = self.neighbour_keys(source, start, hints);
+                if !near.iter().all(|key| keys.iter().any(|held| held == key)) {
+                    continue;
+                }
+            }
+            let similar = similarity(signature, &candidate.weighted);
+            if best.is_none_or(|best| similar > best) {
+                best = Some(similar);
+            }
+        }
+        best
+    }
+
     pub fn build<S: ByteSource + ?Sized>(source: &S) -> ScanContext {
         // The reference and code indexes are the same linear sweep read two
         // ways, so one decode of each region feeds both. Each keeps its own
@@ -1045,6 +1149,27 @@ impl ScanContext {
 /// through the reference index in both modes, and hint-free discovery reuses
 /// the code index instead of rebuilding it.
 pub fn scan_in<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    context: &ScanContext,
+    hints: bool,
+) -> Vec<Match> {
+    let mut matches = scan_in_ranked(source, signature, context, hints);
+    // Only the first match can be an answer, so only it needs a rival.
+    if let Some(first) = matches.first() {
+        if identified(first) {
+            let rival = context.rival(source, signature, first, hints);
+            matches[0].rival = rival;
+        }
+    }
+    matches
+}
+
+/// Most functions [`ScanContext::rival`] compares with a match. Bounded
+/// because a common key's carriers can be most of an image.
+pub const MAX_RIVALS: usize = 64;
+
+fn scan_in_ranked<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
     context: &ScanContext,
@@ -1297,6 +1422,20 @@ pub const MIN_ANSWER_SIMILARITY_NEIGHBOUR: f64 = 0.42;
 /// See [`MIN_ANSWER_SIMILARITY_NEIGHBOUR`].
 pub const MIN_ANSWER_SIMILARITY: f64 = 0.7;
 
+/// A first match is no answer when a rival ([`ScanContext::rival`]) holding
+/// the same identifying keys resembles the signature within this much of
+/// it: source twins (`cJSONUtils_GeneratePatches` and its `CaseSensitive`
+/// sibling, which differ in one boolean argument) then rest on shape alone.
+/// Simulated on the real corpus at spec v5 (`bench --fp-report`, both
+/// modes, after waived matches lost the label), identified precision
+/// hint-free / hinted with correct answers kept: no rival rule 0.981
+/// (3322) / 0.989 (2349); 0.02 0.982 (3316) / 0.991 (2348); 0.05 0.986
+/// (3244) / 0.993 (2345); 0.1 0.993 (3163) / 0.994 (2267); 0.2 0.993
+/// (3015) / 0.995 (2185). Answers whose rival lies 0.05-0.1 below were 77%
+/// right hint-free (81 correct, 24 wrong), short of the promise; the
+/// 0.1-0.2 band 148 correct for 1 wrong.
+pub const RIVAL_MARGIN: f64 = 0.1;
+
 /// What a match in a ranked list can be trusted for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Evidence {
@@ -1337,9 +1476,18 @@ pub fn identified_answer(matches: &[Match]) -> bool {
         return false;
     }
     // Preserved call-graph links are evidence of their own; without them a
-    // waived shape gate leaves only shape to name the function.
-    if first.waived && crate::joint::votes(first) == 0 {
-        return false;
+    // waived shape gate or a rival the evidence cannot tell apart leaves
+    // only shape to name the function.
+    if crate::joint::votes(first) == 0 {
+        if first.waived {
+            return false;
+        }
+        if first
+            .rival
+            .is_some_and(|rival| rival >= first.similarity - RIVAL_MARGIN)
+        {
+            return false;
+        }
     }
     let named_by_string = first.matched.iter().any(|key| key.starts_with("str:"));
     let floor = if named_by_string {
@@ -1587,6 +1735,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
                 score: result.score,
                 similarity: similarity(signature, &candidate.weighted),
                 matched: result.matched,
+                rival: None,
                 waived: waived.get(),
             });
         }
@@ -1955,6 +2104,7 @@ fn structural_self_test<S: ByteSource + ?Sized>(
         score: result.score,
         similarity: similarity(signature, &weighted),
         matched: result.matched,
+        rival: None,
         waived: false,
     })
 }
@@ -2790,6 +2940,7 @@ mod tests {
             score: 1.0,
             similarity,
             matched: matched.iter().map(|key| key.to_string()).collect(),
+            rival: None,
             waived: false,
         }
     }
@@ -2816,7 +2967,7 @@ mod tests {
     }
 
     #[test]
-    fn a_waived_shape_is_no_answer() {
+    fn a_waived_shape_or_a_close_rival_is_no_answer() {
         let waived = Match {
             waived: true,
             ..found(1, 0.9, &["str:x"])
@@ -2826,9 +2977,20 @@ mod tests {
             evidence(&[found(1, 0.9, &["str:x"])], 0),
             Evidence::Identified
         );
+        let twin = Match {
+            rival: Some(0.9 - RIVAL_MARGIN),
+            ..found(1, 0.9, &["str:x"])
+        };
+        assert_eq!(evidence(&[twin], 0), Evidence::Candidate);
+        let apart = Match {
+            rival: Some(0.9 - RIVAL_MARGIN - 0.01),
+            ..found(1, 0.9, &["str:x"])
+        };
+        assert!(identified_answer(&[apart]));
         // Preserved call-graph links still name it.
         let placed = Match {
             waived: true,
+            rival: Some(0.9),
             ..found(1, 0.9, &["str:x", "joint:2"])
         };
         assert!(identified_answer(&[placed]));

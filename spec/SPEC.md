@@ -553,14 +553,25 @@ as in hint-free mode; the chance and neighbour gates are hint-free only.
 **Evidence labels.** Each match in a ranked list carries one label:
 
 * `identified`: the first match, not tied with the second, not a waived
-  match (unless joint resolution placed it with `joint:N`, `N ≥ 1`), with an
-  identifying key, and with similarity at least 0.42 when no `str` matched
+  match and without a close rival (both unless joint resolution placed it
+  with `joint:N`, `N ≥ 1`), with an identifying key, and with similarity at least 0.42 when no `str` matched
   but a direct neighbour key (`near:in:`, `near:out:`) or a `joint:N` key
   with `N ≥ 1` did, or at least 0.7 when only callees, constants, or two-hop neighbour
   keys identify it (a matched `str` needs no floor);
 * `candidate`: identifying keys, but not the answer (not first, tied, or
   below its floor);
 * `shape-only`: no identifying key.
+
+A *rival* of an identified-looking first match is another function in the
+image holding every identifying key the match holds: its own keys (directly
+or as `inl:` copies), taken from the functions carrying all of them, and its
+shared neighbour keys; a match with only neighbour keys draws its rivals
+from its call-graph siblings (the other callees of its callers and the
+other callers of its callees). At most 64 are compared, on images with
+frequency estimates. A rival whose similarity to the signature is at least
+the match's minus 0.1 makes the match a `candidate`: the evidence cannot
+tell the two apart, only shape does (source twins such as a function and its
+case-sensitive variant).
 
 The candidate's neighbour keys are computed the same way as at generation, on
 the target. Shared keys are reported in `matched` as `near:HOP:KIND:VALUE` and

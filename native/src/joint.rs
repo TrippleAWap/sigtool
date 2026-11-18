@@ -557,6 +557,7 @@ fn resolve_group<S: ByteSource + ?Sized>(
                     score: result.score,
                     similarity: row[at].1,
                     matched: result.matched,
+                    rival: None,
                     waived: false,
                 }
             }
@@ -618,6 +619,7 @@ pub fn report<S: ByteSource + ?Sized>(
                 score: result.score,
                 similarity: similar,
                 matched: result.matched,
+                rival: None,
                 waived: false,
             };
             let has_str = found.matched.iter().any(|key| key.starts_with("str:"));

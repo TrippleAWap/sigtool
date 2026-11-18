@@ -127,6 +127,43 @@ fn thumb_calls_through_lld_thunks_name_their_callee() {
 }
 
 #[test]
+fn source_twins_are_candidates_not_answers() {
+    // `cJSONUtils_GeneratePatches` and `..CaseSensitive` differ in one
+    // boolean argument. gcc's arm32 copy materialises its `false` from a
+    // comparison (`moveq r6, #1`), so the signature requires `0x1` and, in a
+    // stripped arm64 gcc build, matches the twin that passes `true`; the
+    // true function, holding the same keys, is the rival.
+    let root = corpus();
+    let full = root.join("arm32/gcc-O2/cjson.so");
+    let image = root.join("stripped/arm64/gcc-O2/cjson.so");
+    if !full.is_file() || !image.is_file() {
+        eprintln!("skip: {} is absent", image.display());
+        return;
+    }
+    let signed = FileSource::from_path(&full).expect("image");
+    let address = signed.modules()[0]
+        .functions
+        .iter()
+        .find(|(_, name)| name.as_str() == "cJSONUtils_GeneratePatches")
+        .map(|(address, _)| *address)
+        .expect("cJSONUtils_GeneratePatches");
+    let signature =
+        sigtool_native::generate::generate(&signed, address, None, None, None, None, None)
+            .expect("generate")
+            .signature;
+    let source = FileSource::from_path(&image).expect("image");
+    let context = sigtool_native::matcher::ScanContext::build(&source);
+    let matches = sigtool_native::matcher::scan_in(&source, &signature, &context, false);
+    let first = matches.first().expect("a match");
+    assert!(first.rival.is_some(), "{first:?}");
+    assert_ne!(
+        sigtool_native::matcher::evidence(&matches, 0),
+        sigtool_native::matcher::Evidence::Identified,
+        "{first:?}"
+    );
+}
+
+#[test]
 fn gcc_pic_strings_after_text_resolve() {
     // GNU ld puts arm32 `.rodata` after `.text` in one segment, so gcc's
     // `ldr r0, =.LC0-(.LPIC0+8); .LPIC0: add r0, pc, r0` pools a small
