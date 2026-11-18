@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import types
@@ -181,12 +182,47 @@ def install_fakes(idb: FakeIdb) -> None:
     bytes_.has_user_name = lambda ea: ea in idb.names
     bytes_.is_code = lambda ea: any(low <= ea < high for low, high in idb.code)
 
+    # Segments as IDA's ELF loader makes them: one per allocated section, at
+    # its file offset (none for `.bss`), with the file's bytes. The image's
+    # path stands in for the IDB's contents, so it is read even when the
+    # "input file" has moved away.
+    sections = elf_sections(idb.image)
+
+    class Seg:
+        def __init__(self, row) -> None:
+            self.name, self.start_ea, self.end_ea, self.offset, self.perm = row
+            self.type = 0
+
+    def segment_at(ea: int):
+        return next((Seg(row) for row in sections if row[1] <= ea < row[2]), None)
+
+    def file_offset(ea: int) -> int:
+        seg = segment_at(ea)
+        return -1 if seg is None or seg.offset is None else seg.offset + ea - seg.start_ea
+
+    content = idb.image.read_bytes()
     segment = module("ida_segment")
     segment.SEG_XTRN = 1
-    segment.getseg = lambda _ea: None
+    segment.SEGPERM_EXEC, segment.SEGPERM_WRITE = 1, 2
+    segment.getseg = segment_at
+    segment.get_segm_name = lambda seg: seg.name
+    loader.get_fileregion_offset = file_offset
+
+    def get_bytes(ea: int, size: int):
+        offset = file_offset(ea)
+        return None if offset < 0 else content[offset : offset + size]
+
+    bytes_.get_bytes = get_bytes
+    bytes_.visit_patched_bytes = lambda _start, _end, _callback: 0
 
     idautils = module("idautils")
     idautils.Functions = lambda: sorted(idb.functions)
+    idautils.Segments = lambda: [row[1] for row in sections]
+
+    def no_pe_header():
+        raise RuntimeError("not a PE database")
+
+    idautils.peutils_t = lambda: types.SimpleNamespace(header=no_pe_header)
 
 
 def ground_truth(corpus: Path, relative: str) -> dict[int, tuple[str, int]]:
@@ -195,6 +231,60 @@ def ground_truth(corpus: Path, relative: str) -> dict[int, tuple[str, int]]:
         if binary["path"] == relative:
             return {f["start"]: (f["name"], f["size"]) for f in binary["functions"]}
     raise SystemExit(f"{relative} is not in {corpus / 'ground_truth.json'}")
+
+
+def elf_sections(path: Path) -> list[tuple[str, int, int, int | None, int]]:
+    """``(name, start, end, file offset or None, perm)`` per allocated section
+    of a little-endian 64- or 32-bit ELF image, by address."""
+    data = path.read_bytes()
+    wide = data[4] == 2
+    if wide:
+        shoff = struct.unpack_from("<Q", data, 0x28)[0]
+        entsize, count, names_index = struct.unpack_from("<HHH", data, 0x3A)
+        layout = "<IIQQQQ"
+    else:
+        shoff = struct.unpack_from("<I", data, 0x20)[0]
+        entsize, count, names_index = struct.unpack_from("<HHH", data, 0x2E)
+        layout = "<IIIIII"
+    rows = [struct.unpack_from(layout, data, shoff + index * entsize) for index in range(count)]
+    names_row = rows[names_index]
+    names = data[names_row[4] : names_row[4] + names_row[5]]
+    out = []
+    for name_off, kind, flags, addr, offset, size in rows:
+        if not flags & 0x2 or not size or not addr:
+            continue
+        name = names[name_off : names.index(b"\0", name_off)].decode()
+        perm = (1 if flags & 0x4 else 0) | (2 if flags & 0x1 else 0) | 4
+        out.append((name, addr, addr + size, None if kind == 8 else offset, perm))
+    # IDA covers the rest of each PT_LOAD's file bytes (the ELF header and
+    # program headers among them) with segments named `LOAD`.
+    if wide:
+        phoff = struct.unpack_from("<Q", data, 0x20)[0]
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    else:
+        phoff = struct.unpack_from("<I", data, 0x1C)[0]
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x2A)
+    for index in range(phnum):
+        at = phoff + index * phentsize
+        if wide:
+            kind, flags, offset, vaddr, _paddr, filesz = struct.unpack_from("<IIQQQQ", data, at)
+        else:
+            kind, offset, vaddr, _paddr, filesz, _memsz, flags = struct.unpack_from(
+                "<IIIIIII", data, at
+            )
+        if kind != 1 or not filesz:
+            continue
+        perm = (1 if flags & 0x1 else 0) | (2 if flags & 0x2 else 0) | 4
+        cursor, end = vaddr, vaddr + filesz
+        for _name, start, stop, _offset, _perm in sorted(out, key=lambda row: row[1]):
+            if stop <= cursor or start >= end:
+                continue
+            if start > cursor:
+                out.append(("LOAD", cursor, start, offset + cursor - vaddr, perm))
+            cursor = max(cursor, stop)
+        if cursor < end:
+            out.append(("LOAD", cursor, end, offset + cursor - vaddr, perm))
+    return sorted(out, key=lambda row: row[1])
 
 
 def executable_ranges(path: Path) -> list[tuple[int, int]]:
@@ -391,9 +481,36 @@ def main() -> int:
         copy.write_bytes(bytes(changed))
         idb.recorded = str(temp / "gone" / sign_image.name)
         plugin._verified_inputs.clear()
-        idb.answer(None)  # the last-resort dialog: cancel
-        plugin.GenerateHandler().activate(None)
-        check(not idb.answers, "a file with another hash is not used without asking")
+        # With no matching file anywhere, the image is rebuilt from the IDB,
+        # without a dialog, and signs like the stripped copy of the binary.
+        from_idb = temp / "from-idb.yaml"
+        idb.answer(str(from_idb))
+        plugin.GenerateHandler().run()
+        reference = temp / "stripped.yaml"
+        stripped_copy = args.corpus / "stripped" / sign_rel
+        subprocess.run(
+            [
+                str(native),
+                "gen",
+                "--file",
+                str(stripped_copy),
+                "--rva",
+                hex(by_name[target]),
+                "--tool",
+                "IDA",
+                "--output",
+                str(reference),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        check(
+            not idb.answers
+            and idb.recorded != str(copy)
+            and from_idb.exists()
+            and from_idb.read_bytes() == reference.read_bytes(),
+            "without the binary, the IDB alone signs like the stripped file (no dialog)",
+        )
 
         # The other build, stripped: only its exported functions are named.
         exports = dynamic_functions(apply_image)

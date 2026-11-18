@@ -17,14 +17,25 @@ packaged release puts it), then PATH. On first use the plugin runs
 ``sigtool-native --version`` and warns when it writes another signature spec
 than this plugin expects.
 
-The CLI reads the IDB's input file, because an IDB holds only the loaded
-segments and the matcher also needs the parts IDA drops (relocations, unwind
-tables, dynamic symbols). The plugin finds that file itself: the path IDA
-recorded, else a file of the same name beside the IDB (an IDB copied to
-another machine or folder), each accepted only when its SHA-256 equals the
-one IDA stored when the IDB was made. A file found somewhere new is recorded
-in the IDB, so the plugin asks for it at most once, and only when no
-candidate matches.
+The IDB is all the plugin needs. The CLI reads an image file, so the plugin
+hands it one of two things:
+
+* the input file itself, when it is on disk: the path IDA recorded, else a
+  file of the same name beside the IDB (an IDB copied to another machine or
+  folder), each accepted only when its SHA-256 equals the one IDA stored when
+  the IDB was made. A file found somewhere new is recorded in the IDB. An
+  unstripped ELF file also supplies its ``.symtab`` names, which the IDB
+  route does not.
+* otherwise, the image rebuilt from the IDB: every byte IDA loaded, with
+  patches reverted, back at its file offset, plus the headers IDA did not
+  load. ELF gets a section table made from the segments (the CLI reads the
+  dynamic symbols and relocations from the dynamic segment); PE gets its NT
+  headers from IDA's copy (``peutils_t``) and a section table made from the
+  segments. Signatures from a rebuilt image are byte-identical to ones from
+  the stripped file (ELF) or the file itself (PE).
+
+A file dialog asks for the input file only when neither works (an IDB of
+another format).
 
 Actions land in a ``sigtool`` menu (Edit > Plugins when IDA cannot add one)
 and on the right-click menus of the disassembly, pseudocode, and Functions
@@ -65,6 +76,7 @@ import os
 import queue
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
@@ -324,6 +336,169 @@ def file_matches(path: str, sha256: bytes | None, size: int | None) -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class Segment:
+    """One IDB segment: where it maps, where its bytes sit in the input file
+    (``None`` for zero-fill such as ``.bss``), and its permissions."""
+
+    name: str
+    start: int
+    end: int
+    file_offset: int | None
+    executable: bool
+    writable: bool
+
+
+_SHT_PROGBITS, _SHT_STRTAB, _SHT_NOBITS = 1, 3, 8
+_SHF_WRITE, _SHF_ALLOC, _SHF_EXECINSTR = 0x1, 0x2, 0x4
+
+
+def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
+    """An ELF image from an IDB: ``image`` holds the input file's bytes at their
+    file offsets (zero where the IDB has none), and a section table describing
+    ``segments`` is appended. ``None`` if ``image`` is not a little-endian ELF.
+
+    What an IDB lacks is what ``strip --strip-all`` removes (``.symtab``, the
+    section table), plus how IDA merged unnamed sections into ``LOAD``
+    segments; ``sigtool-native`` reads the dynamic symbols and relocations
+    from the dynamic segment when the section table does not describe them.
+    """
+    if len(image) < 0x40 or image[:4] != b"\x7fELF" or image[5] != 1:
+        return None
+    is64 = image[4] == 2
+    if not is64 and image[4] != 1:
+        return None
+    entry = struct.Struct("<IIQQQQIIQQ" if is64 else "<IIIIIIIIII")
+    names = bytearray(b"\0")
+    rows = [entry.pack(*([0] * 10))]
+
+    def name_offset(name: str) -> int:
+        offset = len(names)
+        names.extend(name.encode("utf-8", "replace") + b"\0")
+        return offset
+
+    for segment in sorted(segments, key=lambda item: item.start):
+        if segment.end <= segment.start:
+            continue
+        flags = _SHF_ALLOC
+        flags |= _SHF_EXECINSTR if segment.executable else 0
+        flags |= _SHF_WRITE if segment.writable else 0
+        kind = _SHT_NOBITS if segment.file_offset is None else _SHT_PROGBITS
+        offset = segment.file_offset or 0
+        size = segment.end - segment.start
+        if kind == _SHT_PROGBITS and offset + size > len(image):
+            return None
+        rows.append(
+            entry.pack(
+                name_offset(segment.name), kind, flags, segment.start, offset, size, 0, 0, 1, 0
+            )
+        )
+    table_name = name_offset(".shstrtab")
+    names_offset = len(image)
+    rows.append(entry.pack(table_name, _SHT_STRTAB, 0, 0, names_offset, len(names), 0, 0, 1, 0))
+    table_offset = (names_offset + len(names) + 7) & ~7
+    out = bytearray(image)
+    out += names
+    out += bytes(table_offset - len(out))
+    for row in rows:
+        out += row
+    if is64:
+        struct.pack_into("<Q", out, 0x28, table_offset)
+        struct.pack_into("<HHH", out, 0x3A, entry.size, len(rows), len(rows) - 1)
+    else:
+        struct.pack_into("<I", out, 0x20, table_offset)
+        struct.pack_into("<HHH", out, 0x2E, entry.size, len(rows), len(rows) - 1)
+    return bytes(out)
+
+
+# IDA keeps the PE headers it parsed (`peutils_t().header()`) in its own
+# `peheader_t`: the PE32 layout of signature, COFF header, and optional header,
+# with a PE32+ image base widened in place, then 16 data directories.
+_IDA_PE_HEADER_SIZE = 248
+_PE64_MACHINES = (0x8664, 0xAA64)
+
+
+def rebuild_pe(
+    image: bytes, segments: Iterable[Segment], header: bytes, image_base: int
+) -> bytes | None:
+    """A PE image from an IDB: ``image`` holds the section bytes at their file
+    offsets; IDA does not load the headers, so a DOS header pointing past the
+    image, NT headers made from ``header`` (IDA's copy), and a section table
+    describing ``segments`` are written. ``None`` if ``header`` is not one.
+    """
+    if len(header) < _IDA_PE_HEADER_SIZE or header[:4] != b"PE\0\0":
+        return None
+    machine, _count, timestamp = struct.unpack_from("<HHI", header, 4)
+    characteristics = struct.unpack_from("<H", header, 22)[0]
+    entry = struct.unpack_from("<I", header, 40)[0]
+    section_align, file_align = struct.unpack_from("<II", header, 56)
+    subsystem, dll_characteristics = struct.unpack_from("<HH", header, 92)
+    directories = [struct.unpack_from("<II", header, 120 + 8 * index) for index in range(16)]
+    is64 = machine in _PE64_MACHINES
+
+    sections = []
+    for segment in sorted(segments, key=lambda item: item.start):
+        size = segment.end - segment.start
+        if size <= 0 or segment.start < image_base:
+            continue
+        raw_ptr = segment.file_offset or 0
+        raw_size = min(size, max(0, len(image) - raw_ptr)) if segment.file_offset is not None else 0
+        flags = 0x4000_0000  # IMAGE_SCN_MEM_READ
+        if segment.executable:
+            flags |= 0x2000_0000 | 0x20  # MEM_EXECUTE, CNT_CODE
+        if segment.writable:
+            flags |= 0x8000_0000
+        name = segment.name.encode("ascii", "replace")[:8].ljust(8, b"\0")
+        sections.append(
+            struct.pack(
+                "<8sIIIIIIHHI",
+                name,
+                size,
+                segment.start - image_base,
+                raw_size,
+                raw_ptr,
+                0,
+                0,
+                0,
+                0,
+                flags,
+            )
+        )
+    if not sections:
+        return None
+    size_of_image = max(segment.end for segment in segments) - image_base
+
+    optional = bytearray(240 if is64 else 224)
+    struct.pack_into("<H", optional, 0, 0x20B if is64 else 0x10B)
+    struct.pack_into("<I", optional, 16, entry)
+    if is64:
+        struct.pack_into("<Q", optional, 24, image_base)
+    else:
+        struct.pack_into("<I", optional, 28, image_base)
+    struct.pack_into("<II", optional, 32, section_align or 0x1000, file_align or 0x200)
+    struct.pack_into("<I", optional, 56, size_of_image)
+    struct.pack_into("<HH", optional, 68, subsystem, dll_characteristics)
+    count_at, directories_at = (108, 112) if is64 else (92, 96)
+    struct.pack_into("<I", optional, count_at, 16)
+    for index, (rva, size) in enumerate(directories):
+        struct.pack_into("<II", optional, directories_at + 8 * index, rva, size)
+    coff = struct.pack(
+        "<HHIIIHH", machine, len(sections), timestamp, 0, 0, len(optional), characteristics
+    )
+
+    out = bytearray(image)
+    # The original headers sit below the first section, where IDA kept no
+    # bytes; the rebuilt ones go after the image so no section byte moves.
+    lfanew = (len(out) + 7) & ~7
+    out += bytes(lfanew - len(out))
+    out += b"PE\0\0" + coff + optional + b"".join(sections)
+    if len(out) < 0x40:
+        out += bytes(0x40 - len(out))
+    out[0:2] = b"MZ"
+    struct.pack_into("<I", out, 0x3C, lfanew)
+    return bytes(out)
+
+
 def rename_blocker(
     rva: int,
     function_start: int | None,
@@ -559,7 +734,13 @@ def _input_file() -> str:
                 _remember_input_file(path, recorded)
             return path
 
-    # Last resort: the binary is not where IDA recorded it nor beside the IDB.
+    # No copy on disk: rebuild the image from the IDB itself.
+    rebuilt = _image_from_idb(root)
+    if rebuilt is not None:
+        return rebuilt
+
+    # Last resort, for a format the IDB cannot be rebuilt into yet (PE): the
+    # binary is not where IDA recorded it nor beside the IDB.
     where = f"not at {recorded}" if recorded else "no path recorded"
     path = ida_kernwin.ask_file(
         False, root or "*", f"Where is {root or 'the input file'}? ({where}, not beside the IDB)"
@@ -580,6 +761,100 @@ def _input_file() -> str:
         _verified_inputs[(key, stat.st_mtime_ns, stat.st_size)] = True
     _remember_input_file(path, recorded)
     return path
+
+
+# Images rebuilt from IDBs this session, by IDB path; the files live in one
+# temporary directory removed when the plugin unloads.
+_rebuilt_images: dict[str, str] = {}
+_rebuilt_dir: str | None = None
+
+
+def _idb_segments() -> list[Segment]:
+    segments = []
+    for start in idautils.Segments():
+        segment = ida_segment.getseg(start)
+        if segment is None:
+            continue
+        offset = int(ida_loader.get_fileregion_offset(int(segment.start_ea)))
+        # An ELF IDB's `extern` segment holds import names IDA made up, with
+        # no bytes in the file; a PE's `.idata` is also typed extern but is
+        # file-backed, and holds the import address table.
+        if segment.type == ida_segment.SEG_XTRN and offset < 0:
+            continue
+        segments.append(
+            Segment(
+                name=str(ida_segment.get_segm_name(segment) or ""),
+                start=int(segment.start_ea),
+                end=int(segment.end_ea),
+                file_offset=offset if offset >= 0 else None,
+                executable=bool(segment.perm & ida_segment.SEGPERM_EXEC),
+                writable=bool(segment.perm & ida_segment.SEGPERM_WRITE),
+            )
+        )
+    return segments
+
+
+def _ida_pe_header() -> bytes:
+    """IDA's copy of a PE IDB's headers (empty for any other format)."""
+    try:
+        header = idautils.peutils_t().header()
+    # IDA raises its own types for a non-PE IDB.
+    except Exception:
+        return b""
+    return bytes(header or b"")
+
+
+def _image_from_idb(root: str) -> str | None:
+    """The input file rebuilt from the IDB's original bytes, or ``None``."""
+    global _rebuilt_dir
+    key = _idb_path() or root
+    if key in _rebuilt_images and os.path.isfile(_rebuilt_images[key]):
+        return _rebuilt_images[key]
+    size = int(ida_nalt.retrieve_input_file_size() or 0)
+    segments = _idb_segments()
+    if size <= 0 or not segments:
+        return None
+    image = bytearray(size)
+    # Page by page: a segment's bytes are contiguous in the file only as far
+    # as IDA's file-region map says, so each page is placed by its own offset.
+    page = 0x1000
+    for segment in segments:
+        if segment.file_offset is None:
+            continue
+        ea = segment.start
+        while ea < segment.end:
+            take = min(page - (ea % page), segment.end - ea)
+            offset = int(ida_loader.get_fileregion_offset(ea))
+            data = ida_bytes.get_bytes(ea, take) if offset >= 0 else None
+            if data and offset + len(data) <= size:
+                image[offset : offset + len(data)] = data
+            ea += take
+
+        # A patched byte goes back to its original value: a signature must
+        # describe the shipped code, and the same file signed outside IDA.
+        def restore(_ea, fpos, original, _patched):
+            if 0 <= fpos < size:
+                image[fpos] = original & 0xFF
+            return 0
+
+        ida_bytes.visit_patched_bytes(segment.start, segment.end, restore)
+    rebuilt = rebuild_elf(bytes(image), segments)
+    if rebuilt is None:
+        rebuilt = rebuild_pe(
+            bytes(image), segments, _ida_pe_header(), int(ida_nalt.get_imagebase())
+        )
+    if rebuilt is None:
+        return None
+    if _rebuilt_dir is None:
+        _rebuilt_dir = tempfile.mkdtemp(prefix="sigtool-idb-")
+    # The file name is the module name signatures record; keep the input's.
+    folder = Path(_rebuilt_dir) / str(len(_rebuilt_images))
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (_safe_file_name(root) if root else "image")
+    path.write_bytes(rebuilt)
+    _rebuilt_images[key] = str(path)
+    ida_kernwin.msg(f"sigtool: input file not on disk; read the image from the IDB ({path})\n")
+    return str(path)
 
 
 def _remember_input_file(path: str, recorded: str) -> None:
@@ -1198,6 +1473,9 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
         if self._menu:
             ida_kernwin.delete_menu(MENU_NAME)
             self._menu = False
+        if _rebuilt_dir is not None:
+            shutil.rmtree(_rebuilt_dir, ignore_errors=True)
+            _rebuilt_images.clear()
 
 
 class ActionPicker(ida_kernwin.Choose):

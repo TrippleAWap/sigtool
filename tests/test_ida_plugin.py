@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import re
+import struct
 import sys
 import tempfile
 import types
@@ -264,6 +265,75 @@ class InputFileTests(unittest.TestCase):
         self.assertIsNone(plugin.known_digest(b""))
         self.assertIsNone(plugin.known_digest(bytes(32)))
         self.assertEqual(plugin.known_digest(b"" * 32), b"" * 32)
+
+
+class RebuildTests(unittest.TestCase):
+    def segments(self):
+        return [
+            plugin.Segment(".text", 0x1000, 0x1100, 0x1000, True, False),
+            plugin.Segment(".data", 0x2000, 0x2040, 0x1100, False, True),
+            plugin.Segment(".bss", 0x2040, 0x2080, None, False, True),
+        ]
+
+    def test_elf_gets_a_section_table_of_the_segments(self):
+        image = bytearray(0x1140)
+        image[:6] = b"ELF"
+        out = plugin.rebuild_elf(bytes(image), self.segments())
+        self.assertEqual(out[: len(image)][0x40:], bytes(image)[0x40:])
+        shoff = struct.unpack_from("<Q", out, 0x28)[0]
+        entsize, count, names_index = struct.unpack_from("<HHH", out, 0x3A)
+        self.assertEqual((entsize, count, names_index), (64, 5, 4))
+        rows = [struct.unpack_from("<IIQQQQIIQQ", out, shoff + 64 * i) for i in range(count)]
+        names = rows[names_index]
+        strings = out[names[4] : names[4] + names[5]]
+
+        def name(row):
+            return strings[row[0] : strings.index(b"\0", row[0])].decode()
+
+        self.assertEqual([name(row) for row in rows[1:]], [".text", ".data", ".bss", ".shstrtab"])
+        text, data, bss = rows[1:4]
+        self.assertEqual(
+            (text[1], text[2], text[3], text[4], text[5]), (1, 0x6, 0x1000, 0x1000, 0x100)
+        )
+        self.assertEqual((data[2], data[4]), (0x3, 0x1100))
+        self.assertEqual(bss[1], 8)
+
+    def test_elf_rejects_other_formats_and_segments_past_the_file(self):
+        self.assertIsNone(plugin.rebuild_elf(b"MZ" + bytes(0x100), self.segments()))
+        elf = b"ELF" + bytes(0x100)
+        self.assertIsNone(plugin.rebuild_elf(elf, self.segments()))
+
+    def test_pe_headers_are_appended_and_sections_keep_their_offsets(self):
+        header = bytearray(248)
+        header[:4] = b"PE\0\0"
+        struct.pack_into("<HH", header, 4, 0x8664, 3)
+        struct.pack_into("<I", header, 40, 0x1010)
+        struct.pack_into("<II", header, 120 + 8, 0x1080, 0x28)  # import directory
+        base = 0x180000000
+        segments = [
+            plugin.Segment(".text", base + 0x1000, base + 0x1100, 0x1000, True, False),
+            plugin.Segment(".data", base + 0x2000, base + 0x2040, 0x1100, False, True),
+        ]
+        image = bytes(0x1140)
+        out = plugin.rebuild_pe(image, segments, bytes(header), base)
+        self.assertEqual(out[:2], b"MZ")
+        lfanew = struct.unpack_from("<I", out, 0x3C)[0]
+        self.assertGreaterEqual(lfanew, len(image))
+        self.assertEqual(out[lfanew : lfanew + 4], b"PE\0\0")
+        machine, count = struct.unpack_from("<HH", out, lfanew + 4)
+        optional_size = struct.unpack_from("<H", out, lfanew + 20)[0]
+        self.assertEqual((machine, count, optional_size), (0x8664, 2, 240))
+        optional = lfanew + 24
+        self.assertEqual(struct.unpack_from("<H", out, optional)[0], 0x20B)
+        self.assertEqual(struct.unpack_from("<Q", out, optional + 24)[0], base)
+        self.assertEqual(struct.unpack_from("<II", out, optional + 112 + 8), (0x1080, 0x28))
+        table = optional + optional_size
+        name, vsize, rva, raw_size, raw_ptr = struct.unpack_from("<8sIIII", out, table)
+        self.assertEqual(
+            (name.rstrip(b"\0"), vsize, rva, raw_size, raw_ptr),
+            (b".text", 0x100, 0x1000, 0x100, 0x1000),
+        )
+        self.assertIsNone(plugin.rebuild_pe(image, segments, b"", base))
 
 
 class NativeDiscoveryTests(unittest.TestCase):
