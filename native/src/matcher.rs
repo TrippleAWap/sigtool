@@ -262,10 +262,14 @@ struct ScanKeys {
     /// key.
     dimension: Vec<Option<usize>>,
     dimensions: usize,
+    /// Per dimension: one of [`CROSS_ISA_SHAPE_DIMENSIONS`].
+    isa_stable: Vec<bool>,
+    /// The target's ISA family is none of the signature's samples'.
+    cross_isa: bool,
 }
 
 impl ScanKeys {
-    fn new(signature: &Signature) -> ScanKeys {
+    fn new(signature: &Signature, cross_isa: bool) -> ScanKeys {
         let keys = feature_keys(signature);
         let mut required_weight: f64 = signature
             .features
@@ -311,7 +315,15 @@ impl ScanKeys {
                 })
                 .collect(),
             dimension,
+            isa_stable: {
+                let mut stable = vec![false; dimensions.len()];
+                for (name, index) in &dimensions {
+                    stable[*index] = CROSS_ISA_SHAPE_DIMENSIONS.contains(&name.as_str());
+                }
+                stable
+            },
             dimensions: dimensions.len(),
+            cross_isa,
             keys,
         }
     }
@@ -320,7 +332,7 @@ impl ScanKeys {
     fn accept(&self, signature: &Signature, present: &HashSet<String>) -> Option<MatchScore> {
         if self.required_weight <= 0.0 {
             let result = compare_with_keys(signature, &self.keys, present);
-            return accepts(signature, &result).then_some(result);
+            return accepts_on(signature, &result, self.cross_isa).then_some(result);
         }
         // 1: the candidate holds the key itself; 2: only inherited.
         let state: Vec<u8> = self
@@ -367,19 +379,31 @@ impl ScanKeys {
             .iter()
             .zip(&state)
             .any(|(named, state)| *named && *state == 1);
-        if self.needs_shape && !named {
-            let agreement = if self.dimensions == 0 {
-                1.0
-            } else {
-                let mut agrees = vec![false; self.dimensions];
-                for (dimension, state) in self.dimension.iter().zip(&state) {
-                    if let Some(dimension) = dimension {
-                        agrees[*dimension] |= *state == 1;
-                    }
+        if self.needs_shape && !named && self.dimensions > 0 {
+            let mut agrees = vec![false; self.dimensions];
+            for (dimension, state) in self.dimension.iter().zip(&state) {
+                if let Some(dimension) = dimension {
+                    agrees[*dimension] |= *state == 1;
                 }
-                agrees.iter().filter(|agrees| **agrees).count() as f64 / self.dimensions as f64
+            }
+            let agreement = |stable_only: bool| {
+                let counted: Vec<bool> = agrees
+                    .iter()
+                    .zip(&self.isa_stable)
+                    .filter(|(_, stable)| !stable_only || **stable)
+                    .map(|(agrees, _)| *agrees)
+                    .collect();
+                if counted.is_empty() {
+                    0.0
+                } else {
+                    counted.iter().filter(|agrees| **agrees).count() as f64 / counted.len() as f64
+                }
             };
-            if agreement < MIN_SHAPE_AGREEMENT {
+            let corroborated = agreement(false) >= MIN_SHAPE_AGREEMENT
+                || (self.cross_isa
+                    && matched_required >= MIN_CROSS_ISA_REQUIRED
+                    && agreement(true) >= MIN_SHAPE_AGREEMENT);
+            if !corroborated {
                 return None;
             }
         }
@@ -414,6 +438,69 @@ impl ScanKeys {
 /// (an op class one architecture lacks is a dimension that sample cannot
 /// agree with), so 0.8 is the strictest value that costs no merges.
 pub const MIN_SHAPE_AGREEMENT: f64 = 0.8;
+
+/// Shape dimensions that keep their bucket when the instruction set changes.
+///
+/// x86-64 folds loads into arithmetic and pushes one register per
+/// instruction, AArch64 pairs registers in `stp`/`ldp` and has
+/// compare-and-branch, ARM32 saves every register in one `push` and
+/// predicates; so the `move`, `arith`, `logic`, `load`, `stack`, `cmp`,
+/// `mul`, `vector`, and `misc` counts of one source function differ by ISA,
+/// not by function. Measured on the real corpus (`examples/diagnose_cross`,
+/// 1200 true pairs across ISA families, same build, `--max-functions 4`):
+/// exact bucket agreement of the true function is 0.88 `cfg:loops`, 0.82
+/// `ops:call`, 0.74 `ops:ret` and `ops:cond`, 0.71 `cfg:blocks`, 0.69
+/// `cfg:edges`, 0.57 `ops:branch`, 0.53 `ops:cmp`, 0.50 `ops:store`, and at
+/// most 0.36 for the rest (`ops:stack` 0.12, `ops:misc` 0.05). Simulated
+/// acceptance of those pairs at the floor below, with 0.410 for this set:
+/// adding `ops:cmp` 0.398, dropping `ops:store` 0.412, dropping `ops:store`
+/// and `ops:branch` 0.415, false hits equal; the differences are 2-6 pairs,
+/// so the set stays as built and measured.
+pub const CROSS_ISA_SHAPE_DIMENSIONS: [&str; 8] = [
+    "cfg:blocks",
+    "cfg:edges",
+    "cfg:loops",
+    "ops:branch",
+    "ops:call",
+    "ops:cond",
+    "ops:ret",
+    "ops:store",
+];
+
+/// True when no sample of the signature comes from the target's instruction
+/// set, so only [`CROSS_ISA_SHAPE_DIMENSIONS`] corroborate its shape. ARM and
+/// Thumb code are one ISA family here: an ELF image holds both under one
+/// `arm32` arch (SPEC.md §1.3), and their op-class buckets agree like one
+/// arch's builds do.
+pub fn cross_isa(signature: &Signature, target: crate::arch::Arch) -> bool {
+    fn family(arch: &str) -> &str {
+        if arch == "thumb" {
+            "arm32"
+        } else {
+            arch
+        }
+    }
+    let target = family(target.as_str());
+    !signature
+        .provenance
+        .iter()
+        .any(|sample| family(&sample.arch) == target)
+}
+
+/// Distinct required features a cross-ISA candidate must match before
+/// [`CROSS_ISA_SHAPE_DIMENSIONS`] alone may corroborate its shape.
+///
+/// The stable dimensions are few and coarse, so on their own they let tiny
+/// lookalikes through. Simulated on the real corpus (true cross-ISA
+/// same-build pairs from `examples/diagnose_cross`; false hits from
+/// `examples/cross_fp`: every sample signature scanned hint-free against the
+/// other libraries' stripped images in the other ISA families, same build,
+/// counted as (signature, target arch) pairs with a hit, of 1200): without
+/// the rule 0.366 accepted and 66 false; no floor 0.475 and 172; 2, 0.447
+/// and 132; 3, 0.426 and 96; 4, 0.410 and 70; 5, 0.388 and 66; 6, 0.376 and
+/// 66. 4 costs 4 false pairs (all shape-only, none identified) for 0.022
+/// more acceptance than 5.
+pub const MIN_CROSS_ISA_REQUIRED: usize = 4;
 
 /// A constant within a byte of zero (either sign) is compiler boilerplate:
 /// loop steps, field offsets, `-8` stack alignment. It identifies nothing.
@@ -464,6 +551,12 @@ pub fn needs_shape_corroboration(signature: &Signature) -> bool {
 /// matched, which keeps merged signatures (one bucket per sample
 /// architecture) usable on every architecture they were merged from.
 pub fn shape_agreement(signature: &Signature, matched: &[String]) -> f64 {
+    shape_agreement_on(signature, matched, false)
+}
+
+/// [`shape_agreement`], over [`CROSS_ISA_SHAPE_DIMENSIONS`] only when
+/// `stable_only`.
+pub fn shape_agreement_on(signature: &Signature, matched: &[String], stable_only: bool) -> f64 {
     let matched: HashSet<&str> = matched.iter().map(String::as_str).collect();
     let mut dimensions: std::collections::BTreeMap<String, bool> =
         std::collections::BTreeMap::new();
@@ -477,12 +570,15 @@ pub fn shape_agreement(signature: &Signature, matched: &[String]) -> f64 {
             .map(|(head, _)| head)
             .unwrap_or(&key)
             .to_string();
+        if stable_only && !CROSS_ISA_SHAPE_DIMENSIONS.contains(&dimension.as_str()) {
+            continue;
+        }
         let agrees = matched.contains(key.as_str());
         let entry = dimensions.entry(dimension).or_insert(false);
         *entry |= agrees;
     }
     if dimensions.is_empty() {
-        return 1.0;
+        return if stable_only { 0.0 } else { 1.0 };
     }
     dimensions.values().filter(|agrees| **agrees).count() as f64 / dimensions.len() as f64
 }
@@ -494,6 +590,12 @@ pub fn shape_agreement(signature: &Signature, matched: &[String]) -> f64 {
 /// (shape-only signatures of very small functions), which would otherwise be
 /// unable to match at all.
 pub fn accepts(signature: &Signature, result: &MatchScore) -> bool {
+    accepts_on(signature, result, false)
+}
+
+/// [`accepts`] on a target whose ISA family `cross_isa` ([`cross_isa`]) says
+/// no sample of the signature shares.
+pub fn accepts_on(signature: &Signature, result: &MatchScore, cross_isa: bool) -> bool {
     let required_count = signature
         .features
         .iter()
@@ -510,7 +612,10 @@ pub fn accepts(signature: &Signature, result: &MatchScore) -> bool {
         && result.matched_required >= signature.min_distinct.min(required_count)
         && (!needs_shape_corroboration(signature)
             || named
-            || shape_agreement(signature, &result.matched) >= MIN_SHAPE_AGREEMENT)
+            || shape_agreement(signature, &result.matched) >= MIN_SHAPE_AGREEMENT
+            || (cross_isa
+                && result.matched_required >= MIN_CROSS_ISA_REQUIRED
+                && shape_agreement_on(signature, &result.matched, true) >= MIN_SHAPE_AGREEMENT))
 }
 
 /// Find accepted matches for `signature` in `source`, best first.
@@ -1331,7 +1436,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
-    let keys = ScanKeys::new(signature);
+    let keys = ScanKeys::new(signature, cross_isa(signature, source.arch()));
     for start in candidate_starts(source, signature, hits, max_candidates, hints, index, code) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
@@ -2468,6 +2573,80 @@ mod tests {
     fn unescape_reverses_quotes() {
         assert_eq!(unescape("a\\\"b\\\\c").as_deref(), Some("a\"b\\c"));
         assert_eq!(unescape("long:abc"), None);
+    }
+
+    /// A low-information signature from `arch`: four small required
+    /// constants, three ISA-stable shape dimensions and three ISA-specific
+    /// ones.
+    fn small_constant_signature(arch: &str) -> Signature {
+        let feature = |kind, value: &str, weight, required| crate::sigfile::SignatureFeature {
+            kind,
+            value: value.to_string(),
+            weight,
+            required,
+        };
+        let mut features = vec![
+            feature(FeatureKind::Cfg, "blocks:3", 0.25, false),
+            feature(FeatureKind::Cfg, "edges:3", 0.25, false),
+            feature(FeatureKind::Cfg, "loops:0", 0.25, false),
+            feature(FeatureKind::Ops, "load:4", 0.15, false),
+            feature(FeatureKind::Ops, "move:5", 0.15, false),
+            feature(FeatureKind::Ops, "stack:5", 0.15, false),
+        ];
+        for value in ["0x1", "0x2", "0x4", "0x8"] {
+            features.push(feature(FeatureKind::Const, value, 0.42, true));
+        }
+        features.sort_by(|a, b| (a.kind, &a.value).cmp(&(b.kind, &b.value)));
+        Signature::new(
+            "small",
+            features,
+            Vec::new(),
+            0.75,
+            3,
+            "low",
+            vec![crate::sigfile::SampleProvenance {
+                arch: arch.to_string(),
+                module: "m".to_string(),
+                rva: 0x1000,
+                opt: None,
+                tool: None,
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cross_isa_candidates_corroborate_on_stable_dimensions_with_enough_evidence() {
+        use crate::arch::Arch;
+        let signature = small_constant_signature("x64");
+        assert!(cross_isa(&signature, Arch::Arm64));
+        assert!(!cross_isa(&signature, Arch::X64));
+        assert!(!cross_isa(&small_constant_signature("thumb"), Arch::Arm32));
+        // An arm64 candidate: the same CFG, but other load/move/stack buckets.
+        let shape = ["cfg:blocks:3", "cfg:edges:3", "cfg:loops:0"];
+        let candidate = |constants: &[&str]| -> HashSet<String> {
+            shape
+                .iter()
+                .chain(constants)
+                .chain(&["ops:load:3", "ops:move:3", "ops:stack:3"])
+                .map(|key| key.to_string())
+                .collect()
+        };
+        let four = candidate(&["const:0x1", "const:0x2", "const:0x4", "const:0x8"]);
+        let three = candidate(&["const:0x1", "const:0x2", "const:0x4"]);
+        for (present, cross, expected) in [
+            // Same ISA: 3 of 6 dimensions agree, below 0.8.
+            (&four, false, false),
+            // Across ISAs, the stable dimensions all agree, with 4 required.
+            (&four, true, true),
+            // Three required features are not enough to drop the rest.
+            (&three, true, false),
+        ] {
+            let result = compare_keys(&signature, present);
+            assert_eq!(accepts_on(&signature, &result, cross), expected);
+            let keys = ScanKeys::new(&signature, cross);
+            assert_eq!(keys.accept(&signature, present).is_some(), expected);
+        }
     }
 
     fn found(address: u64, similarity: f64, matched: &[&str]) -> Match {

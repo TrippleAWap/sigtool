@@ -1,5 +1,46 @@
 # Spec changelog
 
+## v4 — cross-ISA shape corroboration
+
+Matching only; extraction, feature records, and the signature document are
+unchanged, so `SPEC_VERSION` stays `4`.
+
+* A low-information signature scanned in an image of another ISA family
+  (`x64`, `arm64`, `arm32`; Thumb is `arm32`) also corroborates its shape on
+  the ISA-stable dimensions alone (`cfg:blocks`, `cfg:edges`, `cfg:loops`,
+  `ops:branch`, `ops:call`, `ops:cond`, `ops:ret`, `ops:store`) when the
+  candidate matches at least 4 distinct required features (SPEC.md §8).
+  Diagnosis (`examples/diagnose_cross`, the 1200 true cross-ISA same-build
+  pairs at `--max-functions 4`): 61% of those signatures are
+  low-information, and of the 761 true pairs that failed acceptance, 297
+  failed only the shape gate; across ISAs the `stack`, `arith`, `logic`,
+  `load`, `move` buckets of the true function agree 0.12-0.36 of the time,
+  `cfg:loops` and `ops:call` 0.82-0.88.
+* Real corpus, `bench --max-functions 4 --joint`, hint-free top-1: other
+  arch same build 0.306 -> 0.342, other arch other compiler 0.216 -> 0.219,
+  other arch cross opt 0.183 -> 0.184, merged same opt 0.652 -> 0.678,
+  merged held-out arch same opt 0.397 -> 0.448; hinted: other arch same
+  build 0.329 -> 0.338, merged held-out arch same opt 0.448 -> 0.464. Top-1
+  cells up 48 hint-free and 20 hinted, none down; same-arch rows, every
+  false-positive rate, and identified answers (hint-free 2747/2801, hinted
+  1774/1797) unchanged; joint top-1 8470 -> 8472 of 15594 (scanned alone
+  4165 -> 4227; other arch same build 0.458 -> 0.476). The bench measures
+  false positives in the signature's own arch only, so cross-ISA false hits
+  were measured separately (`examples/cross_fp`: each sample signature
+  scanned hint-free against the other libraries' stripped images in the
+  other ISA families, same build): 66 -> 70 of 1200 (signature, target
+  arch) pairs with a hit (0.055 -> 0.058), hits 413 -> 417, 0 identified
+  answers before and after.
+* Swept offline (true cross-ISA pairs accepted, `diagnose_cross`; false hit
+  pairs of 1200, `cross_fp`, both from a build with no floor), same build:
+  off 0.366 / 66; floor 0 0.475 / 172; 2 0.447 / 132; 3 0.426 / 96; 4 0.410
+  / 70; 5 0.388 / 66; 6 0.376 / 66; every stable dimension instead of 0.8,
+  no floor 0.393 / 108, floor 4 0.369 / 66; at floor 4, `ops:cmp` added
+  0.398 / 68, `ops:store` dropped 0.412 / 70, `ops:store` and `ops:branch`
+  dropped 0.415 / 70 (2-6 pairs; not built). Floor 4 keeps the false hits
+  within 0.003 of the rule's absence (all shape-only) for 0.022 more
+  acceptance than floor 5.
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,

@@ -31,7 +31,7 @@ costs their trust and can send an analysis the wrong way.
 ## 2. Goals for v1.0
 
 Every goal is a number the bench measures. "Now" is the current baseline
-(2026-11-16, spec v4). All recall figures are top-1: the expected function must be the
+(2026-11-17, spec v4). All recall figures are top-1: the expected function must be the
 single best match, and ties count as misses. Hint-free figures scan
 `strip --strip-all` copies.
 
@@ -42,10 +42,10 @@ single best match, and ties count as misses. Hint-free figures scan
 | Same arch, same build | 0.817 | 0.95 |
 | Same arch, other compiler, same level | 0.308 | 0.55 |
 | Same arch, other optimization level | 0.254 | 0.45 |
-| Other arch, same build settings | 0.306 | 0.60 |
-| Other arch, other compiler | 0.216 | 0.45 |
-| Other arch, other optimization level | 0.183 | 0.35 |
-| Merged x64+arm64 signature, held-out arch, same level | 0.397 | 0.70 |
+| Other arch, same build settings | 0.342 | 0.60 |
+| Other arch, other compiler | 0.219 | 0.45 |
+| Other arch, other optimization level | 0.184 | 0.35 |
+| Merged x64+arm64 signature, held-out arch, same level | 0.448 | 0.70 |
 
 ### G2. Find: whole-module sets (real corpus, hint-free, `bench --joint`)
 
@@ -328,7 +328,7 @@ documented.
 As of 2026-11-16, `native-first` branch, spec v4.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
-  same build 0.671, other arch 0.329, other arch other compiler 0.267.
+  same build 0.671, other arch 0.338, other arch other compiler 0.269.
 - Whole-module sets: the "Now" column of G2.
 - False positives: strong 0.040 (corpus) and 0.000 (negative), any-verdict
   hinted 0.111, hint-free 0.154.
@@ -510,5 +510,20 @@ As of 2026-11-16, `native-first` branch, spec v4.
   release. `workflow_dispatch` builds the same artifacts without publishing.
   The repository manifest lives in `packaging/` so the source zipball is
   not indexed as a plugin without its binary. Not yet run in CI.
+- Cross-ISA shape (2026-11-17, `cross-arch` branch, tuning corpus only):
+  low-information signatures scanned in another ISA family (`x64`, `arm64`,
+  `arm32` with Thumb) also corroborate shape on the ISA-stable dimensions
+  (`cfg:*`, `ops:branch/call/cond/ret/store`) when 4 distinct required
+  features match (SPEC.md §8). Full real bench `--joint`, hint-free top-1:
+  other arch same build 0.306 -> 0.342, other arch other compiler 0.216 ->
+  0.219, other arch cross opt 0.183 -> 0.184, merged held-out arch 0.397 ->
+  0.448; hinted other arch same build 0.329 -> 0.338; 48 hint-free and 20
+  hinted top-1 cells up, none down; FP rates and identified answers
+  unchanged; joint rows unchanged at three decimals. Cross-ISA false hits,
+  which the bench does not measure (`examples/cross_fp`): 66 -> 70 of 1200
+  (signature, target arch) pairs, none identified. G1 cross-arch targets
+  remain far off: the stable dimensions only recover pairs whose required
+  evidence already matches; the rest is feature work. Not yet run on
+  held-out. Real baseline re-saved for it (no cell dropped).
 - Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
   rule decision on in-module constants (M10).

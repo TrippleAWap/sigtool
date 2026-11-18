@@ -451,6 +451,18 @@ generation and never decodes with its own tables.
   per sample architecture still corroborates on each of them. A candidate that
   matched any `callee` feature without `!`, required or optional, needs no shape
   agreement: a matched name identifies the function (§2.1).
+* **Cross-ISA shape.** Most op-class counts of one source function differ by
+  instruction set (x86-64 folds loads into arithmetic and pushes one register
+  per instruction, AArch64 pairs registers and compares in the branch, ARM32
+  saves all registers in one `push`). When no provenance sample shares the
+  target's ISA family (`x64`, `arm64`, `arm32`; Thumb is `arm32`), a candidate
+  that matched at least `MIN_CROSS_ISA_REQUIRED` (4) distinct required
+  features also corroborates when it agrees with 0.8 of the signature's
+  ISA-stable dimensions alone: `cfg:blocks`, `cfg:edges`, `cfg:loops`,
+  `ops:branch`, `ops:call`, `ops:cond`, `ops:ret`, `ops:store`
+  (`CROSS_ISA_SHAPE_DIMENSIONS`). The required-feature floor keeps tiny
+  lookalikes out: with no floor, cross-ISA false hits in unrelated libraries
+  rose 0.055 -> 0.143 of (signature, target arch) pairs; with 4, to 0.058.
 
 Score definition, rounded to six decimals:
 
