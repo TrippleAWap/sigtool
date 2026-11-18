@@ -37,18 +37,26 @@ hands it one of two things:
 A file dialog asks for the input file only when neither works (an IDB of
 another format).
 
-Actions land in a ``sigtool`` menu (Edit > Plugins when IDA cannot add one)
-and on the right-click menus of the disassembly, pseudocode, and Functions
-views. In the Functions view they act on the selected rows.
+Ctrl-Alt-G (or Edit > Plugins > sigtool) opens the action menu, laid out
+like IDA-Fusion's: one radio row per action, the signatures DB that sign-all
+writes and apply-names reads, and "Configure settings", whose checkboxes are
+kept in IDA's registry. The menu remembers the last action and DB. By
+default nothing asks for a file: a new signature is copied to the clipboard
+and saved as ``sigtool/<function>.yaml`` beside the IDB, DBs go to the same
+folder, locate takes the signature on the clipboard, and the best match is
+jumped to. The actions are also in a ``sigtool`` menu (Edit > Plugins when
+IDA cannot add one) and on the right-click menus of the disassembly,
+pseudocode, and Functions views, where they act on the selected rows.
 
-* ``sigtool: generate signature``: sign the function under the cursor and
-  save the YAML (default: the function's name, beside the IDB). With several
-  functions selected in the Functions view, sign them into one DB instead.
+* ``sigtool: generate signature``: sign the function under the cursor (copy
+  and save it as the settings say). With several functions selected in the
+  Functions view, sign them into one DB instead.
 * ``sigtool: merge with another build``: sign the function together with the
   same function in other image files (at an address or RVA) into one
   multi-arch signature.
-* ``sigtool: locate signature in this IDB``: scan the input file with a saved
-  signature, list the matches, and jump to the best one.
+* ``sigtool: locate signature in this IDB``: scan the input file with the
+  signature on the clipboard (else a saved one), list the matches, and jump to
+  the best one.
 * ``sigtool: sign all named functions to a DB``: sign every function with a
   meaningful name (not ``sub_*`` or another IDA dummy name, not a thunk, an
   extern, or a stub under five bytes) into one signatures DB, in a single
@@ -58,11 +66,12 @@ views. In the Functions view they act on the selected rows.
   (``scan --db --discovery hint-free``, which resolves signatures from one
   module jointly through their call graph) and propose renames for functions
   whose match is ``identified``. The proposals open in a chooser with every
-  row selected except those that would replace a user name; the selected rows
-  are renamed. A name already used elsewhere in the IDB, two signatures
-  claiming one address, or one name claiming two addresses is skipped.
+  row selected except those that would replace a user name (both settings);
+  the selected rows are renamed. A name already used elsewhere in the IDB,
+  two signatures claiming one address, or one name claiming two addresses is
+  skipped.
 
-File dialogs start beside the IDB, or at the file last used for that action.
+File dialogs that remain start beside the IDB, or at the file last used.
 
 Together the last two are the "sign a whole IDB, apply the resolved names to
 another" workflow: sign the analysed IDB, then apply the DB in the other one.
@@ -70,6 +79,7 @@ another" workflow: sign the analysed IDB, then apply the DB in the other one.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -91,6 +101,7 @@ import ida_kernwin
 import ida_loader
 import ida_nalt
 import ida_name
+import ida_registry
 import ida_segment
 import idautils
 
@@ -107,7 +118,42 @@ SIGN_ALL_ACTION = "sigtool:sign_all"
 SIGN_ALL_LABEL = "sigtool: sign all named functions to a DB"
 APPLY_ACTION = "sigtool:apply_names"
 APPLY_LABEL = "sigtool: apply names from a DB"
+OPEN_ACTION = "sigtool:open"
+OPEN_LABEL = "sigtool: open menu"
+# One hotkey opens the action menu, as IDA-Fusion does with Ctrl-Alt-S
+# (which it keeps); the actions themselves stay on the right-click menus.
+OPEN_HOTKEY = "Ctrl-Alt-G"
 MENU_NAME = "sigtool:menu"
+# IDA registry subkey for the settings and the remembered menu state.
+REGISTRY_KEY = "sigtool"
+
+# Settings, one bit each in the order the settings form lists them.
+SET_COPY_TO_CLIPBOARD = 1 << 0
+SET_SAVE_BESIDE_IDB = 1 << 1
+SET_SHOW_REPORT = 1 << 2
+SET_LOCATE_CLIPBOARD = 1 << 3
+SET_AUTO_JUMP = 1 << 4
+SET_LIST_MATCHES = 1 << 5
+SET_CONFIRM_RENAMES = 1 << 6
+SET_PRESELECT_USER_NAMES = 1 << 7
+SETTINGS = (
+    (SET_COPY_TO_CLIPBOARD, "Copy created signatures to the clipboard"),
+    (SET_SAVE_BESIDE_IDB, "Save signatures and DBs in a sigtool folder beside the IDB (no dialog)"),
+    (SET_SHOW_REPORT, "Show the quality report in a dialog after signing"),
+    (SET_LOCATE_CLIPBOARD, "Locate the signature on the clipboard when there is one"),
+    (SET_AUTO_JUMP, "Auto jump to the best match"),
+    (SET_LIST_MATCHES, "List every match in a window"),
+    (SET_CONFIRM_RENAMES, "Confirm renames in a list before applying them"),
+    (SET_PRESELECT_USER_NAMES, "Also replace user names when applying (preselected)"),
+)
+DEFAULT_SETTINGS = (
+    SET_COPY_TO_CLIPBOARD
+    | SET_SAVE_BESIDE_IDB
+    | SET_LOCATE_CLIPBOARD
+    | SET_AUTO_JUMP
+    | SET_LIST_MATCHES
+    | SET_CONFIRM_RENAMES
+)
 # Generation decodes one function; locating sweeps the image. Both are bounded
 # so a pathological input cannot hang the IDA UI thread forever. Whole-IDB
 # runs have no fixed bound; they show a wait box with a cancel button instead.
@@ -269,13 +315,38 @@ def choose_renames(
     return proposals, sorted(skipped)
 
 
-def default_selection(proposals: list[Proposal]) -> list[int]:
+def default_selection(proposals: list[Proposal], include_user_names: bool = False) -> list[int]:
     """Rows the rename chooser starts with selected: all but user-name replacements.
 
     Replacing an analyst's name is shown, so it is one click away, but never
-    applied by just confirming the dialog.
+    applied by just confirming the dialog, unless the setting says so.
     """
-    return [index for index, item in enumerate(proposals) if not item.replaces_user_name]
+    return [
+        index
+        for index, item in enumerate(proposals)
+        if include_user_names or not item.replaces_user_name
+    ]
+
+
+def is_signature_text(text: str | None) -> bool:
+    """Whether ``text`` (say, the clipboard) is a sigtool signature document."""
+    if not text:
+        return False
+    return bool(
+        re.search(r"^spec_version:", text, re.MULTILINE)
+        and re.search(r"^features:", text, re.MULTILINE)
+    )
+
+
+def safe_file_name(name: str) -> str:
+    """``name`` usable as a file name (mangled names hold characters file systems refuse)."""
+    return re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+
+
+def output_path(idb_path: str, name: str, suffix: str) -> str:
+    """Where an output named ``name`` goes without asking: ``sigtool/`` beside the IDB."""
+    folder = os.path.join(os.path.dirname(idb_path) or os.getcwd(), "sigtool")
+    return os.path.join(folder, safe_file_name(name) + suffix)
 
 
 def _basename(path: str) -> str:
@@ -925,9 +996,83 @@ def _function_label(ea: int) -> str:
     )
 
 
-def _safe_file_name(name: str) -> str:
-    # Mangled C++ and Objective-C names hold characters file systems refuse.
-    return re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+_safe_file_name = safe_file_name
+
+
+def _settings() -> int:
+    try:
+        return int(ida_registry.reg_read_int("settings", DEFAULT_SETTINGS, REGISTRY_KEY))
+    except Exception:  # an IDA without a registry (tests) keeps the defaults
+        return DEFAULT_SETTINGS
+
+
+def _save_settings(value: int) -> None:
+    ida_registry.reg_write_int("settings", int(value), REGISTRY_KEY)
+
+
+def _setting(flag: int) -> bool:
+    return bool(_settings() & flag)
+
+
+def _remembered(name: str, default: str = "") -> str:
+    try:
+        return str(ida_registry.reg_read_string(name, REGISTRY_KEY, default) or default)
+    except Exception:
+        return default
+
+
+def _remember(name: str, value: str) -> None:
+    with contextlib.suppress(Exception):
+        ida_registry.reg_write_string(name, value, REGISTRY_KEY)
+
+
+def _qt_clipboard():
+    # IDA 9.2 ships PySide6 (Qt 6); older releases PyQt5. Without a GUI
+    # (idat), IDA 9.2's PyQt5 shim raises NotImplementedError, not ImportError.
+    for module in ("PySide6.QtWidgets", "PyQt5.QtWidgets"):
+        try:
+            widgets = __import__(module, fromlist=["QApplication"])
+        except Exception:
+            continue
+        app = widgets.QApplication.instance()
+        return app.clipboard() if app is not None else None
+    return None
+
+
+def _clipboard_text() -> str:
+    clipboard = _qt_clipboard()
+    return str(clipboard.text() or "") if clipboard is not None else ""
+
+
+def _set_clipboard(text: str) -> bool:
+    clipboard = _qt_clipboard()
+    if clipboard is None:
+        return False
+    clipboard.setText(text)
+    return True
+
+
+def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
+    """Hand a new signature over as the settings say: clipboard, a file beside
+    the IDB, or a save dialog when neither is on; the report goes to the
+    Output window, and to a dialog only if asked for."""
+    done = []
+    if _setting(SET_COPY_TO_CLIPBOARD) and _set_clipboard(text):
+        done.append("copied to the clipboard")
+    path = None
+    if _setting(SET_SAVE_BESIDE_IDB):
+        path = output_path(_idb_path(), label, suffix)
+    elif not done:
+        path = _ask_path("yaml", True, f"{safe_file_name(label)}{suffix}", f"Save {label} as")
+    if path:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(text, encoding="utf-8")
+        _last_paths["yaml"] = path
+        done.append(f"saved to {path}")
+    ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
+    ida_kernwin.msg(f"sigtool: signature of {label} {' and '.join(done) or 'discarded'}\n")
+    if _setting(SET_SHOW_REPORT):
+        ida_kernwin.info(f"{report}\n\n{label}: {', '.join(done) or 'not saved'}")
 
 
 def _ask_sample() -> str | None:
@@ -995,12 +1140,26 @@ def _named_functions() -> list[dict[str, str]]:
     return _function_entries(idautils.Functions())[0]
 
 
-def _sign_to_db(image: str, functions: list[dict[str, str]], what: str) -> None:
-    """Sign ``functions`` into a DB the user names, and report what was signed."""
-    stem = Path(ida_nalt.get_root_filename() or Path(image).name).name
-    path = _ask_path("db", True, f"{stem}.db", f"Save the signatures DB for {what} as")
+def _db_path(name: str, what: str, given: str | None = None) -> str | None:
+    """Where a new DB goes: ``given`` (the menu's DB field), beside the IDB when
+    that setting is on, else a save dialog."""
+    if given:
+        return given
+    if _setting(SET_SAVE_BESIDE_IDB):
+        return output_path(_idb_path(), name, ".db")
+    return _ask_path(
+        "db", True, f"{safe_file_name(name)}.db", f"Save the signatures DB for {what} as"
+    )
+
+
+def _sign_to_db(
+    image: str, functions: list[dict[str, str]], what: str, name: str, db: str | None = None
+) -> None:
+    """Sign ``functions`` into a DB, and report what was signed."""
+    path = _db_path(name, what, db)
     if not path:
         return
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         listing = Path(temp) / "functions.json"
         listing.write_text(json.dumps(functions), encoding="utf-8")
@@ -1026,8 +1185,11 @@ def _sign_to_db(image: str, functions: list[dict[str, str]], what: str) -> None:
     for line in stderr.splitlines():
         if line.startswith("skipped "):
             ida_kernwin.msg(f"sigtool: {line}\n")
-    ida_kernwin.msg(f"sigtool: wrote {path}\n")
-    ida_kernwin.info(f"{summarize_build(report)}\n\nDB: {path}")
+    _last_paths["db"] = path
+    _remember("db", path)
+    summary = summarize_build(report)
+    ida_kernwin.msg(f"sigtool: {summary.splitlines()[0]}; wrote {path}\n")
+    ida_kernwin.info(f"{summary}\n\nDB: {path}")
 
 
 class _Handler(ida_kernwin.action_handler_t):
@@ -1060,8 +1222,16 @@ def _generate(image: str, ea: int, output: Path) -> str:
     ).strip()
 
 
+def _image_stem() -> str:
+    return Path(ida_nalt.get_root_filename() or Path(_idb_path()).stem or "image").name
+
+
 class GenerateHandler(_Handler):
     """Sign the function under the cursor, or the Functions view's selection to a DB."""
+
+    def __init__(self, db: str | None = None) -> None:
+        super().__init__()
+        self.db = db
 
     def run(self, ctx=None) -> None:
         starts = _target_functions(ctx)
@@ -1075,7 +1245,8 @@ class GenerateHandler(_Handler):
                     f"none of the {len(starts)} selected functions can be signed "
                     "(see the Output window)"
                 )
-            _sign_to_db(image, functions, f"{len(functions)} selected functions")
+            what = f"{len(functions)} selected functions"
+            _sign_to_db(image, functions, what, f"{_image_stem()}.selection", self.db)
             return
         ea = starts[0]
         label = _function_label(ea)
@@ -1083,15 +1254,7 @@ class GenerateHandler(_Handler):
             output = Path(temp) / "signature.yaml"
             report = _generate(image, ea, output)
             text = output.read_text(encoding="utf-8")
-        ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
-        path = _ask_path(
-            "yaml", True, f"{_safe_file_name(label)}.yaml", f"Save the signature of {label} as"
-        )
-        if not path:
-            return
-        Path(path).write_text(text, encoding="utf-8")
-        ida_kernwin.msg(f"sigtool: wrote {path}\n")
-        ida_kernwin.info(f"{report}\n\nSaved {path}")
+        _deliver_signature(text, report, label, ".yaml")
 
 
 class MergeHandler(_Handler):
@@ -1120,29 +1283,26 @@ class MergeHandler(_Handler):
                 arguments, f"sigtool: merging {len(samples)} builds of {label}"
             ).strip()
             text = output.read_text(encoding="utf-8")
-        ida_kernwin.msg(f"sigtool: {label} (merged):\n{report}\n")
-        path = _ask_path(
-            "yaml",
-            True,
-            f"{_safe_file_name(label)}.merged.yaml",
-            f"Save the merged signature of {label} as",
-        )
-        if not path:
-            return
-        Path(path).write_text(text, encoding="utf-8")
-        ida_kernwin.msg(f"sigtool: wrote merged signature {path}\n")
-        ida_kernwin.info(f"{report}\n\nSaved {path}")
+        _deliver_signature(text, report, label, ".merged.yaml")
 
 
 class LocateHandler(_Handler):
-    """Scan this IDB's input file with a saved signature and list the matches."""
+    """Scan this IDB with a signature (the clipboard's, else a file) and jump to it."""
 
     def run(self, ctx=None) -> None:
-        signature = _ask_path("yaml", False, "*.yaml", "Signature to locate in this IDB")
-        if not signature:
-            return
-        image = _input_file()
         with tempfile.TemporaryDirectory() as temp:
+            signature = None
+            clipboard = _clipboard_text() if _setting(SET_LOCATE_CLIPBOARD) else ""
+            if is_signature_text(clipboard):
+                signature = str(Path(temp) / "clipboard.yaml")
+                Path(signature).write_text(clipboard, encoding="utf-8")
+                source = "the clipboard"
+            else:
+                signature = _ask_path("yaml", False, "*.yaml", "Signature to locate in this IDB")
+                if not signature:
+                    return
+                source = Path(signature).name
+            image = _input_file()
             output = Path(temp) / "matches.json"
             # Exit 1 is "no accepted match"; the JSON is written either way.
             _run_cancellable(
@@ -1156,40 +1316,49 @@ class LocateHandler(_Handler):
                     str(output),
                     "--yes",
                 ],
-                f"sigtool: locating {Path(signature).name} in this IDB",
+                f"sigtool: locating the signature from {source}",
                 ok_codes=(0, 1),
             )
             result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
         name = str(result.get("signature") or Path(signature).stem)
         rows = match_rows(result.get("matches", []), int(ida_nalt.get_imagebase()))
         if not rows:
+            ida_kernwin.msg(f"sigtool: no match for {name} (from {source}) in this IDB\n")
             ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB")
             return
+        ida_kernwin.msg(f"sigtool: {name} (from {source}): {len(rows)} match(es)\n")
         for row in rows:
-            ida_kernwin.msg(f"sigtool: {name}: {' '.join(row.cells)}\n")
-        show_results(
-            f"sigtool: matches for {name}",
-            [
-                ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
-                ["Score", 8],
-                ["Evidence", 10],
-                ["Label", 32],
-                ["Matched", 8],
-            ],
-            rows,
-        )
-        ida_kernwin.jumpto(rows[0].ea)
+            ida_kernwin.msg(f"sigtool:   {' '.join(row.cells)}\n")
+        if _setting(SET_LIST_MATCHES):
+            show_results(
+                f"sigtool: matches for {name}",
+                [
+                    ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
+                    ["Score", 8],
+                    ["Evidence", 10],
+                    ["Label", 32],
+                    ["Matched", 8],
+                ],
+                rows,
+            )
+        if _setting(SET_AUTO_JUMP):
+            ida_kernwin.jumpto(rows[0].ea)
 
 
 class SignAllHandler(_Handler):
     """Sign every meaningfully named function into one signatures DB."""
+
+    def __init__(self, db: str | None = None) -> None:
+        super().__init__()
+        self.db = db
 
     def run(self, ctx=None) -> None:
         functions = _named_functions()
         if not functions:
             ida_kernwin.warning("sigtool: no named functions to sign (only sub_* and stubs)")
             return
-        _sign_to_db(_input_file(), functions, f"{len(functions)} named functions")
+        what = f"{len(functions)} named functions"
+        _sign_to_db(_input_file(), functions, what, _image_stem(), self.db)
 
 
 class ResultChooser(ida_kernwin.Choose):
@@ -1254,7 +1423,7 @@ class RenameChooser(ida_kernwin.Choose):
                 ["Evidence", 10],
             ],
             flags=ida_kernwin.Choose.CH_MULTI,
-            deflt=default_selection(proposals),
+            deflt=default_selection(proposals, _setting(SET_PRESELECT_USER_NAMES)),
         )
         self.items = [
             [
@@ -1299,10 +1468,18 @@ def _chosen(selection) -> list[int]:
 class ApplyNamesHandler(_Handler):
     """Rename this IDB's functions from a signatures DB's identified matches."""
 
+    def __init__(self, db: str | None = None) -> None:
+        super().__init__()
+        self.db = db
+
     def run(self, ctx=None) -> None:
-        db = _ask_path("db", False, "*.db", "Signatures DB to apply names from")
+        db = self.db
+        if not db or not os.path.isfile(db):
+            db = _ask_path("db", False, "*.db", "Signatures DB to apply names from")
         if not db:
             return
+        _last_paths["db"] = db
+        _remember("db", db)
         image = _input_file()
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "hits.json"
@@ -1350,7 +1527,10 @@ class ApplyNamesHandler(_Handler):
                 "see the Output window)"
             )
             return
-        chosen = RenameChooser(proposals, base).ask()
+        if _setting(SET_CONFIRM_RENAMES):
+            chosen = RenameChooser(proposals, base).ask()
+        else:
+            chosen = default_selection(proposals, _setting(SET_PRESELECT_USER_NAMES))
         source = Path(db).name
         rows = []
         for index in chosen:
@@ -1407,10 +1587,138 @@ class ApplyNamesHandler(_Handler):
             )
 
 
+class MenuForm(ida_kernwin.Form):
+    """The action menu (IDA-Fusion style): one radio row per action, and the
+    signatures DB that sign-all writes and apply-names reads."""
+
+    # (control name, label, hint); the radio index is the position here.
+    CHOICES = (
+        (
+            "rGen",
+            "Generate a signature for this function",
+            "The selected rows in the Functions view sign into the DB below",
+        ),
+        (
+            "rMerge",
+            "Merge this function with another build of it",
+            "Other image files at an address or RVA",
+        ),
+        (
+            "rLocate",
+            "Locate a signature in this IDB",
+            "The signature on the clipboard, else a file",
+        ),
+        (
+            "rSignAll",
+            "Sign all named functions into the DB",
+            "Every function with a meaningful name",
+        ),
+        ("rApply", "Apply names from the DB", "Rename identified matches of the DB's signatures"),
+        ("rSettings", "Configure settings", ""),
+    )
+
+    def __init__(self) -> None:
+        rows = []
+        for index, (name, label, hint) in enumerate(self.CHOICES):
+            closing = "{cAction}>" if index == len(self.CHOICES) - 1 else ""
+            rows.append(f"<#{hint}#{label}:{{{name}}}>{closing}")
+        form = "\n".join(
+            [
+                "BUTTON YES* Run",
+                "BUTTON CANCEL Cancel",
+                f"sigtool (signature spec {EXPECTED_SPEC_VERSION})",
+                "",
+                *rows,
+                "",
+                "<#Written by sign-all and generate-on-selection, read by apply-names#"
+                "Signatures DB:{iDb}>",
+                "",
+            ]
+        )
+        super().__init__(
+            form,
+            {
+                "cAction": ida_kernwin.Form.RadGroupControl(
+                    tuple(name for name, *_ in self.CHOICES)
+                ),
+                "iDb": ida_kernwin.Form.FileInput(open=True),
+            },
+        )
+
+
+class SettingsForm(ida_kernwin.Form):
+    """Checkboxes for [`SETTINGS`], one bit each in order."""
+
+    def __init__(self) -> None:
+        names = [f"s{index}" for index in range(len(SETTINGS))]
+        rows = []
+        for index, (name, (_flag, label)) in enumerate(zip(names, SETTINGS, strict=True)):
+            closing = "{cSettings}>" if index == len(SETTINGS) - 1 else ""
+            rows.append(f"<{label}:{{{name}}}>{closing}")
+        form = "\n".join(["sigtool settings", "", *rows, ""])
+        super().__init__(form, {"cSettings": ida_kernwin.Form.ChkGroupControl(tuple(names))})
+
+
+def show_menu(choice: int, db: str) -> tuple[int, str] | None:
+    """Show the menu with ``choice`` and ``db`` filled in; what was chosen, or None."""
+    form = MenuForm()
+    form.Compile()
+    form.cAction.value = choice
+    form.iDb.value = db
+    try:
+        if form.Execute() != 1:
+            return None
+        return int(form.cAction.value), str(form.iDb.value or "").strip()
+    finally:
+        form.Free()
+
+
+def show_settings() -> None:
+    form = SettingsForm()
+    form.Compile()
+    form.cSettings.value = _settings()
+    try:
+        if form.Execute() == 1:
+            _save_settings(int(form.cSettings.value))
+    finally:
+        form.Free()
+
+
+class MenuHandler(_Handler):
+    """Open the action menu; Configure settings returns to it, as in IDA-Fusion."""
+
+    def run(self, ctx=None) -> None:
+        choice = int(_remembered("choice", "0") or 0)
+        db = _remembered("db", "")
+        if not db:
+            db = output_path(_idb_path(), _image_stem(), ".db")
+        while True:
+            picked = show_menu(choice, db)
+            if picked is None:
+                return
+            choice, db = picked
+            _remember("choice", str(choice))
+            if db:
+                _remember("db", db)
+            name = MenuForm.CHOICES[choice][0]
+            if name != "rSettings":
+                break
+            show_settings()
+        handlers = {
+            "rGen": lambda: GenerateHandler(db),
+            "rMerge": MergeHandler,
+            "rLocate": LocateHandler,
+            "rSignAll": lambda: SignAllHandler(db),
+            "rApply": lambda: ApplyNamesHandler(db),
+        }
+        # The menu acts on the cursor, as the hotkey's context is no view.
+        handlers[name]().run(None)
+
+
 ACTIONS = (
-    (GEN_ACTION, GEN_LABEL, GenerateHandler, "Ctrl-Shift-G"),
+    (GEN_ACTION, GEN_LABEL, GenerateHandler, ""),
     (MERGE_ACTION, MERGE_LABEL, MergeHandler, ""),
-    (LOCATE_ACTION, LOCATE_LABEL, LocateHandler, "Ctrl-Shift-L"),
+    (LOCATE_ACTION, LOCATE_LABEL, LocateHandler, ""),
     (SIGN_ALL_ACTION, SIGN_ALL_LABEL, SignAllHandler, ""),
     (APPLY_ACTION, APPLY_LABEL, ApplyNamesHandler, ""),
 )
@@ -1449,7 +1757,8 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
         create_menu = getattr(ida_kernwin, "create_menu", None)
         self._menu = bool(create_menu and create_menu(MENU_NAME, "sigtool", "Help"))
         menu_path = "sigtool/" if self._menu else "Edit/Plugins/"
-        for action, label, handler, hotkey in ACTIONS:
+        everything = ((OPEN_ACTION, OPEN_LABEL, MenuHandler, OPEN_HOTKEY), *ACTIONS)
+        for action, label, handler, hotkey in everything:
             ida_kernwin.register_action(
                 ida_kernwin.action_desc_t(action, label, handler(), hotkey or None)
             )
@@ -1459,15 +1768,14 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
         return ida_idaapi.PLUGIN_KEEP
 
     def run(self, _arg):
-        # Edit > Plugins > sigtool (or its hotkey): pick an action from a list.
-        index = ActionPicker().Show(modal=True)
-        if isinstance(index, int) and 0 <= index < len(ACTIONS):
-            ida_kernwin.process_ui_action(ACTIONS[index][0])
+        # Edit > Plugins > sigtool: the same menu as the hotkey.
+        MenuHandler().activate(None)
 
     def term(self):
         if self._hooks is not None:
             self._hooks.unhook()
             self._hooks = None
+        ida_kernwin.unregister_action(OPEN_ACTION)
         for action, *_rest in ACTIONS:
             ida_kernwin.unregister_action(action)
         if self._menu:
@@ -1476,22 +1784,6 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
         if _rebuilt_dir is not None:
             shutil.rmtree(_rebuilt_dir, ignore_errors=True)
             _rebuilt_images.clear()
-
-
-class ActionPicker(ida_kernwin.Choose):
-    """The actions in a modal list; the chosen row's index is what Show returns."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "sigtool", [["Action", 40], ["Hotkey", 12]], flags=ida_kernwin.Choose.CH_MODAL
-        )
-
-    def OnGetSize(self) -> int:
-        return len(ACTIONS)
-
-    def OnGetLine(self, n: int) -> list[str]:
-        _action, label, _handler, hotkey = ACTIONS[n]
-        return [label.removeprefix("sigtool: "), hotkey]
 
 
 def PLUGIN_ENTRY():

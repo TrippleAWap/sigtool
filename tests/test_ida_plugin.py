@@ -23,12 +23,13 @@ def _load_plugin():
         "ida_loader",
         "ida_nalt",
         "ida_name",
+        "ida_registry",
         "ida_segment",
         "idautils",
     ):
         sys.modules.setdefault(name, types.ModuleType(name))
     kernwin = sys.modules["ida_kernwin"]
-    for base in ("action_handler_t", "Choose", "UI_Hooks"):
+    for base in ("action_handler_t", "Choose", "Form", "UI_Hooks"):
         if not hasattr(kernwin, base):
             setattr(kernwin, base, type(base, (), {}))
     idaapi = sys.modules["ida_idaapi"]
@@ -334,6 +335,37 @@ class RebuildTests(unittest.TestCase):
             (b".text", 0x100, 0x1000, 0x100, 0x1000),
         )
         self.assertIsNone(plugin.rebuild_pe(image, segments, b"", base))
+
+
+class MenuHelperTests(unittest.TestCase):
+    def test_clipboard_signature_detection(self):
+        document = "spec_version: '5'\nname: inflate\nfeatures:\n- kind: str\n"
+        self.assertTrue(plugin.is_signature_text(document))
+        for text in ("", None, "48 8B ?? ?? 89", "name: inflate\nfeatures:\n"):
+            self.assertFalse(plugin.is_signature_text(text), text)
+
+    def test_outputs_go_to_a_sigtool_folder_beside_the_idb(self):
+        idb = str(Path("work") / "libz.so.i64")
+        self.assertEqual(
+            plugin.output_path(idb, "deflate<int>::run", ".yaml"),
+            str(Path("work") / "sigtool" / "deflate_int_run.yaml"),
+        )
+
+    def test_settings_are_distinct_bits_in_form_order(self):
+        flags = [flag for flag, _label in plugin.SETTINGS]
+        self.assertEqual(flags, [1 << index for index in range(len(flags))])
+        self.assertTrue(plugin.DEFAULT_SETTINGS & plugin.SET_COPY_TO_CLIPBOARD)
+        self.assertFalse(plugin.DEFAULT_SETTINGS & plugin.SET_PRESELECT_USER_NAMES)
+
+    def test_user_name_replacements_preselected_only_when_asked(self):
+        proposals, _ = choose(
+            [hit("inflate", 0x200), hit("deflate", 0x300)],
+            names={0x200: "my_inflate"},
+            user={0x200},
+            overwrite=True,
+        )
+        self.assertEqual(plugin.default_selection(proposals), [1])
+        self.assertEqual(plugin.default_selection(proposals, True), [0, 1])
 
 
 class NativeDiscoveryTests(unittest.TestCase):

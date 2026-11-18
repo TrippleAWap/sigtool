@@ -58,6 +58,8 @@ class FakeIdb:
         self.infos: list[str] = []
         self.warnings: list[str] = []
         self.choosers: list = []
+        self.registry: dict = {}
+        self.clipboard = ""
 
     def answer(self, *values) -> None:
         self.answers.extend(values)
@@ -123,6 +125,13 @@ def install_fakes(idb: FakeIdb) -> None:
             pass
 
     kernwin.Choose = Choose
+    kernwin.Form = type("Form", (), {})
+
+    registry = module("ida_registry")
+    registry.reg_read_int = lambda name, default, _key=None: idb.registry.get(name, default)
+    registry.reg_write_int = lambda name, value, _key=None: idb.registry.__setitem__(name, value)
+    registry.reg_read_string = lambda name, _key=None, default=None: idb.registry.get(name, default)
+    registry.reg_write_string = lambda name, value, _key=None: idb.registry.__setitem__(name, value)
 
     nalt = module("ida_nalt")
     nalt.get_input_file_path = lambda: idb.recorded
@@ -400,6 +409,9 @@ def main() -> int:
     sys.path.insert(0, str(ROOT))
     import ida_plugin as plugin
 
+    plugin._clipboard_text = lambda: idb.clipboard
+    plugin._set_clipboard = lambda text: setattr(idb, "clipboard", text) or True
+
     by_name = {name: ea for ea, (name, _size) in sign_truth.items()}
     apply_by_name = {name: ea for ea, (name, _size) in apply_truth.items()}
     # The largest function both builds have: plenty of evidence to sign.
@@ -411,36 +423,49 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as temp_name:
         temp = Path(temp_name)
-        yaml = temp / f"{target}.yaml"
-        merged = temp / f"{target}.merged.yaml"
+        # Outputs land in `sigtool/` beside the IDB; keep that out of the corpus.
+        idb.idb_path = str(temp / f"{sign_image.name}.i64")
+        outputs = temp / "sigtool"
+        yaml = outputs / f"{target}.yaml"
+        merged = outputs / f"{target}.merged.yaml"
         idb.screen_ea = by_name[target] + 1
-        idb.answer(str(yaml))  # save the signature
         plugin.GenerateHandler().run()
-        check(yaml.exists() and "spec_version:" in yaml.read_text(), f"generate wrote {yaml.name}")
-        check(not idb.answers and len(idb.infos) == 1, "generate asked once and reported once")
+        check(
+            yaml.exists() and "spec_version:" in yaml.read_text(),
+            f"generate saved sigtool/{yaml.name} without a dialog",
+        )
+        check(
+            not idb.infos and idb.clipboard == yaml.read_text(encoding="utf-8"),
+            "generate copied the signature to the clipboard and showed no dialog",
+        )
 
         idb.answer(
             str(args.corpus / merge_rel),  # other build
             f"+{merge_by_name[target]:#x}",  # its RVA
             0,  # no further build
-            str(merged),  # save the merged signature
         )
         plugin.MergeHandler().run()
         check(
             merged.exists() and merged.read_text().count("- arch:") == 2,
-            "merge wrote the two-sample signature",
+            "merge saved the two-sample signature",
         )
 
-        idb.answer(str(yaml))
+        # The clipboard holds the merged signature now; locate takes it.
         plugin.LocateHandler().run()
         rows = idb.choosers[-1].rows if idb.choosers else []
         check(
-            bool(rows) and rows[0].ea == by_name[target] and idb.jumps[-1] == by_name[target],
-            f"locate lists {target} first and jumps to it ({len(rows)} rows)",
+            not idb.answers
+            and bool(rows)
+            and rows[0].ea == by_name[target]
+            and idb.jumps[-1] == by_name[target],
+            f"locate takes the clipboard, lists {target} first, and jumps ({len(rows)} rows)",
         )
+        idb.clipboard = "not a signature"
+        idb.answer(str(yaml))
+        plugin.LocateHandler().run()
+        check(not idb.answers, "without one on the clipboard, locate asks for a file")
 
-        db = temp / "signatures.db"
-        idb.answer(str(db))
+        db = outputs / f"{sign_image.name}.db"
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
@@ -453,11 +478,10 @@ def main() -> int:
             widget_type=sys.modules["ida_kernwin"].BWN_FUNCS, chooser_selection=picked
         )
         selected_db = temp / "selected.db"
-        idb.answer(str(selected_db))
-        plugin.GenerateHandler().run(selection)
+        plugin.GenerateHandler(str(selected_db)).run(selection)
         check(
             selected_db.exists() and idb.infos[-1].startswith("signed 3 of 3"),
-            "generate on a Functions-view selection signs those rows into a DB",
+            "generate on a Functions-view selection signs those rows into the menu's DB",
         )
 
         # A moved IDB: the recorded path is gone, the binary sits beside the
@@ -468,8 +492,7 @@ def main() -> int:
         shutil.copyfile(sign_image, copy)
         idb.recorded = str(temp / "gone" / sign_image.name)
         idb.idb_path = str(moved / f"{sign_image.name}.i64")
-        relocated = temp / "relocated.yaml"
-        idb.answer(str(relocated))
+        relocated = moved / "sigtool" / f"{target}.yaml"
         plugin.GenerateHandler().run()
         check(
             relocated.exists() and not idb.answers and idb.recorded == str(copy),
@@ -481,10 +504,9 @@ def main() -> int:
         copy.write_bytes(bytes(changed))
         idb.recorded = str(temp / "gone" / sign_image.name)
         plugin._verified_inputs.clear()
+        relocated.unlink()
         # With no matching file anywhere, the image is rebuilt from the IDB,
         # without a dialog, and signs like the stripped copy of the binary.
-        from_idb = temp / "from-idb.yaml"
-        idb.answer(str(from_idb))
         plugin.GenerateHandler().run()
         reference = temp / "stripped.yaml"
         stripped_copy = args.corpus / "stripped" / sign_rel
@@ -507,8 +529,8 @@ def main() -> int:
         check(
             not idb.answers
             and idb.recorded != str(copy)
-            and from_idb.exists()
-            and from_idb.read_bytes() == reference.read_bytes(),
+            and relocated.exists()
+            and relocated.read_bytes() == reference.read_bytes(),
             "without the binary, the IDB alone signs like the stripped file (no dialog)",
         )
 
@@ -518,8 +540,10 @@ def main() -> int:
             ea: (exports.get(ea), size) for ea, (_name, size) in apply_truth.items()
         }
         idb.__init__(apply_image, apply_idb_functions)
-        idb.answer(str(db))
-        plugin.ApplyNamesHandler().run()
+        idb.idb_path = str(temp / f"{apply_image.name}.i64")
+        # The menu hands apply-names the DB sign-all wrote: no dialog.
+        plugin.ApplyNamesHandler(str(db)).run()
+        check(not idb.answers, "apply-names takes the menu's DB without a dialog")
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
         right = sum(1 for ea, name in renamed.items() if apply_truth.get(ea, ("",))[0] == name)
         precision = right / len(renamed) if renamed else 0.0
