@@ -4,7 +4,7 @@
   "plugin": {
     "name": "sigtool",
     "entryPoint": "ida_plugin.py",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Architecture-independent function signatures: sign a function once and find it again across architectures, compilers, and optimization levels, including in stripped binaries.",
     "license": "MIT OR Apache-2.0",
     "urls": {
