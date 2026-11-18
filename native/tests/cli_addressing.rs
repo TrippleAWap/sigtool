@@ -6,6 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
 fn corpus() -> Option<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()?
@@ -137,14 +139,7 @@ fn rva_addressing_matches_the_image_base() {
 /// executables, whose first section sits on the image base.
 #[test]
 fn shared_object_keeps_small_constants_and_reports_symbol_rvas() {
-    let has = |tool: &str| {
-        Command::new(tool)
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success())
-    };
-    if !has("clang") || !has("ld.lld") || !has("llvm-nm") {
-        eprintln!("skip: clang, ld.lld, and llvm-nm are needed for the shared object");
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
         return;
     }
     let dir = std::env::temp_dir().join(format!("sigtool-so-{}", std::process::id()));
@@ -215,14 +210,7 @@ fn shared_object_keeps_small_constants_and_reports_symbol_rvas() {
 /// function, and hinted discovery has nothing else to start from.
 #[test]
 fn locate_finds_a_local_function_in_a_stripped_image() {
-    let has = |tool: &str| {
-        Command::new(tool)
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success())
-    };
-    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
-        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm", "llvm-strip"]) {
         return;
     }
     let dir = std::env::temp_dir().join(format!("sigtool-strip-{}", std::process::id()));
@@ -328,14 +316,7 @@ fn locate_finds_a_local_function_in_a_stripped_image() {
 /// count the hint-free gates need.
 #[test]
 fn locate_finds_a_shape_only_helper_through_its_caller() {
-    let has = |tool: &str| {
-        Command::new(tool)
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success())
-    };
-    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
-        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm", "llvm-strip"]) {
         return;
     }
     let dir = std::env::temp_dir().join(format!("sigtool-near-{}", std::process::id()));
@@ -448,14 +429,7 @@ fn scan_jointly(
     names: &[&str],
     wanted: &str,
 ) -> Option<(String, serde_json::Value, String)> {
-    let has = |tool: &str| {
-        Command::new(tool)
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success())
-    };
-    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
-        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm", "llvm-strip"]) {
         return None;
     }
     let dir = std::env::temp_dir().join(format!("sigtool-{tag}-{}", std::process::id()));
@@ -638,14 +612,7 @@ fn load_base(path: &Path) -> u64 {
 /// resolution identifies the shape-only `bottom` through its callers.
 #[test]
 fn db_build_signs_a_function_list_and_scan_reports_rvas() {
-    let has = |tool: &str| {
-        Command::new(tool)
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success())
-    };
-    if !has("clang") || !has("ld.lld") || !has("llvm-nm") || !has("llvm-strip") {
-        eprintln!("skip: clang, ld.lld, llvm-nm, and llvm-strip are needed");
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm", "llvm-strip"]) {
         return;
     }
     let dir = std::env::temp_dir().join(format!("sigtool-batch-{}", std::process::id()));

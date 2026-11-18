@@ -88,6 +88,7 @@ cargo run --release --example cross_fp -- ../corpus/build-real 4 [HITS.jsonl]   
                                     # (bench FP scans are same-arch only); run for any cross-ISA matcher rule
 cargo run --release --example in_module_consts -- ../corpus/build-real   # in-range constants kept per arch
 SIGTOOL_THREADS=1 cargo run --release -- bench ...          # one thread (determinism checks)
+SIGTOOL_REQUIRE_TOOLS=1 cargo test --release   # fail, not skip, tests whose LLVM tools are missing (CI)
 
 python packaging/package.py --platform windows-x86_64 --binary native/target/release/sigtool-native.exe \
     --out dist                      # plugin zip + CLI archive for one platform (release.yml runs it per target)
