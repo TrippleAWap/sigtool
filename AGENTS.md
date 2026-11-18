@@ -28,7 +28,7 @@ The Python reference implementation (`core/`, `sources/`, `cli.py`, `bench.py`) 
 1. **The library never depends on IDA or on OS APIs outside a source module.** All memory and module access goes through the `ByteSource` trait (`native/src/source.rs`). OS-specific code lives in source modules (`proc_win.rs`) behind `cfg`, and must compile to a stub elsewhere.
 2. **One extractor.** Generation and scanning call the same feature code, and a front-end never reimplements feature extraction.
 3. **Determinism.** Same input must produce byte-identical signatures: fixed hash seeds, sorted features, no map ordering leaks, no timestamps or absolute paths in output. Run twice and diff when touching output code.
-4. **No absolute addresses in features.** Drop any immediate or displacement that falls inside a mapped module range. Store `module+rva` (relative to the image base) in provenance only.
+4. **No absolute addresses in features.** Drop a value the code uses as an address: a PC-relative or absolute memory reference, or, in an image that can be loaded anywhere (ELF shared object or PIE), a word a dynamic relocation writes. Keep every other value as a normalized constant, even inside the module span (a shared object maps at 0); images without a relocation table keep the module-range test (`spec/SPEC.md` §2.2). The same code at two bases must yield identical features. Store `module+rva` (relative to the image base) in provenance only. (Relaxed from "drop anything inside the module range" by the user on 2026-11-17.)
 5. **Every signature file carries the spec version.** Changing feature semantics, canonicalization, or hashing means bumping `SPEC_VERSION` (`native/src/spec.rs`) and updating `spec/SPEC.md` and `spec/CHANGELOG.md`.
 6. **No IR lifting, symbolic execution, or learned models in the scan path.** Decoders are chosen per architecture on merit (`iced-x86` for x64, `yaxpeax-arm` for AArch64, Capstone for ARM32/Thumb), plus per-arch normalization tables.
 7. **Never emit a signature that fails self-test.** Small functions get `confidence: low` and are not refused.
@@ -82,6 +82,7 @@ cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --j
 cargo run --release --example profile_scan                  # scan cost
 cargo run --release --example profile_gen -- IMAGE ADDR [TARGET]   # gen / hint-free phase timings
 cargo run --release --example profile_g5 -- gen IMAGE SIGS.db [COUNT]   # then: scan STRIPPED SIGS.db (G5 cost)
+cargo run --release --example in_module_consts -- ../corpus/build-real   # in-range constants kept per arch
 SIGTOOL_THREADS=1 cargo run --release -- bench ...          # one thread (determinism checks)
 
 python corpus/build.py              # toy corpus + ground truth (clang + ld.lld + llvm-readelf)
@@ -95,11 +96,11 @@ SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the e
 
 ## Testing requirements
 
-- **Golden vectors** (`tests/vectors/`): bytes in, feature records out, for x64, x64 with CET, arm64, arm64 with PAC, arm32, and thumb at `-O0/-O2/-Os`, from real clang + lld output. Never hand-edit; regenerate and bless, and justify every record change in the commit or PR.
+- **Golden vectors** (`tests/vectors/`): bytes in, feature records out, for x64, x64 with CET, arm64, arm64 with PAC, arm32, and thumb at `-O0/-O2/-Os`, plus `-fPIC -shared` objects (`*-pic-*`, with their relocation slots) for all four architectures, from real clang + lld output. `golden.rs` loads each PIC vector at two bases and requires identical features. Never hand-edit; regenerate and bless, and justify every record change in the commit or PR.
 - **Toy corpus gate** (`native/tests/corpus.rs`, `bench --baseline tests/baseline/native-bench.json`): recall per discovery mode and false-positive rates against the baseline with a 0.05 tolerance. The baseline is compiler-specific (currently LLVM 22.1.5, which CI installs from the pinned release archive), because even patch releases move small cells by more than the tolerance. Update the baseline only for an intentional improvement or a compiler change, with `--save-baseline`, and review the diff.
 - **Real corpus** (`corpus/build-real`, `tests/baseline/native-real-bench.json`): zlib, lz4, cJSON, Lua, and SQLite built with clang and gcc at `-O0/-O2/-Os` for all four architectures. This is the corpus the cross-arch and hint-free numbers are read from; run it before and after any matcher, feature, or normalization change and report the deltas. It is not in the per-push CI (it needs the gcc cross image); `.github/workflows/real-bench.yml` builds it and runs the `--joint` bench against the baseline weekly.
 - **Held-out corpus** (`corpus/build-heldout`, `real.py --heldout`): zstd, libyaml, and mbedtls, same matrix. Never tune on it or read it while choosing a rule; run it only at milestone exits and record the numbers in `PLAN.md` §8.
-- **Property and robustness:** normalization is idempotent; the same code at two bases yields identical features; random bytes never crash recovery or start synthesis.
+- **Property and robustness:** normalization is idempotent; the same code at two bases yields identical features (`relocatable_vectors_give_identical_features_at_two_bases`); random bytes never crash recovery or start synthesis.
 - **Live tests** (`native/tests/live_proc_win.rs`, Windows): a spawned helper process with a known function; checks read-only access, WOW64 rejection, and that `gen`/`locate`/`scan --pid` find it.
 - New normalization rules need a vector or corpus case from real compiler output, not just a hand-written snippet.
 

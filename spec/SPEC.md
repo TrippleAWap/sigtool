@@ -1,4 +1,4 @@
-# Signature spec v4
+# Signature spec v5
 
 Status: draft for M1 (extraction). Generation, scoring, and matching fields are
 specified in outline and completed in M2/M3.
@@ -94,18 +94,26 @@ features of the function's *small direct callees*, as *inherited* records
 
 ## 2. Address normalization
 
-Rule 4 of AGENTS.md: **no absolute address may appear in a feature.**
+Rule 4 of AGENTS.md: **no absolute address may appear in a feature**, and the
+same code at two load bases yields identical features. A value is an address
+when the code *uses* it as one (§2.2), not because it happens to fall inside
+the module span.
 
 * x86-64 RIP-relative operands resolve to `insn.address + insn.size + disp`.
   The result is a *data reference*, never a constant.
 * AArch64 `adrp` pages are resolved when the page register is consumed by
   `add`/`sub` (address of a string or table) or `ldr`/`str` (a pointer cell).
   An unconsumed `adrp` page is discarded as an address.
-* AArch64 `ldr` from a literal pool resolves to the pool value: a pointer becomes
-  a reference to the pool cell; a non-pointer value becomes a constant.
+  A load into another register leaves the page in its base register, so the
+  PLT stub's `ldr x17, [x16, #o]; add x16, x16, #o` resolves the `add` too.
+* AArch64 `ldr` from a literal pool resolves to the pool value: an address
+  (§2.2) becomes a reference to the pool cell; any other value becomes a
+  constant.
 * ARM32/Thumb `ldr rd, [pc, #imm]` resolves against the literal pool (Thumb PC
-  is `align(addr + 4, 4)`, ARM PC is `addr + 8`): a pool value inside the image
-  becomes a reference to its target, any other word becomes a 32-bit constant.
+  is `align(addr + 4, 4)`, ARM PC is `addr + 8`): an address (§2.2) becomes a
+  reference to its target, any other word becomes a pending 32-bit constant,
+  which a following `add rd, pc` or `ldr rd, [pc, rm]` consumes as a
+  PC-relative offset (never flushed as a constant).
   The referenced cell extends the function bounds, because arm32 pools sit
   inline after the last instruction and symbol sizes count them.
 * ARM32/Thumb `add rd, pc, rm` (and the Thumb two-operand `add rd, pc`) resolves
@@ -118,9 +126,11 @@ Rule 4 of AGENTS.md: **no absolute address may appear in a feature.**
   `movw`/`movz`/`mov`/`movn`/`mvn` replaces it, a control transfer, or the block
   end; an instruction that does not name the register leaves it pending, so a
   pair the compiler scheduled apart still collapses into one constant.
-* Absolute x86 displacements and immediates are used only when they fall inside
-  a mapped module, and then only as data references.
-* A constant whose value lies inside a mapped module is dropped entirely.
+* Absolute x86 displacements (a memory operand with no base register) are used
+  only when they fall inside a mapped module, and then only as data
+  references.
+* A constant that is an address (§2.2) is dropped entirely; any other value is
+  a constant, wherever it falls.
 
 Data references are anchors for Tier 0 (§6) and are never stored as values.
 
@@ -175,6 +185,35 @@ Relocatable ELF objects (`ET_REL`) have no applied relocations, so a reference
 across sections is encoded as a zero displacement and resolves to nothing. Sign
 from a linked image (or let the front-end apply relocations) when data anchors
 matter; this is a property of the object format, not of the extractor.
+
+### 2.2 Addresses and constants
+
+A materialised value (an immediate, a `movw`/`movt` or `movz`/`movk` chain, a
+literal-pool word) is an **address**, and never a constant, when the code uses
+it as one:
+
+* it is resolved PC-relative (RIP-relative operands, `adrp` pairs, `adr`, PIC
+  `add rd, pc` and `ldr rd, [pc, rm]`), which makes it a data reference (§2);
+* it is an absolute memory displacement (x86 `[disp]` with no base); or
+* the image can be loaded anywhere (an ELF `ET_DYN` shared object or PIE)
+  and a dynamic relocation writes the word that holds it: the literal-pool
+  cell, or the instruction bytes of an x86 immediate. Such an image holds an
+  absolute address nowhere else, so every other value in it is a constant,
+  even when it falls inside the module span (a shared object links at 0, so
+  zlib's `0xfff1` or an LZ4 size does).
+
+An image whose relocations are not read (ELF `ET_EXEC` and relocatable
+objects, PE images, live processes) keeps the range test: a value inside a
+mapped module is an address. Such an image cannot move (`ET_EXEC`), or its
+base is far above the values code uses as numbers (PE images are linked at
+`0x140000000` / `0x180000000` and mapped above 4 GiB by ASLR), so the test is
+still base-independent there; reading PE base relocations would let PE use
+the relocation test too.
+
+The decision uses only the relocation table, which `strip --strip-all` keeps,
+so hint-free discovery may apply it. Two loads of the same shared object at
+different bases give identical features (`tests/golden.rs`, the `*-pic-*`
+vectors).
 
 ## 3. Constant canonicalization
 

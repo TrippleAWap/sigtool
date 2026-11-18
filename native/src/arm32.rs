@@ -18,7 +18,7 @@ use capstone::prelude::*;
 use capstone::{Capstone, Insn as CsInsn, RegId};
 
 use crate::normalize::{
-    canonical_const, sorted_unique, ArmState, DataRef, Insn, Kind, Normalizer, OpClass,
+    canonical_const, is_address, sorted_unique, ArmState, DataRef, Insn, Kind, Normalizer, OpClass,
     PendingValue, MASK32,
 };
 use crate::source::ByteSource;
@@ -488,7 +488,16 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             self.arm32_pc_add(ops, &mnemonic, addr, thumb, state, &mut refs);
         }
 
-        let mut pending = state.take_consts_in(&mentioned_registers(ops));
+        // `ldr rd, [pc, rm]` resolves the pooled offset in `rm` to a GOT slot
+        // below; flushing it first would leak the build-specific offset as a
+        // constant.
+        let pc_index = ops.iter().find_map(|operand| match operand {
+            ArmOp::Mem { base, index, .. } if *base == PC && index.0 != 0 => Some(reg_key(*index)),
+            _ => None,
+        });
+        let mut mentioned = mentioned_registers(ops);
+        mentioned.retain(|register| Some(*register) != pc_index);
+        let mut pending = state.take_consts_in(&mentioned);
         let mut callee: Option<String> = None;
         let mut target: Option<u64> = None;
         let mut kind = Kind::Normal;
@@ -684,7 +693,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             let Some(value) = self.read_pointer32(literal) else {
                 return 0;
             };
-            if self.source.module_for(value).is_some() {
+            if is_address(self.source, literal, 4, value) {
                 refs.push(DataRef {
                     addr: value,
                     width: 4,

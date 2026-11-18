@@ -94,6 +94,13 @@ TARGETS = {
     "x64-cet": ("x86_64-linux-gnu", ("-fcf-protection=full",)),
     "arm32": ("armv7-linux-gnueabihf", ()),
     "thumb": ("armv7-linux-gnueabihf", ("-mthumb",)),
+    # Shared objects map at 0, so the fixture's constants fall inside the
+    # module span; they must survive (SPEC.md §2.2) and stay identical when
+    # the image is loaded at another base (`golden.rs` rebases these).
+    "x64-pic": ("x86_64-linux-gnu", ("-fPIC", "-shared")),
+    "arm64-pic": ("aarch64-linux-gnu", ("-fPIC", "-shared")),
+    "arm32-pic": ("armv7-linux-gnueabihf", ("-fPIC", "-shared")),
+    "thumb-pic": ("armv7-linux-gnueabihf", ("-mthumb", "-fPIC", "-shared")),
 }
 OPT_LEVELS = ("-O0", "-O2", "-Os")
 FUNCTIONS = (
@@ -133,7 +140,7 @@ def build_vector(
         opt,
         "-g",
         "-nostdlib",
-        "-static",
+        *(() if "-shared" in extra else ("-static",)),
         "-fuse-ld=lld",
         "-fno-asynchronous-unwind-tables",
         "-fno-unwind-tables",

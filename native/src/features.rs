@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::normalize::{Kind, OpClass};
+use crate::normalize::{is_address, Kind, OpClass};
 use crate::recover::RecoveredFunction;
 use crate::source::ByteSource;
 use crate::spec::{bucket, digest, STR_MAX_LEN, STR_MIN_LEN};
@@ -277,9 +277,9 @@ pub fn extract_own<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction)
             }
             *ops.entry(insn.op).or_insert(0) += 1;
             for value in &insn.consts {
-                // The pointer test needs the full value: a 64-bit address split
+                // The address test needs the full value: a 64-bit address split
                 // into words would no longer be recognisable as one.
-                if !is_pointer(source, *value) {
+                if !is_address(source, insn.addr, insn.size, *value) {
                     consts.extend(const_words(*value));
                 }
             }
@@ -440,7 +440,6 @@ pub fn is_portable_name<S: ByteSource + ?Sized>(source: &S, name: &str) -> bool 
     })
 }
 
-/// Absolute addresses inside a mapped module must never become features.
 /// Canonical `const` feature values for one materialised constant.
 ///
 /// The same source constant reaches the extractor in different shapes per
@@ -463,13 +462,6 @@ pub fn const_words(value: u64) -> impl Iterator<Item = u64> {
         [Some(high), Some(low).filter(|word| *word != 0)]
     };
     words.into_iter().flatten()
-}
-
-fn is_pointer<S: ByteSource + ?Sized>(source: &S, value: u64) -> bool {
-    if value == 0 {
-        return false;
-    }
-    source.module_for(value).is_some()
 }
 
 /// Return the string literal at `addr`, or `None` if it is not one.
@@ -613,6 +605,7 @@ mod tests {
             exports: vec![("f".to_string(), 0x1000), ("api".to_string(), 0x1050)],
             functions,
             imports: HashMap::from([(0x2000, "puts".to_string())]),
+            relocations: None,
         };
         MemorySource::new(
             Arch::X64,

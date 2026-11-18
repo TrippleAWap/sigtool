@@ -53,6 +53,7 @@ fn make_source(with_helper: bool) -> MemorySource {
         exports,
         functions,
         imports: std::collections::HashMap::new(),
+        relocations: None,
     };
     MemorySource::new(
         Arch::X64,
@@ -184,6 +185,7 @@ fn strong_source() -> MemorySource {
         exports: vec![("helper".to_string(), helper)],
         functions,
         imports: std::collections::HashMap::new(),
+        relocations: None,
     };
     MemorySource::new(
         Arch::X64,
