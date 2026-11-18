@@ -548,7 +548,11 @@ unwind-table functions), a hint-free match must also pass:
 **Hinted acceptance.** On an image with at least 32 known function starts, a
 hinted match that is shape-only needs at least 6 matched features and
 similarity at least 0.3, and an unanchored match similarity at least 0.25,
-as in hint-free mode; the chance and neighbour gates are hint-free only.
+as in hint-free mode; the chance and neighbour gates are hint-free only. A
+hinted match whose identifying keys are all `const` (no `str` and no
+`callee` without `!`) needs similarity at least 0.2, the floor every
+hint-free match already has: a distinctive-looking constant such as
+`0x10000` also occurs in unrelated code, and is no name on its own.
 
 **Evidence labels.** Each match in a ranked list carries one label:
 

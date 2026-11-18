@@ -260,6 +260,41 @@ other compiler 0.702 -> 0.714; joint false hits equal scanned alone (46 ->
 0.154 -> 0.115, hinted any-verdict 0.111 -> 0.105, strong 0.040 -> 0.025,
 negative 0.000.
 
+### Constant-anchored hinted matches (measured on v5)
+
+A matcher rule; the document and `SPEC_VERSION` (5) are unchanged.
+
+* A hinted match whose identifying keys are all constants needs similarity
+  0.2 (`matcher::MIN_CONSTANT_ANCHORED_SIMILARITY`, the `MIN_SIMILARITY`
+  floor hint-free mode applies to every match). The three strong false
+  positives at v5 were `LZ4_loadDict` (Thumb, and merged x64+arm64) in
+  sqlite on `0x10000` / `0x4000`, and merged `inflateCopy` in lz4 on
+  `0x558`, at similarity 0.01-0.12: in-module constants are kept since v5,
+  and these values also occur in unrelated code.
+* Simulated on the v5 logs (`bench --max-functions 4 --joint --fp-report`,
+  hinted recall scans and unrelated-library hits), then built. Every
+  constant-anchored hinted hit in an unrelated library is below 0.19 (172
+  hits); the lowest constant-anchored true top-1 match is 0.223
+  (`inflateCodesUsed`). Swept (hinted top-1 hits of 4750, strong FP,
+  hinted any-verdict FP): floor on constant-anchored matches 0.1 4750 /
+  0.008 / 0.087; 0.13 4750 / 0.000 / 0.081; 0.15 4750 / 0.000 / 0.077; 0.2
+  and 0.22 4750 / 0.000 / 0.075; 0.25 4748 / 0.000 / 0.075. The same floor
+  on every hinted match: 0.1 4750 / 0.008 / 0.087; 0.13 4750 / 0.000 /
+  0.081, 0.002 below a true callee-anchored top-1 match
+  (`pagerWriteLargeSector` across ISAs at 0.132); 0.15 4743; 0.2 4703 /
+  0.000 / 0.075. Restricting it to matches holding an identifying required
+  feature gives the constant-only numbers to 0.18 and costs 1 top-1 hit at
+  0.2. Identified precision does not move in any variant (those matches
+  are never answers).
+* Measured (full real bench, `--max-functions 4 --joint`): strong FP 0.025
+  -> 0.000 (3 -> 0 of 121), hinted any-verdict 0.105 -> 0.075 (61 -> 44 of
+  583), negative 0.000; every top-1 cell in both modes, every hint-free
+  cell, identified precision (hint-free 0.993, hinted 0.994), and the joint
+  section unchanged. One hinted found-anywhere cell dropped past tolerance:
+  merged->arm64 clang-O0 -> gcc-O2 0.562 -> 0.500, merged `inflateCodesUsed`
+  in gcc-O2 zlib, a true match ranked second at similarity 0.193 (below a
+  wrong first match at 0.330; it was never top-1).
+
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
 `SPEC_VERSION` is `4`. Feature records change (inherited `inl:` records,
