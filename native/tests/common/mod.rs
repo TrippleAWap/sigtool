@@ -15,7 +15,9 @@ fn program(name: &str) -> OsString {
     }
 }
 
-/// Whether every tool in `tools` runs; a missing tool skips the calling test.
+/// Whether every tool in `tools` runs. A missing tool skips the calling
+/// test, except under `SIGTOOL_REQUIRE_TOOLS` (set in CI, where LLVM is
+/// installed), where a skip would pass a test that never ran.
 pub fn have_tools(tools: &[&str]) -> bool {
     let missing: Vec<&str> = tools
         .iter()
@@ -30,6 +32,11 @@ pub fn have_tools(tools: &[&str]) -> bool {
     if missing.is_empty() {
         return true;
     }
+    assert!(
+        std::env::var_os("SIGTOOL_REQUIRE_TOOLS").is_none(),
+        "SIGTOOL_REQUIRE_TOOLS is set but {} did not run",
+        missing.join(", ")
+    );
     eprintln!("skip: {} not found", missing.join(", "));
     false
 }

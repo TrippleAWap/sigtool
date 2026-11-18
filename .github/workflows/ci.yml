@@ -41,7 +41,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/llvm
-          key: llvm-${{ env.LLVM_VERSION }}-linux-x64-corpus-tools
+          key: llvm-${{ env.LLVM_VERSION }}-linux-x64-corpus-tools-lld-link
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: steps.llvm-cache.outputs.cache-hit != 'true'
@@ -54,7 +54,7 @@ jobs:
           # Only the tools the corpus build and tests use, plus clang's
           # resource headers and any shared libraries they link against.
           tar -xJf "$archive" -C ~/llvm --strip-components=1 --wildcards \
-            "*/bin/clang" "*/bin/clang-[0-9]*" "*/bin/lld" "*/bin/ld.lld" \
+            "*/bin/clang" "*/bin/clang-[0-9]*" "*/bin/lld" "*/bin/ld.lld" "*/bin/lld-link" \
             "*/bin/llvm-readobj" "*/bin/llvm-readelf" "*/bin/llvm-nm" \
             "*/bin/llvm-objcopy" "*/bin/llvm-strip" "*/lib/clang/*" "*/lib/lib*.so*" \
             || test -x ~/llvm/bin/clang
@@ -88,6 +88,10 @@ jobs:
 
       - name: Tests
         working-directory: native
+        # LLVM is installed here, so a test that skips for a missing tool
+        # fails instead of passing without having run.
+        env:
+          SIGTOOL_REQUIRE_TOOLS: "1"
         run: cargo test --release
 
       - name: Corpus bench
