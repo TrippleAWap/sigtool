@@ -6,12 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn has(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
+mod common;
 
 fn run(args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_sigtool-native"))
@@ -92,8 +87,7 @@ fn map_symbols(map: &Path) -> Vec<(String, u64)> {
 /// leaf functions, found as direct call targets.
 #[test]
 fn pe_leaf_functions_and_images_without_pdata_have_starts() {
-    if !has("clang") || !has("lld-link") {
-        eprintln!("skip: clang and lld-link are needed");
+    if !common::have_tools(&["clang", "lld-link"]) {
         return;
     }
     let dir = scratch("pe-leaf");
@@ -209,8 +203,7 @@ fn pe_leaf_functions_and_images_without_pdata_have_starts() {
 /// build cannot find the function in the other.
 #[test]
 fn arm64_no_plt_calls_name_their_import() {
-    if !has("clang") || !has("ld.lld") || !has("llvm-nm") {
-        eprintln!("skip: clang, ld.lld, and llvm-nm are needed");
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
         return;
     }
     let dir = scratch("noplt");
