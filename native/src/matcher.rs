@@ -1075,8 +1075,14 @@ pub fn scan_in<S: ByteSource + ?Sized>(
         if source.function_starts().len() < MIN_FREQUENCY_FUNCTIONS {
             return matches;
         }
-        return matches.into_iter().filter(enough_evidence).collect();
+        let identifying = identifying_required(signature);
+        return matches
+            .into_iter()
+            .filter(enough_evidence)
+            .filter(|found| anchored_enough(&identifying, found))
+            .collect();
     }
+    let identifying = identifying_required(signature);
     let frequencies = context.frequencies[usize::from(hints)]
         .get_or_init(|| Frequencies::build(source, &context.features, hints));
     let Some(frequencies) = frequencies else {
@@ -1087,6 +1093,7 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     let mut kept: Vec<Match> = matches
         .into_iter()
         .filter(|found| found.similarity >= MIN_SIMILARITY)
+        .filter(|found| anchored_enough(&identifying, found))
         .filter_map(|mut found| {
             let own_evidence = identified(&found);
             let shared: Vec<String> = if signature_neighbours.is_empty() {
@@ -1304,6 +1311,50 @@ fn enough_evidence(found: &Match) -> bool {
 /// merged hint-free false positives 0.242 -> 0.141; 0.3 starts losing true
 /// cross-compiler matches, whose similarity is genuinely low.
 pub const MIN_SIMILARITY: f64 = 0.2;
+
+/// Minimum similarity of an *unanchored* match, in both discovery modes, on
+/// images large enough for frequencies: the signature has required features
+/// that identify a function ([`identifying_key`]), and the match holds none
+/// of them (an inherited `inl:` copy does not count), so it reached the
+/// threshold on imports, near-zero constants, and shape alone. The function
+/// is expected to keep some of what identifies it. Measured on the real
+/// corpus (full bench, `--max-functions 4 --joint --fp-report`): the single
+/// signatures' unanchored false hits reach similarity 0.218 at most (5
+/// hint-free signatures, and a merged `LZ4_loadDict` at 0.08 in hinted mode,
+/// the last strong false positive); the whole-module sets' reach 0.244
+/// (cjson, zlib); the lowest unanchored true matches are 0.228 hint-free and
+/// 0.249 hinted. Both 0.22 and 0.25 were built and benched. At 0.25:
+/// hint-free any-verdict FP 0.154 -> 0.146, hinted 0.111 -> 0.109, strong
+/// 0.011 -> 0.000 (under the two-identifying-feature `strong` rule), joint
+/// sets' false-hit signatures cjson 21 -> 20 and zlib 8 -> 6, hint-free
+/// top-1 3704 -> 3705 (two lookalikes removed, the 0.228 match lost),
+/// hinted 4177 -> 4176. 0.22 keeps both low true matches (hinted 4177) but
+/// none of the joint sets' false hits; precision first (PLAN.md §4 rule 7).
+/// Simulated: 0.27 costs 4 hint-free top-1 hits, 0.3 costs 8, 0.35 costs 15
+/// and 27 hinted for 3 more signatures, rejecting every unanchored match
+/// 107 / 102; 0.21 removes 1 of the 5 hint-free signatures, 0.2 none.
+pub const MIN_UNANCHORED_SIMILARITY: f64 = 0.25;
+
+/// The signature's required features that identify a function by
+/// themselves, as keys.
+fn identifying_required(signature: &Signature) -> Vec<String> {
+    signature
+        .features
+        .iter()
+        .filter(|feature| feature.required)
+        .map(|feature| feature.key())
+        .filter(|key| identifying_key(key))
+        .collect()
+}
+
+/// Whether `found` holds one of the signature's identifying required
+/// features, or else is similar enough to stand without them (see
+/// [`MIN_UNANCHORED_SIMILARITY`]).
+fn anchored_enough(identifying: &[String], found: &Match) -> bool {
+    identifying.is_empty()
+        || found.similarity >= MIN_UNANCHORED_SIMILARITY
+        || identifying.iter().any(|key| found.matched.contains(key))
+}
 
 fn specific(frequencies: &Frequencies, found: &Match) -> bool {
     found.similarity >= MIN_SIMILARITY
@@ -2677,5 +2728,41 @@ mod tests {
         let ranked = [found(1, 0.9, &["str:x"]), found(2, 0.8, &["cfg:blocks:1"])];
         assert_eq!(evidence(&ranked, 0), Evidence::Identified);
         assert_eq!(evidence(&ranked, 1), Evidence::ShapeOnly);
+    }
+
+    #[test]
+    fn an_unanchored_match_needs_similarity() {
+        // Merged x64+arm64 `LZ4_loadDict` (lz4, clang -O2) from the real
+        // corpus: its identifying required features are two constants. A
+        // hinted scan of arm32 sqlite matched a function on `memset`, small
+        // constants, and an optional division constant, at similarity 0.068.
+        let identifying = vec![
+            "const:0xbb000000".to_string(),
+            "const:0xcf1bbcdc".to_string(),
+        ];
+        let lookalike = [
+            "callee:*!memset",
+            "const:0x0",
+            "const:0x2",
+            "const:0x3",
+            "const:0xaaaaaaab",
+        ];
+        assert!(!anchored_enough(&identifying, &found(1, 0.068, &lookalike)));
+        assert!(anchored_enough(
+            &identifying,
+            &found(1, MIN_UNANCHORED_SIMILARITY, &lookalike)
+        ));
+        // Holding one of them is enough at any similarity; an inherited copy
+        // is not the function's own.
+        assert!(anchored_enough(
+            &identifying,
+            &found(1, 0.068, &["const:0xbb000000"])
+        ));
+        assert!(!anchored_enough(
+            &identifying,
+            &found(1, 0.068, &["inl:const:0xbb000000"])
+        ));
+        // A signature without identifying evidence is left to the shape gates.
+        assert!(anchored_enough(&[], &found(1, 0.068, &lookalike)));
     }
 }

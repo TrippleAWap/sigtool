@@ -385,8 +385,11 @@ and rely on neighbour context (§8).
 
 `native/src/validate.rs` reports what is measurable without a matcher:
 
-* `strong` — at least 2 anchors, 2 data features, 2 different data kinds, and
-  complete recovery.
+* `strong` — at least 2 anchors, 2 data features, 2 different data kinds, at
+  least 2 required features that identify a function by themselves (a `str`,
+  a `callee` without `!`, or a `const` at least `0x100` from zero, §8), and
+  complete recovery. Imports and near-zero constants count as data features
+  but identify nothing: a match can reach the threshold on them alone.
 * `small` — at most 12 instructions; match with neighbour context.
 * `weak` — everything else. Notes name the specific deficit (no anchors, one
   anchor, single feature kind, partial recovery, low confidence).
@@ -492,12 +495,15 @@ unwind-table functions), a hint-free match must also pass:
   at least 6 matched features, unless they share a neighbour key;
 * a shape-only match that shares none of the signature's neighbour keys is
   rejected when the signature has at least 2 of them;
-* a shape-only match needs similarity at least 0.3.
+* a shape-only match needs similarity at least 0.3;
+* an *unanchored* match, one that holds none of the signature's identifying
+  required features (an inherited `inl:` copy does not count) when the
+  signature has any, needs similarity at least 0.25.
 
 **Hinted acceptance.** On an image with at least 32 known function starts, a
 hinted match that is shape-only needs at least 6 matched features and
-similarity at least 0.3, as in hint-free mode; the chance and neighbour gates
-are hint-free only.
+similarity at least 0.3, and an unanchored match similarity at least 0.25,
+as in hint-free mode; the chance and neighbour gates are hint-free only.
 
 **Evidence labels.** Each match in a ranked list carries one label:
 

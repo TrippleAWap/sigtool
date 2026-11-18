@@ -525,5 +525,20 @@ As of 2026-11-16, `native-first` branch, spec v4.
   remain far off: the stable dimensions only recover pairs whose required
   evidence already matches; the rest is feature work. Not yet run on
   held-out. Real baseline re-saved for it (no cell dropped).
+- FP reduction (2026-11-17, `fp-reduction` branch, tuning corpus only,
+  full real bench `--joint`; v5 draft in `spec/CHANGELOG.md`,
+  `SPEC_VERSION` still 4): `strong` needs 2 identifying required features
+  (173 -> 87 strong signatures, strong FP 0.040 -> 0.011, a label only:
+  nothing else moves), and a match holding none of the signature's
+  identifying required features needs similarity 0.25 (strong FP 0.011 ->
+  0.000, hint-free any-verdict 0.154 -> 0.146, hinted 0.111 -> 0.109, joint
+  sets' false hits cjson 21 -> 20 and zlib 8 -> 6; hint-free top-1 3704 ->
+  3705, hinted 4177 -> 4176; merged->arm64 clang-O2 -> clang-O0 hint-free
+  0.412 -> 0.353, one function). 0.22 was benched and lost (keeps that
+  function, removes none of the joint false hits). The G3 hint-free ceiling
+  (0.05) is still far: of the 84 hint-free signatures with false hits, 74
+  have no identifying required feature (shape and small constants only), 8
+  match unanchored at similarity >= 0.25, and 2 hold one. Not yet run on
+  held-out.
 - Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
   rule decision on in-module constants (M10).
