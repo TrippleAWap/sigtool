@@ -547,7 +547,10 @@ scanned.
    gains 0.3 per link of its signature that the current placement of the
    linked signature would preserve (an `out:` link is preserved when the
    function calls the neighbour's placement, an `in:` link when it is called
-   by it), and the mapping is rebuilt from the new weights.
+   by it), and the mapping is rebuilt from the new weights. "Calls" includes
+   tail calls: a function's callers are its direct-call sites plus every
+   candidate whose callees (calls and tail calls) include it, so both ends of
+   a link read the same edge.
 4. Module gate: the mapping is used only when it preserves at least 6 link
    ends (each link counts once per signature recording it) and at least 0.2
    of the link ends whose two signatures it placed. Otherwise every match

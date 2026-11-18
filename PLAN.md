@@ -540,5 +540,17 @@ As of 2026-11-16, `native-first` branch, spec v4.
   have no identifying required feature (shape and small constants only), 8
   match unanchored at similarity >= 0.25, and 2 hold one. Not yet run on
   held-out.
+- Joint tail-call edges (2026-11-17, `merged-joint` branch, tuning corpus
+  only): joint resolution's callers now include tail callers, so `out:`
+  links to tail-called neighbours earn the link bonus. G2 hint-free: other
+  arch same build 0.777 -> 0.792, other compiler 0.571 -> 0.579, other opt
+  0.466 -> 0.475, same arch other compiler 0.702 -> 0.709, same arch other
+  opt 0.540 -> 0.545; joint false hits unchanged (46, equal to scanned
+  alone); every G1, FP, and precision line unchanged. G1 merged held-out
+  arch hint-free top-1 stays 0.397: of 388 merged -> arm32/thumb scans
+  (`examples/diagnose_merged`), 130 are top-1 and 140 fail only the shape
+  gate (score and required evidence pass, shape agreement below 0.8; 27 of
+  them reach 0.7, 62 reach 0.6). Loosening that gate needs an FP simulation
+  first; not built. Not yet run on held-out.
 - Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
   rule decision on in-module constants (M10).

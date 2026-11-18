@@ -70,6 +70,28 @@ unchanged, so `SPEC_VERSION` stays `4`.
   dropped 0.415 / 70 (2-6 pairs; not built). Floor 4 keeps the false hits
   within 0.003 of the rule's absence (all shape-only) for 0.022 more
   acceptance than floor 5.
+## Unreleased
+
+`SPEC_VERSION` stays `4`: joint resolution's output changes, but feature
+records, the signature document, and single-signature acceptance do not
+(SPEC.md §8), so v4 documents keep their meaning.
+
+* The call graph joint resolution reads is symmetric: a function's callers
+  are its direct-call sites plus every candidate whose callees include it.
+  Callees held tail calls and callers did not (the code index records call
+  instructions only), so an `out:` link to a tail-called neighbour was
+  counted by the module gate but never earned the link bonus, and thin
+  wrappers of different helpers stayed tied. Simulated on the v4 joint
+  dump, then measured on the full real corpus (`bench --max-functions 4
+  --joint`, hint-free joint section, top-1 of 2034 / 2034 / 8136 / 678 /
+  2712): other arch same build 1580 -> 1611 (0.777 -> 0.792), other
+  compiler 1161 -> 1178 (0.571 -> 0.579), other arch cross opt 3788 -> 3868
+  (0.466 -> 0.475), same arch other compiler 476 -> 481 (0.702 -> 0.709),
+  same arch cross opt 1465 -> 1477 (0.540 -> 0.545). Joint false hits in
+  unrelated libraries unchanged (46 placements, equal to scanned alone in
+  every library); wrong joint top-1 answers 4515 -> 4495. Every other bench
+  section unchanged. Capping the merged caller list at 16 like
+  `callers_of` gained less in simulation (0.789 / 0.576 / 0.471).
 
 ## v4 — coverage, inherited evidence, trust labels, joint assignment
 
