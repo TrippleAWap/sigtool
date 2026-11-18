@@ -24,6 +24,7 @@ type SymbolTables<'a> = HashMap<usize, (Cow<'a, [u8]>, Cow<'a, [u8]>)>;
 pub const ELF_PLACE_BASE: u64 = 0x1000_0000;
 
 const ELF_SHT_SYMTAB: u32 = 2;
+const ELF_SHT_STRTAB: u32 = 3;
 const ELF_SHT_RELA: u32 = 4;
 const ELF_SHT_NOBITS: u32 = 8;
 const ELF_SHT_REL: u32 = 9;
@@ -32,6 +33,11 @@ const ELF_SHF_WRITE: u64 = 0x1;
 const ELF_SHF_ALLOC: u64 = 0x2;
 const ELF_SHF_EXECINSTR: u64 = 0x4;
 const ELF_STT_FUNC: u8 = 2;
+const ELF_STT_TLS: u8 = 6;
+const ELF_PT_LOAD: u32 = 1;
+const ELF_PT_DYNAMIC: u32 = 2;
+/// Most `.dynamic` entries read; a real image has a few dozen.
+const MAX_DYNAMIC_ENTRIES: usize = 4096;
 const ELF_ET_REL: u16 = 1;
 const ELF_ET_DYN: u16 = 3;
 const R_ARM_RELATIVE: u64 = 23;
@@ -601,7 +607,7 @@ fn parse_elf_budgeted(
         ELF_NAMES_FLOOR.saturating_add(data.len().saturating_mul(ELF_NAMES_PER_FILE_BYTE)),
     );
     let name_table = section_bytes(data, &sections[e_shstrndx as usize], &mut budget)?;
-    let names: Vec<String> = sections
+    let mut names: Vec<String> = sections
         .iter()
         .map(|section| {
             name_budget
@@ -609,6 +615,24 @@ fn parse_elf_budgeted(
                 .ok_or_else(elf_names_exhausted)
         })
         .collect::<Result<_, _>>()?;
+    // A section table that does not describe the dynamic symbols (an image
+    // rebuilt from an IDA database, whose segments name only some sections)
+    // still has the loader's view of them: take the tables from the dynamic
+    // segment, as the loader does. Their symbols' section indices then refer
+    // to the original table, so symbols are placed by address instead.
+    let dynamic_tables = e_type != ELF_ET_REL
+        && !sections
+            .iter()
+            .any(|section| section.kind == ELF_SHT_DYNSYM);
+    let dynamic_tables = dynamic_tables && {
+        let found = dynamic_sections(data, is64, sections.len());
+        let any = !found.is_empty();
+        for (section, name) in found {
+            sections.push(section);
+            names.push(name.to_string());
+        }
+        any
+    };
 
     let mut places: HashMap<usize, u64> = HashMap::new();
     let mut regions: Vec<Region> = Vec::new();
@@ -863,7 +887,17 @@ fn parse_elf_budgeted(
     // of an object file.
     let has_dynsym = symbols.iter().any(|symbol| symbol.5);
     for (symbol_name, value, info, shndx, size, dynamic) in symbols {
-        let Some(base) = places.get(&(shndx as usize)) else {
+        let placed = if dynamic_tables {
+            // Reserved indices (`SHN_ABS`, `SHN_COMMON`) and TLS offsets are
+            // not addresses; every other defined symbol lies in a section.
+            (shndx < 0xff00
+                && info & 0xF != ELF_STT_TLS
+                && regions.iter().any(|region| region.contains(value & !1, 0)))
+            .then_some(0)
+        } else {
+            places.get(&(shndx as usize)).copied()
+        };
+        let Some(base) = placed else {
             continue;
         };
         let mut address = if e_type == ELF_ET_REL {
@@ -971,6 +1005,239 @@ fn parse_elf_budgeted(
         pointer_slots,
         pe_roots: None,
     })
+}
+
+/// The dynamic symbol, string, and relocation tables the `PT_DYNAMIC` segment
+/// points at, as unallocated sections appended after `first_index` existing
+/// ones (their `link` fields index the result's position in that list).
+///
+/// Every value is target data (AGENTS.md rule 8): addresses map to file
+/// offsets only inside a `PT_LOAD` segment's file bytes, counts are bounded
+/// by the file, and a table that does not fit is dropped.
+fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section, &'static str)> {
+    const DT_NULL: u64 = 0;
+    const DT_PLTRELSZ: u64 = 2;
+    const DT_STRTAB: u64 = 5;
+    const DT_SYMTAB: u64 = 6;
+    const DT_RELA: u64 = 7;
+    const DT_RELASZ: u64 = 8;
+    const DT_STRSZ: u64 = 10;
+    const DT_REL: u64 = 17;
+    const DT_RELSZ: u64 = 18;
+    const DT_PLTREL: u64 = 20;
+    const DT_JMPREL: u64 = 23;
+
+    let word = |offset: usize| -> Option<u64> {
+        if is64 {
+            u64_at(data, offset).ok()
+        } else {
+            u32_at(data, offset).ok().map(u64::from)
+        }
+    };
+    let (phoff, phentsize, phnum) = if is64 {
+        (word(0x20), u16_at(data, 0x36).ok(), u16_at(data, 0x38).ok())
+    } else {
+        (word(0x1C), u16_at(data, 0x2A).ok(), u16_at(data, 0x2C).ok())
+    };
+    let (Some(phoff), Some(phentsize), Some(phnum)) = (phoff, phentsize, phnum) else {
+        return Vec::new();
+    };
+    // (vaddr, offset, filesz) of each PT_LOAD, and the PT_DYNAMIC file range.
+    let mut loads: Vec<(u64, u64, u64)> = Vec::new();
+    let mut dynamic: Option<(u64, u64)> = None;
+    for index in 0..phnum as usize {
+        let Some(at) = (phoff as usize).checked_add(index * phentsize as usize) else {
+            break;
+        };
+        let Ok(kind) = u32_at(data, at) else {
+            break;
+        };
+        let fields = if is64 {
+            (
+                word(at.saturating_add(8)),
+                word(at.saturating_add(16)),
+                word(at.saturating_add(32)),
+            )
+        } else {
+            (
+                word(at.saturating_add(4)),
+                word(at.saturating_add(8)),
+                word(at.saturating_add(16)),
+            )
+        };
+        let (Some(offset), Some(vaddr), Some(filesz)) = fields else {
+            break;
+        };
+        match kind {
+            ELF_PT_LOAD => loads.push((vaddr, offset, filesz)),
+            ELF_PT_DYNAMIC => dynamic = Some((offset, filesz)),
+            _ => {}
+        }
+    }
+    let Some((dynamic_offset, dynamic_size)) = dynamic else {
+        return Vec::new();
+    };
+    let to_offset = |addr: u64, size: u64| -> Option<u64> {
+        let (vaddr, offset, filesz) = loads
+            .iter()
+            .find(|(vaddr, _, filesz)| *vaddr <= addr && addr < vaddr.saturating_add(*filesz))?;
+        let start = offset.checked_add(addr - vaddr)?;
+        let end = start.checked_add(size)?;
+        (end <= offset.saturating_add(*filesz) && end <= data.len() as u64).then_some(start)
+    };
+
+    let entry_size = if is64 { 16 } else { 8 };
+    let mut tags: HashMap<u64, u64> = HashMap::new();
+    for index in 0..(dynamic_size as usize / entry_size).min(MAX_DYNAMIC_ENTRIES) {
+        let at = (dynamic_offset as usize).saturating_add(index * entry_size);
+        let (Some(tag), Some(value)) = (word(at), word(at.saturating_add(entry_size / 2))) else {
+            break;
+        };
+        if tag == DT_NULL {
+            break;
+        }
+        tags.entry(tag).or_insert(value);
+    }
+
+    let sym_size: u64 = if is64 { 24 } else { 16 };
+    let (Some(&symtab), Some(&strtab)) = (tags.get(&DT_SYMTAB), tags.get(&DT_STRTAB)) else {
+        return Vec::new();
+    };
+    let Some(strsz) = tags.get(&DT_STRSZ).copied() else {
+        return Vec::new();
+    };
+    let Some(strtab_offset) = to_offset(strtab, strsz) else {
+        return Vec::new();
+    };
+    let count = symbol_count(data, &tags, symtab, strtab, sym_size, is64, &to_offset);
+    let Some(count) = count.filter(|count| *count > 0) else {
+        return Vec::new();
+    };
+    let Some(symtab_offset) = to_offset(symtab, count * sym_size) else {
+        return Vec::new();
+    };
+
+    let unallocated =
+        |kind: u32, addr: u64, offset: u64, size: u64, link: u32, entsize: u64| Section {
+            name_off: 0,
+            kind,
+            flags: 0,
+            addr,
+            offset,
+            size,
+            link,
+            info: 0,
+            entsize,
+        };
+    let strtab_index = first_index as u32;
+    let symtab_index = strtab_index + 1;
+    let mut sections = vec![
+        (
+            unallocated(ELF_SHT_STRTAB, strtab, strtab_offset, strsz, 0, 0),
+            ".dynstr",
+        ),
+        (
+            unallocated(
+                ELF_SHT_DYNSYM,
+                symtab,
+                symtab_offset,
+                count * sym_size,
+                strtab_index,
+                sym_size,
+            ),
+            ".dynsym",
+        ),
+    ];
+    let rela_size: u64 = if is64 { 24 } else { 12 };
+    let rel_size: u64 = if is64 { 16 } else { 8 };
+    let pltrel_kind = match tags.get(&DT_PLTREL) {
+        Some(&DT_REL) => ELF_SHT_REL,
+        _ => ELF_SHT_RELA,
+    };
+    let tables = [
+        (DT_RELA, DT_RELASZ, ELF_SHT_RELA, ".rela.dyn"),
+        (DT_REL, DT_RELSZ, ELF_SHT_REL, ".rel.dyn"),
+        (DT_JMPREL, DT_PLTRELSZ, pltrel_kind, ".rela.plt"),
+    ];
+    for (address_tag, size_tag, kind, name) in tables {
+        let (Some(&addr), Some(&size)) = (tags.get(&address_tag), tags.get(&size_tag)) else {
+            continue;
+        };
+        let Some(offset) = to_offset(addr, size) else {
+            continue;
+        };
+        let entsize = if kind == ELF_SHT_RELA {
+            rela_size
+        } else {
+            rel_size
+        };
+        let name = if kind == ELF_SHT_REL && name == ".rela.plt" {
+            ".rel.plt"
+        } else {
+            name
+        };
+        sections.push((
+            unallocated(kind, addr, offset, size, symtab_index, entsize),
+            name,
+        ));
+    }
+    sections
+}
+
+/// How many entries `DT_SYMTAB` holds: `DT_HASH`'s chain count, else the end
+/// of `DT_GNU_HASH`'s last chain, else the gap up to `DT_STRTAB` (which
+/// linkers place right after it).
+fn symbol_count(
+    data: &[u8],
+    tags: &HashMap<u64, u64>,
+    symtab: u64,
+    strtab: u64,
+    sym_size: u64,
+    is64: bool,
+    to_offset: &dyn Fn(u64, u64) -> Option<u64>,
+) -> Option<u64> {
+    const DT_HASH: u64 = 4;
+    const DT_GNU_HASH: u64 = 0x6fff_fef5;
+    // A symbol table cannot hold more entries than the file has bytes for.
+    let limit = data.len() as u64 / sym_size;
+    if let Some(&hash) = tags.get(&DT_HASH) {
+        let offset = to_offset(hash, 8)? as usize;
+        return Some(u64::from(u32_at(data, offset + 4).ok()?).min(limit));
+    }
+    if let Some(&hash) = tags.get(&DT_GNU_HASH) {
+        let offset = to_offset(hash, 16)? as usize;
+        let buckets = u64::from(u32_at(data, offset).ok()?);
+        let first = u64::from(u32_at(data, offset + 4).ok()?);
+        let bloom = u64::from(u32_at(data, offset + 8).ok()?);
+        let bloom_word = if is64 { 8 } else { 4 };
+        let buckets_at = (offset as u64)
+            .checked_add(16)?
+            .checked_add(bloom.checked_mul(bloom_word)?)?;
+        if buckets > limit || buckets_at.saturating_add(buckets * 4) > data.len() as u64 {
+            return None;
+        }
+        let mut last = 0u64;
+        for index in 0..buckets {
+            let value = u64::from(u32_at(data, (buckets_at + index * 4) as usize).ok()?);
+            last = last.max(value);
+        }
+        if last < first {
+            return Some(first.min(limit));
+        }
+        // Walk the last bucket's chain to its end marker (low bit set).
+        let chains_at = buckets_at + buckets * 4;
+        let mut index = last;
+        while index < limit {
+            let at = chains_at.checked_add((index - first).checked_mul(4)?)?;
+            let value = u32_at(data, at as usize).ok()?;
+            if value & 1 != 0 {
+                return Some(index + 1);
+            }
+            index += 1;
+        }
+        return None;
+    }
+    (strtab > symtab).then(|| ((strtab - symtab) / sym_size).min(limit))
 }
 
 /// A section's bytes: borrowed from the file, or for `SHT_NOBITS` zeros
