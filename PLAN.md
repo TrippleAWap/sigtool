@@ -39,30 +39,30 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Same arch, same build | 0.817 | 0.95 |
-| Same arch, other compiler, same level | 0.308 | 0.55 |
-| Same arch, other optimization level | 0.254 | 0.45 |
-| Other arch, same build settings | 0.306 | 0.60 |
-| Other arch, other compiler | 0.216 | 0.45 |
-| Other arch, other optimization level | 0.183 | 0.35 |
-| Merged x64+arm64 signature, held-out arch, same level | 0.397 | 0.70 |
+| Same arch, same build | 0.835 | 0.95 |
+| Same arch, other compiler, same level | 0.392 | 0.55 |
+| Same arch, other optimization level | 0.344 | 0.45 |
+| Other arch, same build settings | 0.374 | 0.60 |
+| Other arch, other compiler | 0.270 | 0.45 |
+| Other arch, other optimization level | 0.237 | 0.35 |
+| Merged x64+arm64 signature, held-out arch, same level | 0.456 | 0.70 |
 
 ### G2. Find: whole-module sets (real corpus, hint-free, `bench --joint`)
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Other arch, same build settings | 0.777 | 0.85 |
-| Other arch, other compiler | 0.571 | 0.65 |
-| Other arch, other optimization level | 0.466 | 0.50 |
-| Same arch, other compiler | 0.702 | 0.70 |
+| Other arch, same build settings | 0.793 | 0.85 |
+| Other arch, other compiler | 0.624 | 0.65 |
+| Other arch, other optimization level | 0.522 | 0.50 |
+| Same arch, other compiler | 0.708 | 0.70 |
 
 ### G3. Trust
 
 | Measure | Now | v1.0 |
 |---|---|---|
-| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.981, hinted 0.987 | ≥ 0.98 |
-| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.154 | ≤ 0.05 |
-| Strong-signature false-positive rate, corpus | 0.040 | ≤ 0.01 |
+| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.981, hinted 0.989 | ≥ 0.98 |
+| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.117 | ≤ 0.05 |
+| Strong-signature false-positive rate, corpus | 0.017 | ≤ 0.01 |
 | Strong-signature false-positive rate, negative corpus | 0.000 | 0.000 |
 | Joint resolution false hits in unrelated libraries | equal to scanned alone in every library | no higher than the same set scanned alone |
 
@@ -170,7 +170,12 @@ reason.
     hash seeds, no map-order leaks, no timestamps or paths. Check by running
     twice when touching output.
 15. **No absolute addresses in evidence.** Addresses become module RVAs and
-    live in provenance (`provenance`, `links`) only.
+    live in provenance (`provenance`, `links`) only. A value is an address
+    when the code uses it as one (PC-relative or memory reference, or a
+    relocated word in a shared object or PIE), not because it falls inside
+    the module span; other values are constants (`spec/SPEC.md` §2.2), and
+    the same code at two bases gives identical features. Decided by the user
+    on 2026-11-17, replacing "drop every in-range value".
 16. **The spec is versioned.** A change to feature semantics, the document,
     or acceptance bumps `SPEC_VERSION`, updates `spec/SPEC.md` and
     `spec/CHANGELOG.md`, and regenerates vectors. Old documents are refused,
@@ -323,13 +328,13 @@ documented.
 
 ## 8. Status
 
-As of 2026-11-16, `native-first` branch, spec v4.
+As of 2026-11-17, `in-module-constants` branch, spec v5.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
-  same build 0.671, other arch 0.329, other arch other compiler 0.267.
+  same build 0.690, other arch 0.365, other arch other compiler 0.308.
 - Whole-module sets: the "Now" column of G2.
-- False positives: strong 0.040 (corpus) and 0.000 (negative), any-verdict
-  hinted 0.111, hint-free 0.154.
+- False positives: strong 0.017 (corpus) and 0.000 (negative), any-verdict
+  hinted 0.105, hint-free 0.117.
 - What moved the numbers, in order, with measurements:
   [`docs/history/PLAN-v0.5.md`](docs/history/PLAN-v0.5.md) §13 and
   [`spec/CHANGELOG.md`](spec/CHANGELOG.md).
@@ -408,12 +413,28 @@ As of 2026-11-16, `native-first` branch, spec v4.
     hint-free identified precision 0.938 -> 0.876 and x64->arm64 Os cells
     -0.06, because inliners of a helper then match its signature. Strings-
     only condition simulated no gain.
-  - Open, needs a rule decision: the pointer test drops every constant
+  - In-module constants (decided by the user on 2026-11-17; spec v5,
+    `in-module-constants` branch): the pointer test dropped every constant
     inside the module span, and a shared object maps at 0, so in-range
-    numbers (zlib's 0xfff1, LZ4 sizes) vanish, and differently per build
-    (image sizes differ) and per base (a live process maps high). 22% of
-    signatures lose such a constant; keeping non-pointer values simulated
-    +0.04-0.08 acceptance. AGENTS.md hard rule 4 forbids it as written.
+    numbers (zlib's 0xfff1, LZ4 sizes) vanished, differently per build and
+    per base. AGENTS.md hard rule 4 and rule 15 now drop a value only when
+    the code uses it as an address; in an ELF shared object or PIE that is a
+    word a dynamic relocation writes (SPEC.md §2.2). 20-30% of functions
+    gain an in-range `const` record. The neighbour answer floor rose 0.3 ->
+    0.42 to keep identified precision (twins now share resolved neighbour
+    strings). Full real bench (`--max-functions 4 --joint`) vs v4:
+    hint-free top-1 other compiler 0.308 -> 0.392, cross opt 0.254 -> 0.344,
+    other arch 0.306 -> 0.374, other arch other compiler 0.216 -> 0.270,
+    other arch cross opt 0.183 -> 0.237; hinted other arch 0.329 -> 0.365;
+    G2 joint other arch same build 0.777 -> 0.793, other compiler 0.571 ->
+    0.624, cross opt 0.466 -> 0.522; FP strong 0.040 -> 0.017, any-verdict
+    0.111 -> 0.105, hint-free 0.154 -> 0.117, negative 0.000; identified
+    precision hint-free 0.981 -> 0.981 (correct answers 2747 -> 3321),
+    hinted 0.987 -> 0.989 (1774 -> 2349). Lost variants (memory-base drop,
+    exact-start drop, features-only, other floors) in `spec/CHANGELOG.md`.
+    Open: 61 cells dropped past tolerance, mostly merged signatures into
+    32-bit targets, from struct field offsets that differ between 64- and
+    32-bit layouts, which the signature now requires. Not run on held-out.
   - Recovery is not the cause: hint-free coverage of ground-truth bodies is
     0.94-1.00 per image and indirect (switch) jumps occur in 0-9% of
     functions (`examples/recovery_coverage`).
@@ -474,5 +495,6 @@ As of 2026-11-16, `native-first` branch, spec v4.
   66 s on 8 cores (idle machine; 221 s recorded at v4 under load),
   peak 1.10 GB; confirmed on main (64 s), real baseline re-saved for the
   joint section. Not yet run on held-out.
-- Next: M8 exit (weekly workflow green), strong FP on held-out, then the open
-  rule decision on in-module constants (M10).
+- Next: M8 exit (weekly workflow green), strong FP on held-out, identified
+  precision after in-module constants (M12), and pointer-width-dependent
+  constants (M10).
