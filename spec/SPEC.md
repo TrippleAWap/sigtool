@@ -538,6 +538,12 @@ unwind-table functions), a hint-free match must also pass:
 * an *unanchored* match, one that holds none of the signature's identifying
   required features (an inherited `inl:` copy does not count) when the
   signature has any, needs similarity at least 0.25.
+* a candidate of a low-information signature that fails only shape
+  corroboration is still accepted when it shares a neighbour key with the
+  signature and its similarity is at least 0.4: across compilers and
+  optimization levels the shape buckets change, the evidence of callers and
+  callees does not. The gates above then apply as to any match sharing a
+  neighbour key.
 
 **Hinted acceptance.** On an image with at least 32 known function starts, a
 hinted match that is shape-only needs at least 6 matched features and
