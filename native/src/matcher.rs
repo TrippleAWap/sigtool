@@ -1229,7 +1229,17 @@ pub fn identified(found: &Match) -> bool {
 /// 116 fewer correct answers. `joint:` votes are not in the single-signature
 /// bench; they rank with direct neighbours because both are call-graph
 /// evidence. Not yet checked on the held-out corpus.
-pub const MIN_ANSWER_SIMILARITY_NEIGHBOUR: f64 = 0.3;
+///
+/// Re-simulated at spec v5 (`bench --fp-report`, hint-free; hinted answers
+/// do not move between 0.3 and 0.5): resolved ARM PIC strings and in-module
+/// constants give twins (`cJSONUtils_GeneratePatches` and its
+/// `CaseSensitive` sibling call the same helper) and wrappers shared
+/// neighbour evidence, so 0.3 fell to 0.970 (3672 correct, 115 wrong). 0.42
+/// gives 0.981 (3321 / 64); 0.40: 0.979 (3375 / 74); 0.45: 0.983 (3256 /
+/// 57); 0.5: 0.985 (3158 / 48). v5 at 0.42 still has more correct
+/// answers than v4 at 0.3 (2747 / 54); on the v4 logs 0.42 gives 0.985
+/// (2485 / 37).
+pub const MIN_ANSWER_SIMILARITY_NEIGHBOUR: f64 = 0.42;
 
 /// See [`MIN_ANSWER_SIMILARITY_NEIGHBOUR`].
 pub const MIN_ANSWER_SIMILARITY: f64 = 0.7;
@@ -2717,8 +2727,9 @@ mod tests {
         // A callee needs the high floor; a direct neighbour key the low one.
         assert!(!identified_answer(&[found(1, 0.5, &["callee:f"])]));
         assert!(identified_answer(&[found(1, 0.7, &["callee:f"])]));
-        assert!(identified_answer(&[found(1, 0.3, &["near:in:str:x"])]));
-        assert!(!identified_answer(&[found(1, 0.3, &["near:in2:str:x"])]));
+        assert!(identified_answer(&[found(1, 0.45, &["near:in:str:x"])]));
+        assert!(!identified_answer(&[found(1, 0.4, &["near:in:str:x"])]));
+        assert!(!identified_answer(&[found(1, 0.45, &["near:in2:str:x"])]));
         // Shape alone is never an answer, and a tie is no answer.
         assert!(!identified_answer(&[found(1, 1.0, &["cfg:blocks:1"])]));
         assert!(!identified_answer(&[]));

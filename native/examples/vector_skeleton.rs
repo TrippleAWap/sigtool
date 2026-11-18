@@ -59,10 +59,15 @@ fn main() {
         );
     }
 
-    let skeleton = json!({
+    let mut skeleton = json!({
         "spec_version": SPEC_VERSION,
         "sections": sections,
         "functions": functions,
     });
+    // A shared object's dynamic relocation slots: the only words that may
+    // hold an absolute address (SPEC.md §2.2).
+    if let Some(relocations) = &module.relocations {
+        skeleton["relocations"] = json!(relocations);
+    }
     println!("{skeleton}");
 }

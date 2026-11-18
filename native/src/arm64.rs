@@ -16,7 +16,7 @@ use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv8::a64::{Instruction, Opcode, Operand, SizeCode};
 
 use crate::normalize::{
-    canonical_const, sorted_unique, ArmState, DataRef, Insn, Kind, Normalizer, OpClass,
+    canonical_const, is_address, sorted_unique, ArmState, DataRef, Insn, Kind, Normalizer, OpClass,
     PendingValue, MASK32, MASK64,
 };
 use crate::source::ByteSource;
@@ -338,7 +338,13 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
             let width = destination.width;
             if let Some(page) = state.get(base) {
                 if page.is_page {
-                    state.take(base);
+                    // A load into another register leaves the page in its base:
+                    // the PLT stub's `ldr x17, [x16, #o]; add x16, x16, #o`
+                    // adds the same offset again, which would otherwise flush
+                    // as a build-specific constant.
+                    if destination.number == base {
+                        state.take(base);
+                    }
                     let slot = page.value.wrapping_add_signed(offset);
                     refs.push(DataRef { addr: slot, width });
                     if mnemonic == "ldr" && width == 8 {
@@ -356,7 +362,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
                     self.read_pointer32(literal)
                 };
                 if let Some(value) = value {
-                    if self.source.module_for(value).is_some() {
+                    if is_address(self.source, literal, width, value) {
                         // The pool cell holds a pointer; the cell is the anchor.
                         refs.push(DataRef {
                             addr: literal,

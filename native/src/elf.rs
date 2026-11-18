@@ -29,6 +29,7 @@ const ELF_SHF_ALLOC: u64 = 0x2;
 const ELF_SHF_EXECINSTR: u64 = 0x4;
 const ELF_STT_FUNC: u8 = 2;
 const ELF_ET_REL: u16 = 1;
+const ELF_ET_DYN: u16 = 3;
 const R_ARM_RELATIVE: u64 = 23;
 /// Fewest synthesized starts that stand in for a missing unwind table; the
 /// same floor as `matcher::MIN_FREQUENCY_FUNCTIONS`.
@@ -566,6 +567,9 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
 
     let mut imports: HashMap<u64, String> = HashMap::new();
     let mut relative_slots: Vec<u64> = Vec::new();
+    // Every word the loader writes in a shared object or PIE: the only places
+    // such an image can hold an absolute address (SPEC.md §2.2).
+    let mut relocations: Vec<u64> = Vec::new();
     for section in &sections {
         if section.kind != ELF_SHT_RELA && section.kind != ELF_SHT_REL {
             continue;
@@ -600,6 +604,9 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                     u32_at(&raw, offset + 4)? as u64,
                 )
             };
+            if e_type == ELF_ET_DYN {
+                relocations.push(r_offset);
+            }
             if arch == Arch::Arm32
                 && !is64
                 && e_type != ELF_ET_REL
@@ -694,6 +701,8 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         _ => section_start,
     };
     let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
+    relocations.sort_unstable();
+    relocations.dedup();
     let module = Module {
         name: module_stem(name),
         base: section_start,
@@ -703,6 +712,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         exports,
         functions,
         imports,
+        relocations: (e_type == ELF_ET_DYN).then_some(relocations),
     };
     let unwind = crate::unwind::elf_entries(&regions, if is64 { 8 } else { 4 });
     // `.ARM.exidx` ends are only the next entry's start; `.eh_frame` lengths
@@ -1099,6 +1109,7 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
         exports: metadata.exports,
         functions: metadata.functions,
         imports: metadata.imports,
+        relocations: None,
     };
     // Exports that point into code root the leaf-function sweep
     // (`starts::x64_call_targets`); forwarders and data exports do not.

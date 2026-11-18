@@ -71,7 +71,8 @@ impl Region {
 #[derive(Debug, Clone, Default)]
 pub struct Module {
     pub name: String,
-    /// Lowest mapped address; with `size`, the range rule 4 treats as pointers.
+    /// Lowest mapped address; with `size`, the range rule 4 treats as
+    /// addresses when `relocations` is `None` (SPEC.md §2.2).
     pub base: u64,
     /// What `rva` is relative to: the lowest `PT_LOAD` address or PE
     /// `ImageBase`. It can sit below `base` (a shared object's base is 0),
@@ -85,6 +86,12 @@ pub struct Module {
     pub functions: HashMap<u64, String>,
     /// `address -> "module!symbol"` for import thunks and IAT/GOT slots.
     pub imports: HashMap<u64, String>,
+    /// Sorted addresses of every word a load-time relocation writes, for an
+    /// image that can be loaded anywhere (an ELF shared object or PIE).
+    /// `None` for an image whose relocations were not read (ELF `ET_EXEC`,
+    /// relocatable objects, PE, memory fixtures): there every in-range value
+    /// is taken as an address.
+    pub relocations: Option<Vec<u64>>,
 }
 
 impl Module {
@@ -100,6 +107,18 @@ impl Module {
             && addr
                 .checked_add(length as u64)
                 .is_some_and(|end| end <= self.end())
+    }
+
+    /// `Some(true)` when a relocation writes inside `[addr, addr + length)`,
+    /// `None` when the image's relocations are unknown (see `relocations`).
+    pub fn relocated(&self, addr: u64, length: usize) -> Option<bool> {
+        let slots = self.relocations.as_ref()?;
+        let first = slots.partition_point(|slot| *slot < addr);
+        Some(
+            slots
+                .get(first)
+                .is_some_and(|slot| *slot < addr.saturating_add(length as u64)),
+        )
     }
 
     pub fn rva(&self, addr: u64) -> u64 {

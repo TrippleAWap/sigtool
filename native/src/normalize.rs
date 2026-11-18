@@ -26,6 +26,34 @@ enum Resolved {
     Address(u64),
 }
 
+/// Whether `value`, materialised by the bytes at `[site, site + length)` (an
+/// instruction or a literal-pool cell), is an absolute address (SPEC.md §2.2).
+///
+/// A shared object or PIE can hold an absolute address only in a word the
+/// loader relocates, so there that relocation decides, and an unrelocated
+/// value is a constant even inside the module span: shared objects link at
+/// 0, so the range test dropped zlib's `0xfff1` and LZ4's sizes, differently
+/// per build (image sizes differ) and per load base. An image whose
+/// relocations are unknown cannot move or maps far above such values, so the
+/// range test stays base-independent there.
+pub fn is_address<S: ByteSource + ?Sized>(
+    source: &S,
+    site: u64,
+    length: usize,
+    value: u64,
+) -> bool {
+    if value == 0 {
+        return false;
+    }
+    if let Some(relocated) = source
+        .module_for(site)
+        .and_then(|module| module.relocated(site, length))
+    {
+        return relocated;
+    }
+    source.module_for(value).is_some()
+}
+
 pub const MASK64: u64 = u64::MAX;
 pub const MASK32: u64 = 0xFFFF_FFFF;
 

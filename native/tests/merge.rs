@@ -64,6 +64,7 @@ fn strong_source() -> MemorySource {
         exports: vec![("helper".to_string(), HELPER)],
         functions,
         imports: std::collections::HashMap::new(),
+        relocations: None,
     };
     MemorySource::new(
         Arch::X64,
@@ -99,6 +100,7 @@ fn deep_source() -> MemorySource {
         exports: Vec::new(),
         functions,
         imports: std::collections::HashMap::new(),
+        relocations: None,
     };
     MemorySource::new(
         Arch::X64,
@@ -122,6 +124,7 @@ fn tiny_source() -> MemorySource {
         exports: Vec::new(),
         functions: std::collections::HashMap::new(),
         imports: std::collections::HashMap::new(),
+        relocations: None,
     };
     MemorySource::new(
         Arch::X64,
@@ -133,7 +136,7 @@ fn tiny_source() -> MemorySource {
 }
 
 /// The YAML `core.merge.merge` produces for these two strong samples.
-const TWINS_YAML: &str = r#"spec_version: '4'
+const TWINS_YAML: &str = r#"spec_version: '5'
 name: twins
 confidence: single-arch
 anchors:

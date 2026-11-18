@@ -28,9 +28,32 @@ fn vector_dir() -> PathBuf {
 }
 
 fn source_from_vector(vector: &Value) -> MemorySource {
+    source_from_vector_at(vector, 0)
+}
+
+/// The vector's image loaded `delta` bytes above its link address, as a
+/// loader would: every section moves and every relocated word that holds an
+/// in-image address is adjusted. Only a vector with `relocations` (a shared
+/// object) may be moved.
+fn source_from_vector_at(vector: &Value, delta: u64) -> MemorySource {
     let arch_text = vector["arch"].as_str().expect("arch");
-    let arch_text = arch_text.replace("-pac", "").replace("-cet", "");
+    let arch_text = arch_text
+        .replace("-pac", "")
+        .replace("-cet", "")
+        .replace("-pic", "");
     let arch = Arch::parse(&arch_text).expect("known arch");
+    let relocations: Option<Vec<u64>> = vector.get("relocations").map(|slots| {
+        slots
+            .as_array()
+            .expect("relocations")
+            .iter()
+            .map(|slot| slot.as_u64().expect("relocation slot"))
+            .collect()
+    });
+    assert!(
+        delta == 0 || relocations.is_some(),
+        "only a relocatable vector can be moved"
+    );
 
     let mut regions = Vec::new();
     for section in vector["sections"].as_array().expect("sections") {
@@ -43,13 +66,38 @@ fn source_from_vector(vector: &Value) -> MemorySource {
     }
     let base = regions.iter().map(|region| region.start).min().unwrap();
     let end = regions.iter().map(|region| region.end()).max().unwrap();
+    if delta != 0 {
+        let width = arch.pointer_size();
+        for slot in relocations.iter().flatten() {
+            let Some(region) = regions
+                .iter_mut()
+                .find(|region| region.contains(*slot, width))
+            else {
+                continue;
+            };
+            let offset = (*slot - region.start) as usize;
+            let mut word = [0u8; 8];
+            word[..width].copy_from_slice(&region.data[offset..offset + width]);
+            let value = u64::from_le_bytes(word);
+            if value != 0 && base <= value && value < end {
+                let moved = (value + delta).to_le_bytes();
+                region.data[offset..offset + width].copy_from_slice(&moved[..width]);
+            }
+        }
+        for region in &mut regions {
+            region.start += delta;
+        }
+    }
 
     let mut functions = HashMap::new();
     let mut exports = Vec::new();
     let mut hints = Vec::new();
     for (name, info) in vector["functions"].as_object().expect("functions") {
-        let entry = info["entry"].as_u64().expect("entry");
-        let function_end = info.get("end").and_then(Value::as_u64).unwrap_or(entry);
+        let entry = info["entry"].as_u64().expect("entry") + delta;
+        let function_end = info
+            .get("end")
+            .and_then(Value::as_u64)
+            .map_or(entry, |end| end + delta);
         functions.insert(entry, name.clone());
         exports.push((name.clone(), entry));
         hints.push((entry, function_end));
@@ -57,13 +105,14 @@ fn source_from_vector(vector: &Value) -> MemorySource {
 
     let module = Module {
         name: "fixture".to_string(),
-        base,
-        image_base: base,
+        base: base + delta,
+        image_base: base + delta,
         size: end - base,
         path: None,
         exports,
         functions,
         imports: HashMap::new(),
+        relocations: relocations.map(|slots| slots.into_iter().map(|slot| slot + delta).collect()),
     };
     MemorySource::new(arch, regions, vec![module], hints, Vec::new())
 }
@@ -194,4 +243,43 @@ fn golden_vectors_match_reference_features() {
         }
     }
     assert!(checked > 0, "no golden functions were checked");
+}
+
+/// Rule 4: the same shared object loaded at two bases yields identical
+/// features. A shared object links at 0, so its constants also look like
+/// in-image addresses there and not at a high base; only how a value is used
+/// (a relocated word, a PC-relative address) may decide what it is.
+#[test]
+fn relocatable_vectors_give_identical_features_at_two_bases() {
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir(vector_dir()).expect("vector directory") {
+        let path = entry.expect("vector entry").path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let vector: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("vector file"))
+                .expect("vector json");
+        if vector.get("relocations").is_none() {
+            continue;
+        }
+        let delta = 0x4000_0000;
+        let low = source_from_vector(&vector);
+        let high = source_from_vector_at(&vector, delta);
+        for (name, info) in vector["functions"].as_object().expect("functions") {
+            let entry = info["entry"].as_u64().expect("entry");
+            let at_low =
+                recover(&low, entry, None, true).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let at_high = recover(&high, entry + delta, None, true)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(
+                extract(&low, &at_low),
+                extract(&high, &at_high),
+                "{name} in {}",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no relocatable vector was checked");
 }

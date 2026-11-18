@@ -1,5 +1,100 @@
 # Spec changelog
 
+## v5 — in-module constants
+
+`SPEC_VERSION` is `5`. `const` records change for ELF shared objects and
+PIEs, so a v4 document or DB is refused.
+
+* A value is an address only when the code uses it as one (SPEC.md §2.2):
+  PC-relative or absolute memory references, as before, and in an image that
+  can be loaded anywhere (ELF `ET_DYN`), a word a dynamic relocation writes
+  (the literal-pool cell, or the bytes of an x86 immediate). Every other
+  value is a constant even inside the module span. v4 dropped every value
+  inside the span; a shared object maps at 0, so it lost real constants
+  (zlib's `0xfff1`, LZ4 sizes, `0x10000`), differently per build (image sizes
+  differ) and per load base. Images without a relocation table (`ET_EXEC`,
+  relocatable objects, PE, live processes) keep the range test. Decided by
+  the user on 2026-11-17 (AGENTS.md hard rule 4, PLAN.md rule 15).
+* ARM32/Thumb: an unrelocated in-image pool word now stays pending, so gcc's
+  PIC `ldr r0, =.LC0-(.LPIC0+8); add r0, pc, r0` resolves to the string
+  instead of to the raw offset (the case `cross-compiler`'s 0b8b60d handles
+  separately). `ldr rd, [pc, rm]` resolves its GOT slot before the offset
+  register is flushed; before, a GOT offset outside the span leaked as a
+  constant (`0x103d4` in the `arm32-pic` vectors at a high base).
+* AArch64: a load from an `adrp` page into another register leaves the page
+  in its base register, so the PLT stub's `ldr x17, [x16, #o]; add x16, x16,
+  #o` resolves the `add` instead of flushing `#o` as a constant.
+* New golden vectors: the fixture as `-fPIC -shared` objects (`*-pic-*`) for
+  all four architectures, with their relocation slots; `golden.rs` loads each
+  at 0 and at `0x40000000` and requires identical features.
+* An identified answer resting on a direct neighbour's evidence (or joint
+  votes) needs similarity 0.42 instead of 0.3
+  (`MIN_ANSWER_SIMILARITY_NEIGHBOUR`). The resolved PIC strings and kept
+  constants give twins and thin wrappers shared neighbour evidence
+  (`cJSONUtils_GeneratePatches` and its `CaseSensitive` sibling call the same
+  helper), which at 0.3 lowered hint-free identified precision 0.981 ->
+  0.970. Only the label and the joint seed move; top-1 recall does not.
+
+Simulated first (`examples/in_module_consts`: in-range values the variants
+keep on the stripped real corpus, all 16272 ground-truth functions; then the
+full real bench per variant behind a temporary switch, `--max-functions 4
+--joint`, 2 threads). Under the relocation rule 20-30% of functions gain an
+in-range `const` record (x64 797, arm64 997, arm32 1138, Thumb 1115 of 4068
+each); no text relocation occurs in the corpus, so no immediate is dropped
+for its relocation. Variants (hint-free top-1 same arch other compiler /
+cross opt / other arch, hint-free FP, identified precision hint-free):
+
+| variant | other compiler | cross opt | other arch | FP | id. precision |
+|---|---|---|---|---|---|
+| v4 range test | 0.308 | 0.254 | 0.306 | 0.154 | 0.981 |
+| relocation rule (built) | 0.392 | 0.344 | 0.374 | 0.117 | 0.970 |
+| + drop pending values used as an ARM32 memory base or index | 0.392 | 0.344 | 0.376 | 0.117 | 0.969 |
+| + drop values equal to a string, section, unwind, or export start | 0.390 | 0.343 | 0.376 | 0.117 | 0.969 |
+| decoders keep the range test, features only | 0.365 | 0.317 | 0.335 | 0.146 | 0.976 |
+
+Lost: the memory-base/index drop moved no row by more than 0.002 (the
+`ldr rd, [pc, rm]` fix already covers the GOT offsets it targeted). The
+exact-start test lowered strong FP 0.017 -> 0.012 but cost joint cross arch
+cross opt 0.522 -> 0.511 and same arch cross opt 0.587 -> 0.572, and depends
+on the load base (a value is an RVA-exact start only at base 0). Features-only
+keeps the pool words as references and the PIC offsets broken: about half
+the gain.
+
+Measured (built rule against the v4 baseline, real corpus, `--max-functions
+4 --joint`): hint-free top-1 same build 0.817 -> 0.835, other compiler 0.308
+-> 0.392, cross opt 0.254 -> 0.344, other arch 0.306 -> 0.374, other arch
+other compiler 0.216 -> 0.270, other arch cross opt 0.183 -> 0.237, merged
+held-out arch 0.397 -> 0.456; hinted other arch 0.329 -> 0.365. FP strong
+0.040 -> 0.017, any-verdict 0.111 -> 0.105, hint-free 0.154 -> 0.117,
+negative 0.000. Identified answers hint-free 2801 -> 3787 (correct 2747 ->
+3672), precision 0.981 -> 0.970; hinted 1797 -> 2375 (correct 1774 ->
+2349), 0.987 -> 0.989. Joint (G2) other
+arch same build 0.777 -> 0.792, other compiler 0.571 -> 0.625, cross opt
+0.466 -> 0.523, same arch cross opt 0.540 -> 0.587, same arch other compiler
+0.702 -> 0.708. 61 cells dropped past tolerance (23 hint-free, 38 hinted;
+60 recall cells, 42 of them from merged signatures and 39 into a 32-bit
+target, `->thumb` 27 and `->arm32` 12, plus the hinted zlib library row
+merged held-out arch same level 0.592 -> 0.512; one or two functions
+each): struct
+field offsets now kept differ between 64- and 32-bit layouts (zlib
+`inflateCopy`: `0x1be4`/`0x1bf8`/`0x558` on arm64, `0x1bc0`/`0x1bd0`/`0x534`
+on Thumb), and the 64-bit signature requires them. In the diagnosis
+(`examples/diagnose_cross`, 4 functions per image) acceptance of the true
+function rose in all 16 arch pairs (thumb -> thumb 0.253 -> 0.415, arm64 ->
+thumb 0.283 -> 0.321) and fell for 110 of 11040 pairs.
+
+Neighbour answer floor, simulated on the v5 hint-free logs (`bench
+--fp-report`; hinted answers do not move between 0.3 and 0.5), correct /
+wrong identified answers: 0.3 3672 / 115 (0.970), 0.4 3375 / 74 (0.979),
+0.42 3321 / 64 (0.981, built), 0.45 3256 / 57 (0.983), 0.5 3158 / 48
+(0.985). Of the 73 wrong answers new at 0.3, 46 are
+`cJSONUtils_GeneratePatches` landing on its sibling: v4 resolved the arm32
+gcc PIC strings to string tails (`SON_InsertItemInArray`), so the
+neighbour keys never matched. Built and measured (same bench): hint-free
+identified precision 0.970 -> 0.981 (answers 3787 -> 3385, correct 3672 ->
+3321; v4 had 2801 / 2747), every G1 row and FP rate unchanged, joint rows within
+0.001 (cross arch cross opt 0.523 -> 0.522, other compiler 0.625 -> 0.624,
+same build 0.792 -> 0.793, same arch cross opt 0.587 -> 0.588).
 ## v5 (unreleased)
 
 Draft: `SPEC_VERSION` is still `4`; these entries are bumped together when
