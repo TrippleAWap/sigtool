@@ -1,5 +1,5 @@
 {
-  "spec_version": "4",
+  "spec_version": "5",
   "hint_free_stripped": false,
   "hint_free_false_positives": [
     {
@@ -3594,40 +3594,40 @@
     }
   ],
   "cost": {
-    "threads": 8,
+    "threads": 4,
     "phases": [
       {
         "phase": "load",
-        "millis": 17,
-        "peak_memory_bytes": 6066176
+        "millis": 1,
+        "peak_memory_bytes": 8290304
       },
       {
         "phase": "indexes",
-        "millis": 62,
-        "peak_memory_bytes": 8728576
+        "millis": 7,
+        "peak_memory_bytes": 10596352
       },
       {
         "phase": "samples",
-        "millis": 60,
-        "peak_memory_bytes": 11522048
+        "millis": 25,
+        "peak_memory_bytes": 11980800
       },
       {
         "phase": "merge",
-        "millis": 52,
-        "peak_memory_bytes": 11988992
+        "millis": 37,
+        "peak_memory_bytes": 12140544
       },
       {
         "phase": "recall",
-        "millis": 527,
-        "peak_memory_bytes": 21790720
+        "millis": 417,
+        "peak_memory_bytes": 20541440
       },
       {
         "phase": "false positives",
-        "millis": 410,
-        "peak_memory_bytes": 27856896
+        "millis": 183,
+        "peak_memory_bytes": 24485888
       }
     ],
-    "total_millis": 1130,
-    "peak_memory_bytes": 27856896
+    "total_millis": 673,
+    "peak_memory_bytes": 24485888
   }
 }
