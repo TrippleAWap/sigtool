@@ -165,11 +165,10 @@ Hinted scans may use the target's symbols. Hint-free scans of stripped
 targets compare every unwind entry, while hinted scans start from anchor
 hits; that is probably why hint-free is ahead on same-build searches.
 
-The held-out corpus (zstd, libyaml, mbedtls; never used for tuning) was last
-measured at spec v4 on 2026-11-16, before the in-module constant, FP
-reduction, and strong FP rules: hint-free same build 0.896, other compiler
-0.368, other arch 0.414; FP strong 0.113, any verdict 0.080, hint-free
-0.054.
+The held-out corpus (zstd, libyaml, mbedtls; never used for tuning), measured
+once at spec v6 on 2026-11-19, hint-free top-1: same build 0.962, other
+compiler 0.618, other arch 0.646, other arch other compiler 0.520; FP strong
+0.000, any verdict 0.078, hint-free 0.126; identified precision 0.991.
 
 See `PLAN.md` §8 for how each number moved, `docs/history/PLAN-v0.5.md`
 section 13 for the earlier history, and `PLAN.md` for the v1.0 goals and the

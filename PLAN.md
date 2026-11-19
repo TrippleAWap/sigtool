@@ -70,7 +70,7 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Measure | Now | v1.0 |
 |---|---|---|
-| Held-out corpus (libraries never used for tuning, §5) vs. tuning corpus, every G1-G3 row | no held-out corpus | within 0.05 |
+| Held-out corpus (libraries never used for tuning, §5) vs. tuning corpus, every G1-G3 row | no row worse by more than 0.05 (v6, 2026-11-19) | within 0.05 |
 | Function-start recall on stripped images, every arch | 0.95-0.996 | ≥ 0.99 at ≥ 0.999 precision |
 
 ### G5. Cost
@@ -754,5 +754,20 @@ As of 2026-11-19, `real-world` branch, spec v6.
     rebuild.
   - Not yet run on held-out at v6. Open from the plan: RW5 (PE corpus), RW6
     (large haystacks and scale), a process-path bench cell, `--explain`.
-- Next: strong FP on the held-out corpus
-  (milestone exit), and pointer-width-dependent constants (M10).
+- Held-out at v6 (2026-11-19, `real-world`, measured once at the RW
+  milestone exit, nothing tuned on it; `bench --corpus
+  ../corpus/build-heldout --max-functions 4 --joint`), held-out vs tuning,
+  hint-free top-1: same build 0.962 / 0.838, other compiler 0.618 / 0.427,
+  cross opt 0.574 / 0.368, other arch 0.646 / 0.446, other arch other
+  compiler 0.520 / 0.302, other arch cross opt 0.501 / 0.267, merged
+  held-out arch 0.717 / 0.565 (v4 held-out: 0.896, 0.368, 0.374, 0.414,
+  0.307, 0.302, 0.413). Strong FP 0.000 (0/87; 0.113 at v4, the G4 row that
+  was outside 0.05), any-verdict 0.078, hint-free 0.126 (tuning 0.112);
+  identified precision hint-free 0.991, hinted 0.993. Joint, hint-free: other
+  arch same build 0.792, other compiler 0.677, cross opt 0.622, same arch
+  other compiler 0.739. No held-out row is worse than tuning by more than
+  0.05 (G4 met at v6); the held-out libraries are easier than SQLite and Lua
+  at this sample size, so the gap is not evidence of headroom.
+- Next: the open real-world items (RW4 distro packages and C++, RW5, RW6),
+  identified precision on the real-world tier (0.972, below 0.98), and
+  pointer-width-dependent constants (M10).
