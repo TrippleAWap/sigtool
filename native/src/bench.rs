@@ -756,7 +756,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         // `<path>.recall-hinted`, so either mode can be simulated offline.
         let mut out = String::new();
         let mut out_hinted = String::new();
-        for ((s, t, hints), (_, _, matches, _)) in recall_jobs.iter().zip(&recall_hits) {
+        for ((s, t, hints), (_, _, matches, answer)) in recall_jobs.iter().zip(&recall_hits) {
             let sample = all[*s];
             let target = &targets[*t];
             let expected = target.functions[&sample.name];
@@ -785,6 +785,9 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 "features": feature_labels(&sample.signature),
                 "neighbours": sample.signature.neighbours,
                 "target": format!("{}/{}/{}", target.arch, target.opt, target.source_file),
+                // Whether the first match is an `identified` answer, so the
+                // precision of a label rule can be simulated offline.
+                "identified": answer,
                 "matches": found,
             });
             let sink = if *hints { &mut out_hinted } else { &mut out };
