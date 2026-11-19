@@ -4,6 +4,7 @@
     python corpus/real.py --max-functions 0  # keep every common function
     python corpus/real.py --heldout        # held-out libraries into corpus/build-heldout/
     python corpus/real.py --world          # real-world build profiles into corpus/build-world/
+    python corpus/real.py --pe             # PE DLLs into corpus/build-pe/, corpus/build-pe-mixed/
 
 Outputs, never committed:
 
@@ -41,6 +42,26 @@ release. Build names keep the `<profile>-<level>` form the bench reads, so
 the bench's "other compiler" row there means "other profile, same level".
 It is a separate tier, outside the weekly gate (docs/real-world-plan.md RW4).
 
+--pe builds the tuning libraries as Windows DLLs into corpus/build-pe/ with
+the host clang for x86_64- and aarch64-pc-windows-msvc, linked by lld-link
+(`lld -flavor link`), with no Windows SDK: the shim plus the Windows headers
+in corpus/shim/include-win, and import libraries generated per DLL from the
+symbols its objects leave undefined, so CRT calls become ucrtbase.dll imports
+(through `jmp [__imp_X]` thunks) and Win32 calls kernel32.dll imports (direct
+`call [__imp_X]`, as the SDK declares them dllimport), as in a real DLL. Each
+library exports its public API only, through its own Windows DLL mechanism
+(PE_DEFINES, PE_DEF_FILES), and links the CRT pieces an MSVC DLL takes
+statically (PE_CRT). Builds: -O0, -O2, -Os, plus -O2 with /GS
+(`clang+gs`) and with /guard:cf (`clang+cfg`). Ground truth comes from the
+lld-link map (functions in CODE sections of the library's own objects; VAs),
+restricted like the ELF builds to names unique in every build. A PE file has
+no symbol table, so there is nothing to strip: "stripped" names the same
+file. Each DLL also gets LIB.functions.json, every defined function, for
+examples/start_recall.rs. corpus/build-pe-mixed/ then pairs the ELF clang
+builds of corpus/build-real (x64, arm64) with the plain PE builds, renamed
+`clang+pe-<level>`, under one ground truth, so the bench measures ELF
+signatures found in PE images and back without code changes.
+
 The purpose-written corpus in corpus/build/ stays for golden-scale checks;
 this one is what the cross-architecture numbers should be read from.
 """
@@ -69,7 +90,10 @@ THIRD_PARTY = CORPUS / "third_party"
 BUILD = CORPUS / "build-real"
 HELDOUT_BUILD = CORPUS / "build-heldout"
 WORLD_BUILD = CORPUS / "build-world"
+PE_BUILD = CORPUS / "build-pe"
+PE_MIXED_BUILD = CORPUS / "build-pe-mixed"
 SHIM = CORPUS / "shim" / "include"
+SHIM_WINDOWS = CORPUS / "shim" / "include-win"
 
 TARGETS = {
     "x64": ("x86_64-linux-gnu", ()),
@@ -348,7 +372,12 @@ def up_to_date(output: Path, library: Library, root: Path) -> bool:
     """The output is newer than every input that can change it."""
     if not output.exists():
         return False
-    inputs = [*sources(library, root), Path(__file__), *SHIM.rglob("*.h")]
+    inputs = [
+        *sources(library, root),
+        Path(__file__),
+        *SHIM.rglob("*.h"),
+        *SHIM_WINDOWS.rglob("*.h"),
+    ]
     for include in library.includes:
         inputs.extend((root / include).glob("*.h"))
     built = output.stat().st_mtime
@@ -548,6 +577,446 @@ def main_world(args: argparse.Namespace, readelf: str) -> int:
     return 0
 
 
+# -- PE tier (--pe) -----------------------------------------------------------
+
+PE_TARGETS = {"x64": "x86_64-pc-windows-msvc", "arm64": "aarch64-pc-windows-msvc"}
+PE_MACHINES = {"x64": "x64", "arm64": "arm64"}
+
+
+@dataclass(frozen=True)
+class PeProfile:
+    """One build of the --pe tier: an optimization level plus MSVC options."""
+
+    name: str
+    opt: str
+    # /GS: the MSVC stack cookie (__security_cookie / __security_check_cookie).
+    gs: bool = False
+    # /guard:cf: indirect calls through the CFG check or dispatch pointer, and
+    # the guard tables in the load config.
+    cfg: bool = False
+
+
+PE_PROFILES = (
+    PeProfile("clang", "-O0"),
+    PeProfile("clang", "-O2"),
+    PeProfile("clang", "-Os"),
+    PeProfile("clang+gs", "-O2", gs=True),
+    PeProfile("clang+cfg", "-O2", cfg=True),
+)
+
+# Each library's own Windows DLL export mechanism, as its Windows makefiles
+# use it: only the public API is exported, unlike the ELF builds, whose
+# default visibility exports every non-static function. zlib exports through
+# win32/zlib.def; the others mark the API with __declspec(dllexport). These
+# replace the ELF defines: zlib's Z_HAVE_UNISTD_H is what configure writes on
+# POSIX, not on Windows.
+PE_DEFINES = {
+    "zlib": (),
+    "lz4": ("LZ4_DLL_EXPORT=1",),
+    "cjson": ("CJSON_EXPORT_SYMBOLS",),
+    "lua": ("LUA_BUILD_AS_DLL",),
+    "sqlite": (
+        "SQLITE_OS_OTHER=1",
+        "SQLITE_THREADSAFE=0",
+        "SQLITE_OMIT_LOAD_EXTENSION=1",
+        "SQLITE_API=__declspec(dllexport)",
+    ),
+}
+PE_DEF_FILES = {"zlib": "win32/zlib.def"}
+
+# What an MSVC-built DLL links statically from the CRT (vcruntime and the
+# CRT startup objects) rather than importing: the floating-point marker,
+# stack probe, /GS cookie and its check, the CFG check and dispatch
+# pointers, and the load config that points the loader at the cookie and the
+# guard tables lld-link synthesizes. Bodies are placeholders with the real
+# calling conventions; the code that matters is the library's.
+PE_CRT = r"""
+int _fltused = 0x9875;
+void __chkstk(void) {}
+unsigned long long __security_cookie = 0x2b992ddfa232ull;
+void __security_check_cookie(unsigned long long cookie) {
+  if (cookie != __security_cookie) __builtin_trap();
+}
+static void guard_check_icall_nop(void *target) { (void)target; }
+#if defined(__x86_64__)
+void guard_dispatch_icall_nop(void);
+__asm__(".text\n.globl guard_dispatch_icall_nop\nguard_dispatch_icall_nop:\n  jmp *%rax\n");
+#else
+static void guard_dispatch_icall_nop(void) {}
+#endif
+void (*__guard_check_icall_fptr)(void *) = guard_check_icall_nop;
+void (*__guard_dispatch_icall_fptr)(void) = guard_dispatch_icall_nop;
+/* IMAGE_LOAD_CONFIG_DIRECTORY64 up to the long-jump target table (192
+   bytes), in assembly: GuardFlags is a 32-bit field holding an absolute
+   linker symbol, which C cannot initialize. */
+__asm__(
+  ".section .rdata,\"dr\"\n.globl _load_config_used\n.p2align 3\n_load_config_used:\n"
+  ".long 192, 0\n.short 0, 0\n.long 0, 0, 0\n.quad 0, 0, 0, 0, 0, 0\n.long 0\n.short 0, 0\n"
+  ".quad 0, __security_cookie, 0, 0\n"
+  ".quad __guard_check_icall_fptr, __guard_dispatch_icall_fptr\n"
+  ".quad __guard_fids_table, __guard_fids_count\n"
+  ".long __guard_flags\n.short 0, 0\n.long 0, 0\n"
+  ".quad __guard_iat_table, __guard_iat_count, __guard_longjmp_table, __guard_longjmp_count\n"
+  ".text\n");
+"""
+
+
+def pe_path(library: Library, arch: str, profile: PeProfile) -> Path:
+    outdir = PE_BUILD / arch / f"{profile.name}-{profile.opt.strip('-')}"
+    outdir.mkdir(parents=True, exist_ok=True)
+    return outdir / f"{library.name}.dll"
+
+
+def run(command: list[str], what: str) -> bool:
+    result = subprocess.run(command, capture_output=True, text=True, errors="replace")
+    if result.returncode != 0:
+        print(f"  FAIL {what}:\n{(result.stdout + result.stderr)[-3000:]}")
+    return result.returncode == 0
+
+
+def nm_undefined(nm: str, objects: list[Path]) -> set[str]:
+    """Symbols `objects` reference and none of them defines."""
+    text = subprocess.run(
+        [nm, "--extern-only", *map(str, objects)], capture_output=True, text=True, check=True
+    ).stdout
+    defined: set[str] = set()
+    undefined: set[str] = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in ("U", "w"):
+            undefined.add(parts[1])
+        elif len(parts) == 3:
+            defined.add(parts[2])
+    return undefined - defined
+
+
+def import_library(lld: str, arch: str, dll: str, names: list[str], out: Path) -> bool:
+    """An import library for `dll` exporting `names`, as an SDK .lib provides."""
+    definition = out.with_suffix(".def")
+    definition.write_text(
+        f"LIBRARY {dll}\nEXPORTS\n" + "".join(f"  {name}\n" for name in names), encoding="utf-8"
+    )
+    return run(
+        [
+            lld,
+            "-flavor",
+            "link",
+            "/lib",
+            f"/machine:{PE_MACHINES[arch]}",
+            f"/def:{definition}",
+            f"/out:{out}",
+        ],
+        f"implib {dll} {arch}",
+    )
+
+
+def build_pe(
+    clang: str, lld: str, nm: str, library: Library, root: Path, arch: str, profile: PeProfile
+) -> Path | None:
+    """One PE DLL, its linker map, and the import libraries it links."""
+    output = pe_path(library, arch, profile)
+    mapfile = output.with_suffix(".map")
+    if up_to_date(output, library, root) and mapfile.exists():
+        return output
+    work = PE_BUILD / "obj" / arch / output.parent.name / library.name
+    work.mkdir(parents=True, exist_ok=True)
+    flags = [
+        f"--target={PE_TARGETS[arch]}",
+        profile.opt,
+        "-nostdlibinc",
+        "-isystem",
+        str(SHIM_WINDOWS),
+        "-isystem",
+        str(SHIM),
+        "-w",
+    ]
+    if profile.gs:
+        # clang-cl's /GS; on an MSVC target it emits the cookie check.
+        flags.append("-fstack-protector-strong")
+    if profile.cfg:
+        flags += ["-Xclang", "-cfguard"]
+    # SQLite's MSVC path includes <Windows.h>; the shim's file is windows.h,
+    # and one directory cannot hold both on a case-insensitive checkout.
+    case = PE_BUILD / "include-case"
+    case.mkdir(parents=True, exist_ok=True)
+    (case / "Windows.h").write_text("#include <windows.h>\n", encoding="utf-8")
+    flags += ["-isystem", str(case)]
+    crt_source = work / "crt.c"
+    crt_source.write_text(PE_CRT, encoding="utf-8")
+    crt = work / "crt.obj"
+    if not run([clang, *flags, "-O2", "-c", str(crt_source), "-o", str(crt)], f"crt {arch}"):
+        return None
+    objects: list[Path] = []
+    for index, path in enumerate(sources(library, root)):
+        # Indexed: lua and zlib have no clashing stems, but nothing forbids one.
+        obj = work / f"{index:03}-{path.stem}.obj"
+        command = [
+            clang,
+            *flags,
+            *(f"-I{root / include}" for include in library.includes),
+            *(f"-D{define}" for define in PE_DEFINES[library.name]),
+            "-c",
+            str(path),
+            "-o",
+            str(obj),
+        ]
+        if not run(command, f"pe {library.name} {arch} {profile.name}{profile.opt} {path.name}"):
+            return None
+        objects.append(obj)
+    undefined = nm_undefined(nm, [*objects, crt])
+    # __declspec(dllimport) declarations (windows.h) reference __imp_X; the
+    # rest are the CRT functions the shim declares without it, which lld-link
+    # reaches through a `jmp [__imp_X]` thunk, as MSVC does for memcpy.
+    kernel32 = sorted(name[len("__imp_") :] for name in undefined if name.startswith("__imp_"))
+    ucrt = sorted(
+        name
+        for name in undefined
+        if not name.startswith("__imp_") and not name.startswith("__guard_")
+    )
+    libs = []
+    for dll, names in (("ucrtbase.dll", ucrt), ("kernel32.dll", kernel32)):
+        if names:
+            lib = work / f"{dll.split('.')[0]}.lib"
+            if not import_library(lld, arch, dll, names, lib):
+                return None
+            libs.append(lib)
+    command = [
+        lld,
+        "-flavor",
+        "link",
+        "/dll",
+        "/noentry",
+        "/nodefaultlib",
+        # A hash of the inputs instead of the link time in the headers.
+        "/Brepro",
+        f"/machine:{PE_MACHINES[arch]}",
+        f"/out:{output}",
+        f"/map:{mapfile}",
+        *map(str, objects),
+        str(crt),
+        *map(str, libs),
+    ]
+    if library.name in PE_DEF_FILES:
+        command.append(f"/def:{root / PE_DEF_FILES[library.name]}")
+    if profile.cfg:
+        command.append("/guard:cf")
+    if not run(command, f"link {library.name} {arch} {profile.name}{profile.opt}"):
+        return None
+    # lld-link writes the export library beside the DLL; it is not corpus.
+    for leftover in (output.with_suffix(".lib"), output.with_suffix(".exp")):
+        leftover.unlink(missing_ok=True)
+    return output
+
+
+def pe_functions(mapfile: Path, objects: set[str]) -> dict[str, tuple[int, int]]:
+    """Functions of the library's own objects from an lld-link map, by name.
+
+    Addresses are virtual (`Rva+Base`), as the bench reports them. A map
+    gives no sizes; a function's size runs to the next function or the end
+    of its section, so it includes alignment padding. Names defined twice
+    (same-named statics in two objects) and functions folded onto one
+    address by /OPT:ICF (lld-link's default without /debug, as MSVC's) have
+    no single true answer and are dropped.
+    """
+    # lld-link's map marks no symbol as a function: code is what lies in a
+    # section of class CODE.
+    lengths: dict[int, int] = {}
+    entries: list[tuple[int, int, str, str, int]] = []
+    for line in mapfile.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) != 4 or ":" not in parts[0]:
+            continue
+        try:
+            section, offset = (int(field, 16) for field in parts[0].split(":"))
+        except ValueError:
+            continue
+        if parts[3] == "CODE":
+            length = int(parts[1].rstrip("H"), 16)
+            lengths[section] = max(lengths.get(section, 0), offset + length)
+        elif section in lengths:
+            address = int(parts[2], 16)
+            entries.append((section, offset, parts[1], parts[3].rsplit(":", 1)[-1], address))
+    starts: dict[int, list[int]] = {}
+    ends: dict[int, int] = {}
+    owned: dict[str, set[int]] = {}
+    for section, offset, name, obj, address in entries:
+        starts.setdefault(section, []).append(address)
+        if section in lengths:
+            ends[section] = address - offset + lengths[section]
+        if obj in objects:
+            owned.setdefault(name, set()).add(address)
+    names_at: dict[int, int] = {}
+    for addresses in owned.values():
+        for address in addresses:
+            names_at[address] = names_at.get(address, 0) + 1
+    section_of = {address: section for section, _, _, _, address in entries}
+    result: dict[str, tuple[int, int]] = {}
+    for name, addresses in owned.items():
+        if len(addresses) != 1:
+            continue
+        (address,) = addresses
+        if names_at[address] > 1:
+            continue
+        section = section_of[address]
+        following = [start for start in starts[section] if start > address]
+        end = min(following) if following else ends.get(section, address)
+        result[name] = (address, end - address)
+    return result
+
+
+def main_pe(args: argparse.Namespace, clang: str) -> int:
+    lld = shutil.which("lld")
+    nm = shutil.which("llvm-nm")
+    if lld is None or nm is None:
+        raise SystemExit("--pe needs lld (run as lld-link via -flavor link) and llvm-nm on PATH")
+    libraries = [lib for lib in LIBRARIES if not args.library or lib.name in args.library]
+    roots = {library.name: fetch(library) for library in libraries}
+    builds = [(arch, profile) for arch in PE_TARGETS for profile in PE_PROFILES]
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        jobs = {
+            (library.name, arch, profile): pool.submit(
+                build_pe, clang, lld, nm, library, roots[library.name], arch, profile
+            )
+            for library in libraries
+            for arch, profile in builds
+        }
+    binaries: list[dict[str, object]] = []
+    for library in libraries:
+        outputs = {
+            (arch, f"{profile.name}-{profile.opt.strip('-')}"): jobs[
+                (library.name, arch, profile)
+            ].result()
+            for arch, profile in builds
+        }
+        if any(output is None for output in outputs.values()):
+            print(f"  {library.name}: some PE builds failed; skipped from ground truth")
+            continue
+        objects = {
+            f"{index:03}-{path.stem}.obj"
+            for index, path in enumerate(sources(library, roots[library.name]))
+        }
+        built = {
+            key: pe_functions(output.with_suffix(".map"), objects)
+            for key, output in outputs.items()
+        }
+        for key, output in outputs.items():
+            # Every defined function of the image (the CRT glue included,
+            # import thunks not), for start recall (examples/start_recall.rs);
+            # a PE file has no symbol table to read them back from.
+            functions = pe_functions(output.with_suffix(".map"), objects | {"crt.obj"})
+            listing = [
+                {"name": name, "start": start, "size": size}
+                for name, (start, size) in sorted(functions.items(), key=lambda item: item[1])
+            ]
+            outputs[key].with_suffix(".functions.json").write_text(
+                json.dumps(listing, indent=1) + "\n", encoding="utf-8"
+            )
+        common = set.intersection(*(set(functions) for functions in built.values()))
+        chosen = select(common, args.max_functions)
+        print(f"{library.name}: {len(common)} common PE functions, {len(chosen)} selected")
+        for (arch, build_name), functions in sorted(built.items()):
+            path = outputs[(arch, build_name)].relative_to(PE_BUILD).as_posix()
+            binaries.append(
+                {
+                    "path": path,
+                    # A PE image has no .symtab to strip: what a hint-free
+                    # scan may not read (names and bounds) is in the map and
+                    # never in the file, so both modes scan the same file.
+                    "stripped": path,
+                    "arch": arch,
+                    "library": library.name,
+                    "functions": [
+                        {"name": name, "start": functions[name][0], "size": functions[name][1]}
+                        for name in chosen
+                    ],
+                    "total_symbols": len(functions),
+                }
+            )
+    PE_BUILD.mkdir(parents=True, exist_ok=True)
+    document = {"binaries": binaries, "negative": []}
+    (PE_BUILD / "ground_truth.json").write_text(
+        json.dumps(document, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    write_pe_mixed(binaries)
+    return 0
+
+
+# The PE profiles paired with the ELF clang builds of the real corpus in
+# corpus/build-pe-mixed: one level each, so ELF and PE builds of a level
+# differ only in container (and its ABI: Windows x64 passes arguments in
+# rcx/rdx/r8/r9 and `long` is 32-bit).
+PE_MIXED = {"clang-O0": "clang+pe-O0", "clang-O2": "clang+pe-O2", "clang-Os": "clang+pe-Os"}
+
+
+def place(source: Path, target: Path) -> None:
+    """`target` as a hard link to `source` (a copy across file systems)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.unlink(missing_ok=True)
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
+def write_pe_mixed(pe_binaries: list[dict[str, object]]) -> None:
+    """ELF (corpus/build-real, clang) and PE builds of each library in one corpus.
+
+    The bench pairs builds by arch, build directory, and file stem, so with
+    both containers under one ground truth it measures ELF signatures found
+    in PE images and back. Functions are those both ground truths list.
+    """
+    elf_truth = BUILD / "ground_truth.json"
+    if not elf_truth.exists():
+        print(f"no {elf_truth}; run corpus/real.py first for {PE_MIXED_BUILD.name}")
+        return
+    built = {str(binary["library"]) for binary in pe_binaries}
+    elf_binaries = [
+        binary
+        for binary in json.loads(elf_truth.read_text(encoding="utf-8"))["binaries"]
+        if binary["library"] in built
+    ]
+    # (image, its stripped copy, path in the mixed corpus, ground truth entry)
+    entries: list[tuple[Path, Path, str, dict[str, object]]] = []
+    for binary in elf_binaries:
+        arch, build_name, _ = str(binary["path"]).split("/")
+        if arch in PE_TARGETS and build_name in PE_MIXED:
+            image = BUILD / str(binary["path"])
+            entries.append((image, BUILD / str(binary["stripped"]), str(binary["path"]), binary))
+    for binary in pe_binaries:
+        arch, build_name, name = str(binary["path"]).split("/")
+        if build_name in PE_MIXED:
+            image = PE_BUILD / str(binary["path"])
+            entries.append((image, image, f"{arch}/{PE_MIXED[build_name]}/{name}", binary))
+    by_library: dict[str, list[set[str]]] = {}
+    for *_, binary in entries:
+        names = {str(function["name"]) for function in binary["functions"]}
+        by_library.setdefault(str(binary["library"]), []).append(names)
+    common = {library: set.intersection(*names) for library, names in by_library.items()}
+    binaries: list[dict[str, object]] = []
+    for image, stripped, path, binary in entries:
+        place(image, PE_MIXED_BUILD / path)
+        stripped_path = path if stripped == image else f"stripped/{path}"
+        if stripped != image:
+            place(stripped, PE_MIXED_BUILD / stripped_path)
+        keep = common[str(binary["library"])]
+        binaries.append(
+            {
+                **binary,
+                "path": path,
+                "stripped": stripped_path,
+                "functions": [f for f in binary["functions"] if f["name"] in keep],
+            }
+        )
+    binaries.sort(key=lambda binary: str(binary["path"]))
+    document = {"binaries": binaries, "negative": []}
+    PE_MIXED_BUILD.mkdir(parents=True, exist_ok=True)
+    (PE_MIXED_BUILD / "ground_truth.json").write_text(
+        json.dumps(document, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    for library, names in sorted(common.items()):
+        print(f"{PE_MIXED_BUILD.name}: {library}: {len(names)} functions in ELF and PE")
+
+
 def function_symbols(readelf: str, binary: Path, arch: str) -> dict[str, tuple[int, int]]:
     """Defined FUNC symbols with a size, minus names that occur twice."""
     text = subprocess.run(
@@ -612,6 +1081,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=f"build the real-world profiles into {WORLD_BUILD.relative_to(ROOT).as_posix()}/",
     )
+    parser.add_argument(
+        "--pe",
+        action="store_true",
+        help=f"build PE DLLs into {PE_BUILD.relative_to(ROOT).as_posix()}/ and pair them with"
+        f" the ELF clang builds in {PE_MIXED_BUILD.relative_to(ROOT).as_posix()}/",
+    )
+    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 4, help="parallel builds")
     args = parser.parse_args(argv)
     args.compiler = tuple(args.compiler or COMPILERS)
     catalog, build = (HELDOUT, HELDOUT_BUILD) if args.heldout else (LIBRARIES, BUILD)
@@ -623,6 +1099,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("clang, llvm-readelf, and llvm-strip must be on PATH")
     if args.world:
         return main_world(args, readelf)
+    if args.pe:
+        return main_pe(args, clang)
 
     libraries = [lib for lib in catalog if not args.library or lib.name in args.library]
     roots = {library.name: fetch(library) for library in libraries}
