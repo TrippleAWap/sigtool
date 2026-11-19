@@ -161,6 +161,15 @@ same build 0.938, LTO 0.838, previous release 0.838, hardened 0.812, `-O3`
 0.787, PIE executable 0.700, static executable 0.613. Identified precision
 there is 0.972 hint-free and 0.976 hinted, below the 0.98 goal.
 
+PE DLLs (`python corpus/real.py --pe`: the tuning libraries built by clang
+and lld-link for x64 and arm64 Windows, `-O0/-O2/-Os` plus `/GS` and
+`/guard:cf`, exporting only the public API), hint-free top-1: same arch same
+build 0.725 (200 attempts), other arch same build 0.415; strong FP 0.000.
+Signing a clang ELF build and searching the PE build of the same level
+(`corpus/build-pe-mixed`): 0.533 on the same arch, against 0.833 ELF to
+ELF and 0.733 PE to ELF (120 attempts each). `PLAN.md` §8 lists what
+causes the gap.
+
 Hinted scans may use the target's symbols. Hint-free scans of stripped
 targets compare every unwind entry, while hinted scans start from anchor
 hits; that is probably why hint-free is ahead on same-build searches.

@@ -9,8 +9,12 @@ the build metadata in ground truth and the real negative set; RW3's floors and
 error paths (no process bench cell yet); RW4's gcc profile tier
 (`--world`) with spec v6's executable-callee rule and the x86 `rbp` fix it
 exposed; RW7's packed relocations and section-less ELF; RW8's batch scan,
-image identity and `db info`/`list`. Open: RW4 distro packages, C++, joint
-drift; RW5; RW6; RW7 raw blobs; RW8 `--explain` and generation warnings.
+image identity and `db info`/`list`; RW5a's clang + lld-link PE tier
+(`--pe`, x64 and arm64, `/GS` and `/guard:cf` variants, an ELF+PE mixed
+corpus, `.pdata` start recall; four matcher findings recorded, none fixed).
+Open: RW4 distro packages, C++, joint drift; RW5a MinGW builds and PDB
+ground truth; RW5 `.reloc`, delay-load imports, RW5b; RW6; RW7 raw blobs;
+RW8 `--explain` and generation warnings.
 
 ## 1. Diagnosis
 
