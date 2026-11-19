@@ -323,3 +323,163 @@ fn db_build_report_names_the_pe_pdb_guid() {
     assert_eq!(input["pdb_age"], age, "{input}");
     assert!(input.get("build_id").is_none(), "{input}");
 }
+
+fn lines(path: &Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .expect("read JSONL")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("JSON line"))
+        .collect()
+}
+
+/// `scan --path` scans every regular file once with one DB: sorted relative
+/// paths, a status for files that are not images or do not parse, hits in the
+/// `scan --json` shape, and byte-identical output across runs and thread
+/// counts. Its own output file inside the tree is not scanned.
+#[test]
+fn batch_scan_writes_one_sorted_line_per_file() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm", "llvm-strip"]) {
+        return;
+    }
+    let dir = scratch("batch-scan");
+    let build = dir.join("build");
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::create_dir_all(tree.join("sub")).unwrap();
+    let image = build_shared(&build, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&build, &image);
+    let db = build.join("chain.db");
+    build_db(&image, &functions, &db, None);
+
+    std::fs::copy(&image, tree.join("libchain.so")).unwrap();
+    tool(
+        "llvm-strip",
+        &[
+            "--strip-all",
+            image.to_str().unwrap(),
+            "-o",
+            tree.join("sub").join("stripped.so").to_str().unwrap(),
+        ],
+    );
+    std::fs::write(tree.join("notes.txt"), "not an image\n").unwrap();
+    let data = std::fs::read(&image).unwrap();
+    std::fs::write(tree.join("truncated.so"), &data[..96]).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(tree.join("libchain.so"), tree.join("link.so")).unwrap();
+
+    let out = tree.join("out.jsonl");
+    let batch = |output: &Path, recursive: bool, envs: &[(&str, &str)]| {
+        let mut args = vec![
+            "scan",
+            "--path",
+            tree.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--jsonl",
+            output.to_str().unwrap(),
+        ];
+        if recursive {
+            args.push("--recursive");
+        }
+        let result = sigtool(&args, envs);
+        assert_eq!(
+            result.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    batch(&out, true, &[]);
+    let first = std::fs::read(&out).unwrap();
+    // The second run sees the first run's output in the tree and skips it.
+    batch(&out, true, &[]);
+    let second = std::fs::read(&out).unwrap();
+    batch(&out, true, &[("SIGTOOL_THREADS", "1")]);
+    let single = std::fs::read(&out).unwrap();
+    let rows = lines(&out);
+    let flat = dir.join("flat.jsonl");
+    batch(&flat, false, &[]);
+    let flat_rows = lines(&flat);
+
+    let json = dir.join("single.json");
+    run(&[
+        "scan",
+        "--file",
+        tree.join("sub").join("stripped.so").to_str().unwrap(),
+        "--db",
+        db.to_str().unwrap(),
+        "--json",
+        json.to_str().unwrap(),
+    ]);
+    let single_scan = read_json(&json);
+    let (image_sha, image_size) = expected_identity(&image);
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(first, second, "batch output differs between runs");
+    assert_eq!(first, single, "batch output differs with SIGTOOL_THREADS=1");
+    let paths: Vec<&str> = rows
+        .iter()
+        .map(|row| row["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "libchain.so",
+            "notes.txt",
+            "sub/stripped.so",
+            "truncated.so"
+        ]
+    );
+    let flat_paths: Vec<&str> = flat_rows
+        .iter()
+        .map(|row| row["path"].as_str().unwrap())
+        .collect();
+    // Writing elsewhere, the flat run scans the earlier runs' output too.
+    assert_eq!(
+        flat_paths,
+        ["libchain.so", "notes.txt", "out.jsonl", "truncated.so"]
+    );
+    assert_eq!(flat_rows[2]["status"], "unsupported", "{}", flat_rows[2]);
+
+    let (full, notes, stripped, truncated) = (&rows[0], &rows[1], &rows[2], &rows[3]);
+    assert_eq!(full["status"], "ok", "{full}");
+    assert_eq!(full["arch"], "x64", "{full}");
+    assert_eq!(full["discovery"], "hinted", "{full}");
+    assert_eq!(full["sha256"], image_sha, "{full}");
+    assert_eq!(full["size"], image_size, "{full}");
+    assert_eq!(full["error"], Value::Null, "{full}");
+    assert_eq!(full["truncated"], serde_json::json!([]), "{full}");
+    assert!(
+        full["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["name"] == "top"),
+        "{full}"
+    );
+
+    assert_eq!(notes["status"], "unsupported", "{notes}");
+    assert_eq!(notes["arch"], Value::Null, "{notes}");
+    assert_eq!(notes["hits"], serde_json::json!([]), "{notes}");
+    assert!(notes["sha256"].is_string(), "{notes}");
+
+    // Auto discovery runs hint-free on the stripped copy, as `scan --file`
+    // does, and the hits are the ones `scan --json` writes.
+    assert_eq!(stripped["status"], "ok", "{stripped}");
+    assert_eq!(stripped["discovery"], "hint-free", "{stripped}");
+    assert_eq!(stripped["hits"], single_scan["hits"], "{stripped}");
+    assert!(
+        stripped["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["name"] == "top"),
+        "{stripped}"
+    );
+
+    assert!(
+        matches!(truncated["status"].as_str(), Some("error" | "unsupported")),
+        "{truncated}"
+    );
+    assert!(truncated["error"].is_string(), "{truncated}");
+}

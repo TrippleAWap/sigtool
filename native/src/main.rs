@@ -17,6 +17,7 @@
 //! sigtool-native merge --sample a.elf:0x1000 --sample b.elf:0x2c40 --name fn
 //! sigtool-native db build --signature fn.yaml --output signatures.db
 //! sigtool-native db build --file image.elf --functions names.json --output signatures.db
+//! sigtool-native scan --path dir --recursive --db signatures.db --jsonl hits.jsonl
 //! ```
 //!
 //! The signature YAML goes to stdout (or `--output`) so it can be piped; the
@@ -24,7 +25,8 @@
 //!
 //! Exit codes:
 //!
-//! * `0` success
+//! * `0` success (for `scan --path`: every file got a line, whatever its
+//!   status and hits)
 //! * `1` locate/scan found no accepted match
 //! * `2` usage or input error (missing file, bad address, unmapped address, ...)
 //! * `3` unsupported target architecture or mode
@@ -43,7 +45,7 @@ use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
-use sigtool_native::identity::{identify, ImageIdentity};
+use sigtool_native::identity::{container, identify, Container, ImageIdentity};
 use sigtool_native::matcher::{
     evidence, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
 };
@@ -161,13 +163,22 @@ struct ScanArgs {
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
-        conflicts_with = "pid"
+        required_unless_present_any = ["pid", "path"],
+        conflicts_with_all = ["pid", "path"]
     )]
     file: Option<PathBuf>,
     /// Live Windows process to scan (read-only)
-    #[arg(long, value_name = "PID")]
+    #[arg(long, value_name = "PID", conflicts_with = "path")]
     pid: Option<u32>,
+    /// Scan every regular file in this directory (batch mode; needs --jsonl)
+    #[arg(long, value_name = "DIR", requires = "jsonl", conflicts_with = "json")]
+    path: Option<PathBuf>,
+    /// With --path, also scan subdirectories (symlinks are never followed)
+    #[arg(long, requires = "path")]
+    recursive: bool,
+    /// With --path, write one JSON object per file to this file
+    #[arg(long, value_name = "FILE", requires = "path")]
+    jsonl: Option<PathBuf>,
     /// Signature YAML file (repeatable)
     #[arg(long, value_name = "FILE")]
     signature: Vec<PathBuf>,
@@ -745,8 +756,6 @@ fn match_document(
 // -- scan --------------------------------------------------------------------
 
 fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
-    let target = load_target(args.file.as_deref(), args.pid)?;
-    let source = target.as_ref();
     let signatures = if let Some(db_path) = &args.db {
         load_db_signatures(db_path)?
     } else {
@@ -758,19 +767,13 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             .map(|path| load_signature(path))
             .collect::<Result<Vec<_>, _>>()?
     };
+    if let (Some(dir), Some(out)) = (&args.path, &args.jsonl) {
+        return run_batch_scan(dir, args.recursive, out, &signatures, &args.discovery);
+    }
+    let target = load_target(args.file.as_deref(), args.pid)?;
+    let source = target.as_ref();
 
-    let mut coverage = Coverage::new();
-    let hits = if use_hints(source, &args.discovery) {
-        let mut scanner = SignatureScanner::new(source, signatures, None, None)
-            .map_err(|error| CliError::input(error.to_string()))?;
-        let report = scanner.scan_pass();
-        // The scanner's own reference index is not passed to its matcher,
-        // so only the recovery budget can drop its matches.
-        coverage.add_scan_report(&report, DEFAULT_MAX_RECOVERIES);
-        report.hits
-    } else {
-        hint_free_hits(source, &signatures, &mut coverage)?
-    };
+    let (hits, coverage) = scan_source(source, &signatures, use_hints(source, &args.discovery))?;
     warn_coverage(&coverage);
 
     if let Some(path) = &args.json {
@@ -796,6 +799,280 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
         return Ok(EXIT_NOT_FOUND);
     }
     Ok(EXIT_OK)
+}
+
+/// One `scan` of one target, the same for `--file`, `--pid` and each file of
+/// `--path`.
+fn scan_source(
+    source: &dyn ByteSource,
+    signatures: &[Signature],
+    hints: bool,
+) -> Result<(Vec<ScanHit>, Coverage), CliError> {
+    let mut coverage = Coverage::new();
+    let hits = if hints {
+        let mut scanner = SignatureScanner::new(source, signatures.to_vec(), None, None)
+            .map_err(|error| CliError::input(error.to_string()))?;
+        let report = scanner.scan_pass();
+        // The scanner's own reference index is not passed to its matcher,
+        // so only the recovery budget can drop its matches.
+        coverage.add_scan_report(&report, DEFAULT_MAX_RECOVERIES);
+        report.hits
+    } else {
+        hint_free_hits(source, signatures, &mut coverage)?
+    };
+    Ok((hits, coverage))
+}
+
+// -- batch scan --------------------------------------------------------------
+
+/// Directory levels `--recursive` descends. Symlinks are never followed, so
+/// the walk cannot loop; the cap only bounds a pathological tree (a bind
+/// mount of an ancestor), which gets an `error` line instead of a hang.
+const MAX_BATCH_DEPTH: usize = 64;
+
+/// One entry the batch walk found: a regular file to scan, or a directory it
+/// could not list (reported, so the output names every gap).
+enum BatchEntry {
+    File(PathBuf),
+    Unlisted(String),
+}
+
+/// `scan --path DIR --jsonl OUT`: scan every regular file under `DIR` with
+/// one loaded signature set and write one JSON line per file, in byte order
+/// of the `/`-separated path relative to `DIR`. A file that is not an image,
+/// cannot be read, or fails to parse gets its status and the batch goes on,
+/// so the exit code is 0 whenever every file got a line, hits or not, and 2
+/// only for a usage or input error of the run itself (missing `DIR`,
+/// unreadable signatures, unwritable `OUT`).
+fn run_batch_scan(
+    dir: &Path,
+    recursive: bool,
+    out: &Path,
+    signatures: &[Signature],
+    discovery: &str,
+) -> Result<u8, CliError> {
+    use std::io::Write;
+
+    if !dir.is_dir() {
+        return Err(CliError::input(format!(
+            "no such directory: {}",
+            dir.display()
+        )));
+    }
+    let file = std::fs::File::create(out)
+        .map_err(|error| CliError::input(format!("cannot write {}: {error}", out.display())))?;
+    // OUT may live inside DIR; scanning it would make the output depend on
+    // the previous run.
+    let out_canonical = std::fs::canonicalize(out).ok();
+    let entries = batch_entries(dir, recursive, out_canonical.as_deref())?;
+    let mut writer = std::io::BufWriter::new(file);
+    let total = entries.len();
+    let write_error =
+        |error: std::io::Error| CliError::input(format!("cannot write {}: {error}", out.display()));
+    for (index, (relative, entry)) in entries.iter().enumerate() {
+        let line = match entry {
+            BatchEntry::File(path) => batch_line(relative, path, signatures, discovery),
+            BatchEntry::Unlisted(message) => {
+                let mut row = batch_row(relative);
+                row.insert("status".to_string(), Value::String("error".to_string()));
+                row.insert("error".to_string(), Value::String(message.clone()));
+                row
+            }
+        };
+        let status = line
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("error")
+            .to_string();
+        let hits = line
+            .get("hits")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let text = serde_json::to_string(&line)
+            .map_err(|error| CliError::input(format!("cannot encode JSON: {error}")))?;
+        writeln!(writer, "{text}").map_err(write_error)?;
+        eprintln!(
+            "scanned {}/{total} {relative}: {status}, {hits} hits",
+            index + 1
+        );
+    }
+    writer.flush().map_err(write_error)?;
+    Ok(EXIT_OK)
+}
+
+/// Every regular file (and every directory that could not be listed) under
+/// `root`, keyed and sorted by its `/`-separated path relative to `root`.
+/// Symlinks and special files (FIFOs, devices, sockets) are skipped: a
+/// symlink may lead out of the tree or loop, and reading a FIFO blocks.
+fn batch_entries(
+    root: &Path,
+    recursive: bool,
+    skip: Option<&Path>,
+) -> Result<Vec<(String, BatchEntry)>, CliError> {
+    let mut found: Vec<(String, BatchEntry)> = Vec::new();
+    let mut pending: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
+    while let Some((dir, prefix, depth)) = pending.pop() {
+        let listing = match std::fs::read_dir(&dir) {
+            Ok(listing) => listing,
+            Err(error) if depth == 0 => {
+                return Err(CliError::input(format!(
+                    "cannot list {}: {error}",
+                    dir.display()
+                )))
+            }
+            Err(error) => {
+                found.push((
+                    prefix,
+                    BatchEntry::Unlisted(format!("cannot list: {error}")),
+                ));
+                continue;
+            }
+        };
+        for item in listing {
+            let item = match item {
+                Ok(item) => item,
+                Err(error) => {
+                    found.push((
+                        prefix.clone(),
+                        BatchEntry::Unlisted(format!("cannot list: {error}")),
+                    ));
+                    break;
+                }
+            };
+            let name = item.file_name().to_string_lossy().into_owned();
+            let relative = format!("{prefix}{name}");
+            // `DirEntry::file_type` does not follow symlinks.
+            let Ok(kind) = item.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            let path = item.path();
+            if kind.is_dir() {
+                if !recursive {
+                    continue;
+                }
+                if depth + 1 >= MAX_BATCH_DEPTH {
+                    found.push((
+                        format!("{relative}/"),
+                        BatchEntry::Unlisted(format!(
+                            "not listed: deeper than {MAX_BATCH_DEPTH} levels"
+                        )),
+                    ));
+                    continue;
+                }
+                pending.push((path, format!("{relative}/"), depth + 1));
+            } else if kind.is_file() {
+                let is_output = skip.is_some_and(|skip| {
+                    skip.file_name() == path.file_name()
+                        && std::fs::canonicalize(&path).ok().as_deref() == Some(skip)
+                });
+                if !is_output {
+                    found.push((relative, BatchEntry::File(path)));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(found)
+}
+
+/// The fields every batch line carries, filled with "nothing known".
+fn batch_row(relative: &str) -> BTreeMap<String, Value> {
+    let mut row: BTreeMap<String, Value> = BTreeMap::new();
+    row.insert("path".to_string(), Value::String(relative.to_string()));
+    for key in ["sha256", "size", "arch", "discovery", "error"] {
+        row.insert(key.to_string(), Value::Null);
+    }
+    row.insert("hits".to_string(), Value::Array(Vec::new()));
+    row.insert("truncated".to_string(), Value::Array(Vec::new()));
+    row
+}
+
+/// Scan one batch file into its JSON line. `status` is `ok`, `unsupported`
+/// (not an ELF or PE image, or an image `scan --file` would refuse with exit
+/// 3), `error` (unreadable, malformed, or a scan failure), or
+/// `budget-exhausted` (scanned, but a work budget ran out, so `truncated` is
+/// non-empty and hits may be missing; never based on wall time).
+fn batch_line(
+    relative: &str,
+    path: &Path,
+    signatures: &[Signature],
+    discovery: &str,
+) -> BTreeMap<String, Value> {
+    let mut row = batch_row(relative);
+    let fail = |row: &mut BTreeMap<String, Value>, status: &str, message: String| {
+        row.insert("status".to_string(), Value::String(status.to_string()));
+        row.insert("error".to_string(), Value::String(message));
+    };
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(error) => {
+            fail(&mut row, "error", format!("cannot read: {error}"));
+            return row;
+        }
+    };
+    let identity = identify(&data);
+    row.insert("sha256".to_string(), Value::String(identity.sha256_hex()));
+    row.insert("size".to_string(), Value::Number(identity.size.into()));
+    if container(&data) == Container::Other {
+        fail(
+            &mut row,
+            "unsupported",
+            "not an ELF or PE image".to_string(),
+        );
+        return row;
+    }
+    // Target bytes are hostile (rule 8) and must never panic the scanner,
+    // but one file that does must not cost the rest of the batch its lines.
+    let scanned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source =
+            FileSource::from_bytes(&data, &file_name(path)).map_err(classify_source_error)?;
+        let hints = use_hints(&source, discovery);
+        let (hits, coverage) = scan_source(&source, signatures, hints)?;
+        let mut document = scan_document(&source, &hits);
+        Ok::<_, CliError>((
+            source.arch().as_str().to_string(),
+            hints,
+            document.remove("hits").unwrap_or_default(),
+            coverage,
+        ))
+    }));
+    match scanned {
+        Ok(Ok((arch, hints, hits, coverage))) => {
+            for line in coverage.warnings() {
+                eprintln!("sigtool-native: {relative}: {line}");
+            }
+            let status = if coverage.exhausted().is_empty() {
+                "ok"
+            } else {
+                "budget-exhausted"
+            };
+            row.insert("status".to_string(), Value::String(status.to_string()));
+            row.insert("arch".to_string(), Value::String(arch));
+            row.insert(
+                "discovery".to_string(),
+                Value::String(if hints { "hinted" } else { "hint-free" }.to_string()),
+            );
+            row.insert("hits".to_string(), hits);
+            row.insert("truncated".to_string(), coverage_value(&coverage));
+        }
+        Ok(Err(error)) => {
+            let status = if error.code == EXIT_UNSUPPORTED {
+                "unsupported"
+            } else {
+                "error"
+            };
+            fail(&mut row, status, error.message);
+        }
+        Err(_) => fail(
+            &mut row,
+            "error",
+            "scanner panicked on this file".to_string(),
+        ),
+    }
+    row
 }
 
 /// Whether a scan uses the image's symbol hints. `auto` drops them for a
