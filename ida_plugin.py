@@ -119,6 +119,8 @@ SIGN_ALL_ACTION = "sigtool:sign_all"
 SIGN_ALL_LABEL = "sigtool: sign all named functions to a DB"
 APPLY_ACTION = "sigtool:apply_names"
 APPLY_LABEL = "sigtool: apply names from a DB"
+REVERT_ACTION = "sigtool:revert_names"
+REVERT_LABEL = "sigtool: revert sigtool names"
 OPEN_ACTION = "sigtool:open"
 OPEN_LABEL = "sigtool: open menu"
 # One hotkey opens the action menu, as IDA-Fusion does with Ctrl-Alt-S
@@ -756,18 +758,89 @@ def rename_blocker(
 def provenance_comment(existing: str, proposal: Proposal, source: str) -> str:
     """``existing`` function comment plus a line recording where a rename came from.
 
-    The line names the signature, score, and evidence so a later reader can
-    tell a sigtool rename from an analyst's; applying the same DB twice does
-    not repeat it.
+    The line names the new and the replaced name, the signature, score, and
+    evidence, so a later reader (and [`parse_provenance`]) can tell a sigtool
+    rename from an analyst's and undo it; applying the same DB twice does not
+    repeat it.
     """
     line = (
-        f"sigtool: {proposal.name} from {source} "
+        f"sigtool: {proposal.name} (was {proposal.current}) from {source} "
         f"(signature {proposal.signature_id or '?'}, score {proposal.score:.3f}, "
         f"{proposal.evidence})"
     )
     if line in existing.splitlines():
         return existing
     return f"{existing.rstrip()}\n{line}" if existing.strip() else line
+
+
+# `sigtool: NEW (was OLD) from SOURCE (...)`; lines written before the old
+# name was recorded lack the `(was OLD)` part.
+_PROVENANCE = re.compile(r"sigtool: (?P<new>\S+)(?: \(was (?P<old>\S*)\))? from \S")
+
+
+def parse_provenance(comment: str) -> tuple[str, str | None] | None:
+    """``(new, old)`` from the last sigtool provenance line of a function
+    comment (``old`` is ``None`` for a line that did not record it), or ``None``."""
+    found = None
+    for line in (comment or "").splitlines():
+        match = _PROVENANCE.match(line.strip())
+        if match is not None:
+            found = (match.group("new"), match.group("old"))
+    return found
+
+
+def sigtool_owned(current: str, comment: str, validate: Callable[[str], str] = str) -> bool:
+    """Whether ``current`` is still the name sigtool's last rename gave the
+    function: the name the provenance line records, or that name as IDA
+    stored it (``validate``: ``SN_NOCHECK`` replaces characters IDA refuses).
+    A name changed since then belongs to the analyst."""
+    provenance = parse_provenance(comment)
+    if provenance is None or not current:
+        return False
+    new = provenance[0]
+    return current == new or current == validate(new)
+
+
+@dataclass(frozen=True)
+class Revert:
+    """Undo of sigtool's last rename at ``rva``: ``current`` goes back to
+    ``old`` (empty: clear it, so IDA shows its dummy name again)."""
+
+    rva: int
+    current: str
+    old: str
+    comment: str
+
+
+def revert_plan(
+    functions: Iterable[tuple[int, str, str]], validate: Callable[[str], str] = str
+) -> tuple[list[Revert], list[tuple[str, str]]]:
+    """What "Revert sigtool names" does to ``(rva, current name, comment)``
+    functions, and what it leaves alone why.
+
+    Only a function still carrying sigtool's name is touched; its last
+    provenance line is dropped, so a function renamed twice reverts one step
+    at a time. A dummy old name (``sub_*``) is cleared rather than set, which
+    lets IDA regenerate it.
+    """
+    reverts: list[Revert] = []
+    skipped: list[tuple[str, str]] = []
+    for rva, current, comment in functions:
+        provenance = parse_provenance(comment)
+        if provenance is None:
+            continue
+        new, old = provenance
+        if not sigtool_owned(current, comment, validate):
+            skipped.append((new, f"+{rva:#x} was renamed since, to {current!r}"))
+            continue
+        if old is None:
+            skipped.append((new, f"+{rva:#x}: the comment does not record the old name"))
+            continue
+        lines = comment.splitlines()
+        last = max(i for i, line in enumerate(lines) if _PROVENANCE.match(line.strip()))
+        rest = "\n".join(lines[:last] + lines[last + 1 :]).strip()
+        reverts.append(Revert(rva, current, old if is_meaningful_name(old) else "", rest))
+    return reverts, sorted(skipped)
 
 
 @dataclass(frozen=True)
@@ -1320,6 +1393,49 @@ def _has_user_name(ea: int) -> bool:
     )
 
 
+def _validated_name(name: str) -> str:
+    """``name`` as ``set_name(..., SN_NOCHECK)`` stores it."""
+    validate = getattr(ida_name, "validate_name", None)
+    if validate is None:
+        return name
+    try:
+        return str(validate(name, ida_name.VNT_IDENT) or name)
+    except Exception:  # an IDA without VNT_IDENT
+        return name
+
+
+def _function_comment(ea: int) -> str:
+    function = ida_funcs.get_func(ea)
+    return "" if function is None else str(ida_funcs.get_func_cmt(function, False) or "")
+
+
+def _sigtool_owned(ea: int) -> bool:
+    """Whether ``ea``'s name is still the one an earlier apply gave it."""
+    return sigtool_owned(
+        str(ida_name.get_ea_name(ea) or ""), _function_comment(ea), _validated_name
+    )
+
+
+def _revert_function(ea: int, base: int) -> Revert | None:
+    """Undo sigtool's last rename of the function at ``ea``; what was done."""
+    reverts, _skipped = revert_plan(
+        [(ea - base, str(ida_name.get_ea_name(ea) or ""), _function_comment(ea))],
+        _validated_name,
+    )
+    if not reverts:
+        return None
+    item = reverts[0]
+    if not ida_name.set_name(ea, item.old, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
+        # The old name is in use elsewhere now; a dummy name is never wrong.
+        if not item.old or not ida_name.set_name(ea, "", ida_name.SN_NOWARN):
+            return None
+        item = Revert(item.rva, item.current, "", item.comment)
+    function = ida_funcs.get_func(ea)
+    if function is not None:
+        ida_funcs.set_func_cmt(function, item.comment, False)
+    return item
+
+
 def _add_function(ea: int, base: int) -> int | None:
     """Create a function at ``ea``; the RVA it starts at, or ``None``."""
     if not ida_funcs.add_func(ea):
@@ -1760,13 +1876,19 @@ class ApplyNamesHandler(_Handler):
         base = int(ida_nalt.get_imagebase())
 
         def name_owner(name: str) -> int | None:
+            # A name an earlier apply gave another function may move here:
+            # the newer match wins, and that function gets its old name back.
             ea = ida_name.get_name_ea(ida_idaapi.BADADDR, name)
-            return None if ea == ida_idaapi.BADADDR else int(ea) - base
+            if ea == ida_idaapi.BADADDR or _sigtool_owned(int(ea)):
+                return None
+            return int(ea) - base
 
         proposals, skipped = choose_renames(
             hits,
             current_name=lambda rva: ida_name.get_ea_name(base + rva),
-            user_named=lambda rva: _has_user_name(base + rva),
+            # sigtool's own earlier renames are replaced (and preselected)
+            # like dummy names; only an analyst's name is protected.
+            user_named=lambda rva: _has_user_name(base + rva) and not _sigtool_owned(base + rva),
             name_owner=name_owner,
             # Listed but not preselected (see `default_selection`).
             overwrite_user=True,
@@ -1810,6 +1932,9 @@ class ApplyNamesHandler(_Handler):
             if problem is not None:
                 ida_kernwin.msg(f"sigtool: not renaming {item.name}: {problem}\n")
                 continue
+            holder = ida_name.get_name_ea(ida_idaapi.BADADDR, item.name)
+            if holder != ida_idaapi.BADADDR and int(holder) != ea and _sigtool_owned(int(holder)):
+                _revert_function(int(holder), base)
             # SN_NOCHECK replaces characters IDA does not allow in names (a
             # name from another toolchain's mangling) instead of failing.
             if not ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
@@ -1851,6 +1976,55 @@ class ApplyNamesHandler(_Handler):
             )
 
 
+class RevertNamesHandler(_Handler):
+    """Undo the renames apply-names made, where the name is still sigtool's."""
+
+    def run(self, ctx=None) -> None:
+        base = int(ida_nalt.get_imagebase())
+        functions = [
+            (int(ea) - base, str(ida_name.get_ea_name(ea) or ""), _function_comment(ea))
+            for ea in idautils.Functions()
+        ]
+        reverts, skipped = revert_plan(functions, _validated_name)
+        for name, reason in skipped:
+            ida_kernwin.msg(f"sigtool: not reverting {name}: {reason}\n")
+        if not reverts:
+            ida_kernwin.warning(
+                "sigtool: no sigtool renames to revert"
+                + (f" ({len(skipped)} renamed since; see the Output window)" if skipped else "")
+            )
+            return
+        if (
+            ida_kernwin.ask_yn(
+                0,
+                f"HIDECANCEL\nRevert {len(reverts)} names sigtool applied to their old names?",
+            )
+            != 1
+        ):
+            return
+        rows = []
+        for item in reverts:
+            ea = base + item.rva
+            done = _revert_function(ea, base)
+            if done is None:
+                ida_kernwin.msg(f"sigtool: IDA refused to revert {ea:#x} ({item.current})\n")
+                continue
+            restored = done.old or str(ida_name.get_ea_name(ea) or "")
+            rows.append(Row(ea=ea, cells=(f"{ea:#x}", done.current, restored)))
+        ida_kernwin.msg(f"sigtool: reverted {len(rows)} of {len(reverts)} sigtool names\n")
+        ida_kernwin.refresh_idaview_anyway()
+        if rows:
+            show_results(
+                "sigtool: reverted names",
+                [
+                    ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
+                    ["sigtool name", 32],
+                    ["Restored name", 24],
+                ],
+                rows,
+            )
+
+
 class MenuForm(ida_kernwin.Form):
     """The action menu (IDA-Fusion style): one radio row per action, and the
     signatures DB that sign-all writes and apply-names reads."""
@@ -1878,6 +2052,11 @@ class MenuForm(ida_kernwin.Form):
             "Every function with a meaningful name",
         ),
         ("rApply", "Apply names from the DB", "Rename identified matches of the DB's signatures"),
+        (
+            "rRevert",
+            "Revert sigtool names",
+            "Restore the names apply replaced, where the name is still sigtool's",
+        ),
         ("rSettings", "Configure settings", ""),
     )
 
@@ -1974,6 +2153,7 @@ class MenuHandler(_Handler):
             "rLocate": LocateHandler,
             "rSignAll": lambda: SignAllHandler(db),
             "rApply": lambda: ApplyNamesHandler(db),
+            "rRevert": RevertNamesHandler,
         }
         # The menu acts on the cursor, as the hotkey's context is no view.
         handlers[name]().run(None)
@@ -1985,6 +2165,7 @@ ACTIONS = (
     (LOCATE_ACTION, LOCATE_LABEL, LocateHandler, ""),
     (SIGN_ALL_ACTION, SIGN_ALL_LABEL, SignAllHandler, ""),
     (APPLY_ACTION, APPLY_LABEL, ApplyNamesHandler, ""),
+    (REVERT_ACTION, REVERT_LABEL, RevertNamesHandler, ""),
 )
 
 

@@ -307,11 +307,59 @@ class ProvenanceTests(unittest.TestCase):
     def test_comment_is_appended_once(self):
         first = plugin.provenance_comment("", self.proposal(), "zlib.db")
         self.assertEqual(
-            first, "sigtool: inflate from zlib.db (signature abc123, score 0.912, identified)"
+            first,
+            "sigtool: inflate (was sub_200) from zlib.db "
+            "(signature abc123, score 0.912, identified)",
         )
         self.assertEqual(plugin.provenance_comment(first, self.proposal(), "zlib.db"), first)
         kept = plugin.provenance_comment("analyst note\n", self.proposal(), "zlib.db")
         self.assertEqual(kept, f"analyst note\n{first}")
+
+    def test_last_provenance_line_is_parsed(self):
+        self.assertIsNone(plugin.parse_provenance(""))
+        self.assertIsNone(plugin.parse_provenance("analyst: sigtool: x from y"))
+        old_format = "sigtool: inflate from zlib.db (signature a, score 1.000, identified)"
+        self.assertEqual(plugin.parse_provenance(old_format), ("inflate", None))
+        twice = (
+            "note\nsigtool: inflate (was sub_200) from a.db (signature a)\n"
+            "sigtool: inflate2 (was inflate) from b.db (signature b)"
+        )
+        self.assertEqual(plugin.parse_provenance(twice), ("inflate2", "inflate"))
+
+    def test_sigtool_owned_only_while_the_name_is_unchanged(self):
+        comment = "sigtool: op<int> (was sub_200) from a.db (signature a)"
+        self.assertTrue(plugin.sigtool_owned("op<int>", comment))
+        # IDA stored the name with characters replaced (SN_NOCHECK).
+        validate = lambda name: re.sub(r"[<>]", "_", name)  # noqa: E731
+        self.assertTrue(plugin.sigtool_owned("op_int_", comment, validate))
+        self.assertFalse(plugin.sigtool_owned("my_op", comment, validate))
+        self.assertFalse(plugin.sigtool_owned("op<int>", "analyst note"))
+
+    def test_revert_plan(self):
+        functions = [
+            (0x200, "inflate", "note\nsigtool: inflate (was sub_200) from a.db (s)"),
+            (0x300, "my_name", "sigtool: deflate (was sub_300) from a.db (s)"),  # renamed since
+            (0x400, "crc", "sigtool: crc from a.db (s)"),  # no old name recorded
+            (
+                0x500,
+                "adler2",
+                "sigtool: adler (was sub_500) from a.db (s)\n"
+                "sigtool: adler2 (was adler) from b.db (s)",
+            ),
+            (0x600, "plain", "just a comment"),
+            (0x700, "zlib_inflate", "sigtool: zlib_inflate (was my_inflate) from a.db (s)"),
+        ]
+        reverts, skipped = plugin.revert_plan(functions)
+        self.assertEqual(
+            [(r.rva, r.current, r.old, r.comment) for r in reverts],
+            [
+                (0x200, "inflate", "", "note"),
+                (0x500, "adler2", "adler", "sigtool: adler (was sub_500) from a.db (s)"),
+                (0x700, "zlib_inflate", "my_inflate", ""),
+            ],
+        )
+        self.assertEqual([name for name, _ in skipped], ["crc", "deflate"])
+        self.assertIn("renamed since", dict(skipped)["deflate"])
 
     def test_proposals_carry_the_signature_id(self):
         proposals, _ = choose([hit("inflate", 0x200, signature_id="sig-1")])

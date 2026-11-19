@@ -182,7 +182,11 @@ def install_fakes(idb: FakeIdb) -> None:
         return next((ea for ea, owned in idb.names.items() if owned == text), BADADDR)
 
     def set_name(ea, text, _flags):
-        idb.names[ea] = text
+        # An empty name clears it; IDA shows its dummy name again.
+        if text:
+            idb.names[ea] = text
+        else:
+            idb.names.pop(ea, None)
         return True
 
     name.get_name_ea = get_name_ea
@@ -566,6 +570,7 @@ def main() -> int:
         idb.idb_path = str(temp / f"{apply_image.name}.i64")
         if args.shape_only:
             idb.registry["settings"] = plugin.DEFAULT_SETTINGS | plugin.SET_REVIEW_SHAPE_ONLY
+        before_apply = dict(idb.names)
         # The menu hands apply-names the DB sign-all wrote: no dialog.
         progress_seen: list[tuple[int, int]] = []
 
@@ -618,6 +623,19 @@ def main() -> int:
         check(
             idb.choosers[-1].title.startswith("sigtool: renamed"),
             "renames are listed in a results chooser",
+        )
+        check(
+            all(plugin._sigtool_owned(ea) for ea in renamed),
+            "the renamed functions count as sigtool's, not the analyst's",
+        )
+        # Revert: every sigtool name goes back to what it replaced.
+        idb.answer(1)
+        plugin.RevertNamesHandler().run()
+        check(
+            not idb.answers
+            and idb.names == before_apply
+            and not any("sigtool:" in text for text in idb.comments.values()),
+            f"revert restores the {len(renamed)} old names and drops the provenance lines",
         )
     return 0
 
