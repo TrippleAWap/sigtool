@@ -19,6 +19,7 @@ pub mod elf;
 pub mod errors;
 pub mod features;
 pub mod generate;
+pub mod identity;
 pub mod joint;
 pub mod matcher;
 pub mod memory;
