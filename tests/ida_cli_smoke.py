@@ -480,6 +480,11 @@ def main() -> int:
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
         check(
+            "\nverdicts: " in summary and "\nconfidence: " in summary,
+            "the sign-all summary counts verdicts and confidence: "
+            + "; ".join(summary.splitlines()[1:3]),
+        )
+        check(
             any(text.endswith(" s") for text in idb.wait_texts)
             and all(text.endswith(" s") for text in idb.wait_texts),
             f"the wait box shows progress and the elapsed time ({idb.wait_texts[-1:]})",

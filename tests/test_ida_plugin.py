@@ -119,6 +119,35 @@ class NameTests(unittest.TestCase):
         self.assertIn("0x20 b: refused (self-test)", text)
         self.assertNotIn("incomplete", text)
 
+    def test_build_summary_counts_verdict_and_confidence(self):
+        def signed(verdict, confidence):
+            row = {"rva": "0x10", "status": "signed"}
+            return {**row, "verdict": verdict, "confidence": confidence}
+
+        text = plugin.summarize_build(
+            {
+                "signed": 3,
+                "functions": [
+                    signed("weak", "single-arch"),
+                    signed("good", "single-arch"),
+                    signed("weak", "low"),
+                    {"rva": "0x20", "status": "refused", "verdict": "ignored"},
+                ],
+            }
+        )
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "signed 3 of 4 functions")
+        self.assertEqual(lines[1], "verdicts: good 1, weak 2")
+        self.assertEqual(lines[2], "confidence: low 1, single-arch 2")
+
+    def test_report_quality(self):
+        report = (
+            "signature inflate  (abc)\narch x64  verdict weak  confidence single-arch\n"
+            "features 9 (required 1, optional 8)"
+        )
+        self.assertEqual(plugin.report_quality(report), "weak, single-arch")
+        self.assertIsNone(plugin.report_quality("no report"))
+
     def test_truncation_is_described(self):
         self.assertIsNone(plugin.describe_truncation({}))
         self.assertIsNone(plugin.describe_truncation({"truncated": []}))

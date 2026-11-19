@@ -279,10 +279,31 @@ def describe_truncation(document: dict) -> str | None:
     return f"incomplete: budgets ran out: {', '.join(parts)}"
 
 
+def _counts(values: Iterable[str]) -> str:
+    """``a 3, b 1``: each distinct value with how often it occurs, by name."""
+    tally: dict[str, int] = {}
+    for value in values:
+        tally[value] = tally.get(value, 0) + 1
+    return ", ".join(f"{value} {count}" for value, count in sorted(tally.items()))
+
+
+def report_quality(report: str) -> str | None:
+    """``weak, single-arch``: the verdict and confidence a ``gen`` or ``merge``
+    report states, or ``None`` when it states neither."""
+    match = re.search(r"verdict (\S+)\s+confidence (\S+)", report)
+    return None if match is None else f"{match.group(1)}, {match.group(2)}"
+
+
 def summarize_build(report: dict) -> str:
     """A short text summary of a ``db build --report`` document."""
     rows = report.get("functions", [])
     lines = [f"signed {report.get('signed', 0)} of {len(rows)} functions"]
+    # Most signatures are weak or small by design, so the counts are shown
+    # rather than warned about: they say what the DB can be expected to name.
+    signed = [row for row in rows if row.get("status") == "signed"]
+    if signed:
+        lines.append(f"verdicts: {_counts(str(row.get('verdict') or '?') for row in signed)}")
+        lines.append(f"confidence: {_counts(str(row.get('confidence') or '?') for row in signed)}")
     truncation = describe_truncation(report)
     if truncation:
         lines.append(truncation)
@@ -1206,7 +1227,11 @@ def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
         _last_paths["yaml"] = path
         done.append(f"saved to {path}")
     ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
-    ida_kernwin.msg(f"sigtool: signature of {label} {' and '.join(done) or 'discarded'}\n")
+    quality = report_quality(report)
+    ida_kernwin.msg(
+        f"sigtool: signature of {label}{f' ({quality})' if quality else ''} "
+        f"{' and '.join(done) or 'discarded'}\n"
+    )
     if _setting(SET_SHOW_REPORT):
         ida_kernwin.info(f"{report}\n\n{label}: {', '.join(done) or 'not saved'}")
 
