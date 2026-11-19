@@ -6,7 +6,8 @@ what comes back, so a signature made here is byte-identical to one made with
 ``sigtool-native gen --file IMAGE --rva RVA``. Addresses cross the boundary as
 RVAs (``ea - imagebase``), which keeps rebased databases correct.
 
-Install (IDA 8.4+ / 9.x, Python 3.10+, no extra packages):
+Install (IDA 9.x from the release zip; IDA 8.4 as a flat copy, untested;
+Python 3.10+, no extra packages; not yet run in a real IDA, see README):
 
     cargo build --release --manifest-path native/Cargo.toml
     # copy this file into %IDAUSR%/plugins and native/target/release/sigtool-native
@@ -54,22 +55,35 @@ pseudocode, and Functions views, where they act on the selected rows.
 * ``sigtool: merge with another build``: sign the function together with the
   same function in other image files (at an address or RVA) into one
   multi-arch signature.
-* ``sigtool: locate signature in this IDB``: scan the input file with the
-  signature on the clipboard (else a saved one), list the matches, and jump to
-  the best one.
+* ``sigtool: locate signature in this IDB``: scan the input file hint-free
+  with the signature on the clipboard (else a saved one), list the matches
+  under the IDB's names, and jump to the best one when it is ``identified``
+  (otherwise the list opens for review). A row's right-click menu has
+  ``sigtool: explain this row``.
+* ``sigtool: explain the locate result at the cursor``: ``locate --explain
+  --expect`` on the function under the cursor, shown in a text view: the
+  deciding gate, every gate, and the matched, inherited, and missed keys.
 * ``sigtool: sign all named functions to a DB``: sign every function with a
   meaningful name (not ``sub_*`` or another IDA dummy name, not a thunk, an
   extern, or a stub under five bytes) into one signatures DB, in a single
   ``sigtool-native db build --file IMAGE --functions LIST`` run with progress
-  and cancel. Functions the CLI cannot sign are listed and skipped.
+  and cancel. Functions the CLI cannot sign are listed and skipped; the
+  summary counts verdicts and confidence.
 * ``sigtool: apply names from a DB``: scan the input file with a signatures DB
   (``scan --db --discovery hint-free``, which resolves signatures from one
   module jointly through their call graph) and propose renames for functions
   whose match is ``identified``. The proposals open in a chooser with every
   row selected except those that would replace a user name (both settings);
-  the selected rows are renamed. A name already used elsewhere in the IDB,
-  two signatures claiming one address, or one name claiming two addresses is
-  skipped.
+  ``candidate`` (and, with a setting, ``shape-only``) matches follow,
+  unselected, for review; the selected rows are renamed. A name already used
+  elsewhere in the IDB, two signatures claiming one address, or one name
+  claiming two addresses is skipped. Each rename records ``sigtool: NEW (was
+  OLD) from DB`` in the function comment; a later apply treats such a name as
+  sigtool's, not the analyst's.
+* ``sigtool: revert sigtool names``: restore the old names those comment lines
+  record, where the function still has the name sigtool gave it.
+* ``sigtool: show a DB's contents``: ``db list`` in a chooser, ``db info`` as
+  its title.
 
 File dialogs that remain start beside the IDB, or at the file last used.
 
@@ -151,7 +165,7 @@ SETTINGS = (
     (SET_SAVE_BESIDE_IDB, "Save signatures and DBs in a sigtool folder beside the IDB (no dialog)"),
     (SET_SHOW_REPORT, "Show the quality report in a dialog after signing"),
     (SET_LOCATE_CLIPBOARD, "Locate the signature on the clipboard when there is one"),
-    (SET_AUTO_JUMP, "Auto jump to the best match"),
+    (SET_AUTO_JUMP, "Auto jump to the best match when it is identified"),
     (SET_LIST_MATCHES, "List every match in a window"),
     (SET_CONFIRM_RENAMES, "Confirm renames in a list before applying them"),
     (SET_PRESELECT_USER_NAMES, "Also replace user names when applying (preselected)"),
