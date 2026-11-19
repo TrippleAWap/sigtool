@@ -88,6 +88,10 @@ pub struct Match {
     /// Accepted only because a shared neighbour key waived the shape gate
     /// (see [`MIN_WAIVED_SHAPE_SIMILARITY`]).
     pub waived: bool,
+    /// The function's only caller calls nothing else ([`scan_in`], first
+    /// match only): a wrapper signed where this callee was inlined into it
+    /// names this function too, so the evidence cannot tell them apart.
+    pub wrapped: bool,
 }
 
 /// Encode the signature's data anchors for Tier 0 scanning.
@@ -928,6 +932,17 @@ impl ScanContext {
         found
     }
 
+    /// Whether the function at `start` has exactly one direct caller and
+    /// that caller calls nothing else: a wrapper whose body, in a build
+    /// that inlined its callee, is this function's evidence.
+    pub fn sole_wrapper<S: ByteSource + ?Sized>(&self, source: &S, start: u64, hints: bool) -> bool {
+        let callers = self.callers_of(source, start, hints);
+        let [caller] = callers.as_slice() else {
+            return false;
+        };
+        self.callees_of(source, *caller, hints) == [start]
+    }
+
     /// `(size in bytes, direct callees)` of each direct caller of the
     /// function at `start`. Diagnostic (`bench --fp-report`): a thin wrapper
     /// caller is the one function a signature of the wrapper, signed where
@@ -1272,7 +1287,9 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     if let Some(first) = matches.first() {
         if identified(first) {
             let rival = context.rival(source, signature, first, hints);
+            let wrapped = context.sole_wrapper(source, first.address, hints);
             matches[0].rival = rival;
+            matches[0].wrapped = wrapped;
         }
     }
     matches
@@ -1688,7 +1705,7 @@ pub fn identified_answer(matches: &[Match]) -> bool {
 
 /// [`identified_answer`] with the reason: `Ok`, or the name of the rule
 /// that withholds the label (`none`, `not-identified`, `tie`, `waived`,
-/// `rival`, `answer-similarity`; `locate --explain` reports it).
+/// `wrapped`, `rival`, `answer-similarity`; `locate --explain` reports it).
 pub fn answer_gate(matches: &[Match]) -> Result<(), &'static str> {
     let Some(first) = matches.first() else {
         return Err("none");
@@ -1708,6 +1725,14 @@ pub fn answer_gate(matches: &[Match]) -> Result<(), &'static str> {
     if crate::joint::votes(first) == 0 {
         if first.waived {
             return Err("waived");
+        }
+        // A wrapper's signature, signed where it inlined this callee, holds
+        // this function's evidence: on the `--world` tier 104 wrong
+        // identified answers (`lua_next` at `luaH_next`) and no correct one
+        // had a sole caller calling nothing else (hint-free precision 0.972
+        // -> 0.988, 6212 correct kept); the real corpus has none.
+        if first.wrapped {
+            return Err("wrapped");
         }
         if first
             .rival
@@ -2341,6 +2366,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
                 matched: result.matched,
                 rival: None,
                 waived: waived.get(),
+                wrapped: false,
             });
         }
     }
@@ -2715,6 +2741,7 @@ fn structural_self_test<S: ByteSource + ?Sized>(
         matched: result.matched,
         rival: None,
         waived: false,
+        wrapped: false,
     })
 }
 
@@ -3568,6 +3595,7 @@ mod tests {
             matched: matched.iter().map(|key| key.to_string()).collect(),
             rival: None,
             waived: false,
+            wrapped: false,
         }
     }
 
@@ -3596,6 +3624,7 @@ mod tests {
     fn a_waived_shape_or_a_close_rival_is_no_answer() {
         let waived = Match {
             waived: true,
+            wrapped: false,
             ..found(1, 0.9, &["str:x"])
         };
         assert!(!identified_answer(&[waived]));
@@ -3616,6 +3645,7 @@ mod tests {
         // Preserved call-graph links still name it.
         let placed = Match {
             waived: true,
+            wrapped: false,
             rival: Some(0.9),
             ..found(1, 0.9, &["str:x", "joint:2"])
         };

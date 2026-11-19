@@ -561,6 +561,7 @@ fn resolve_group<S: ByteSource + ?Sized>(
                     matched: result.matched,
                     rival: None,
                     waived: false,
+                    wrapped: false,
                 }
             }
         };
@@ -623,6 +624,7 @@ pub fn report<S: ByteSource + ?Sized>(
                 matched: result.matched,
                 rival: None,
                 waived: false,
+                wrapped: false,
             };
             let has_str = found.matched.iter().any(|key| key.starts_with("str:"));
             row.push(json!([
