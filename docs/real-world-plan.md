@@ -10,7 +10,25 @@ error paths (no process bench cell yet); RW4's gcc profile tier
 (`--world`) with spec v6's executable-callee rule and the x86 `rbp` fix it
 exposed; RW7's packed relocations and section-less ELF; RW8's batch scan,
 image identity and `db info`/`list`. Open: RW4 distro packages, C++, joint
-drift; RW5; RW6; RW7 raw blobs; RW8 `--explain` and generation warnings.
+drift; RW5; RW6 wild negatives and targets past 3 MB; RW7 raw blobs; RW8
+`--explain` and generation warnings.
+
+RW6 measurement, on `rw/scale` (numbers in `PLAN.md` §8):
+
+- Needle in a host: `corpus/real.py --host` links the five tuning libraries
+  into one static gcc `-O2` executable per arch (`--gc-sections`), plus an
+  LTO host and leave-one-out hosts as true negatives. Hint-free same-arch
+  top-1 from the `-O2` shared object: 0.642 into the host, 0.487 into the
+  LTO host, 0.905 same build. Accepted hits on the negatives per signature
+  per MB of code: x64 0.176 to Thumb 0.943; identified answers in unrelated
+  images 0.0025 per signature per MB (goal 0.001).
+- Scale harness: `examples/profile_scale.rs`. The x64 `-O0` host (2.4 MB of
+  code) with 1, 150 and 1000 signatures of its own functions scans in 0.6,
+  2.1 and 10.9 s on 2 threads, at 130-167 MB peak.
+- No cap truncates at these sizes (instructions at 15% of 4M, candidates
+  at 8% of 65,536, joint pairs at 8% of 2^26), so none of the six fixes
+  was started: the plan's 10-150 MB targets need sources larger than the
+  tuning libraries.
 
 ## 1. Diagnosis
 
@@ -59,20 +77,20 @@ Targets marked *(proposed)* need the user's OK. "Unmeasured" means no harness ex
 | G1 | Other source version, function source changed | unmeasured | reported only |
 | G1 | Distro package (trixie) vs self-built gcc, same version, same level | unmeasured | reported; target after first measurement |
 | G1 | Hardened, `-O3` or LTO profile vs plain, same compiler | unmeasured | within 0.05 of "same level" *(proposed)* |
-| G1 | Shared object → PIE, `ET_EXEC` or static executable | unmeasured | within 0.05 of "same build" *(proposed)* |
+| G1 | Shared object → PIE, `ET_EXEC` or static executable | static host of all five libraries 0.642 vs same build 0.905, hint-free same arch (RW6) | within 0.05 of "same build" *(proposed)* |
 | G1 | PE (clang-cl, MinGW) ↔ ELF, same source | unmeasured | reported; target after RW5 |
 | G2 | Joint signed on release N, resolved on N+1: identified precision (apply-names headline) | unmeasured | ≥ 0.98 *(proposed)* |
 | G2 | Same, identified answers for functions absent from N+1 | unmeasured | ≤ 0.02 of answers *(proposed)* |
 | G3 | Identified precision, real-world tier (drift, distro, flags, C++/ICF) | unmeasured | ≥ 0.98 |
 | G3 | Identified precision on the process path (`scan --pid`, `.pdata`-only source) | ungated (`matcher.rs:1238`) | same as hinted file target |
-| G3 | Accepted hits per signature per MB of unrelated code, per verdict | unmeasured | identified ≤ 0.001/MB; others after measurement |
+| G3 | Accepted hits per signature per MB of unrelated code, per verdict | identified 0.0025/MB; any verdict 0.18 (x64) to 0.94 (Thumb)/MB on host negatives (RW6) | identified ≤ 0.001/MB; others after measurement |
 | G3 | Strong FP on a real negative set | 0 targets scanned | 0.000 with ≥ 5 MB per arch |
 | G3 (change) | Rates carry n and a Wilson 95% interval | point estimates | reported; gating is Decision 1 |
 | G4 | Start recall on section-less ELF vs `strip --strip-all` | 0, refused (`elf.rs:407-411`) | within 0.01 |
 | G4 | Start recall on a raw blob | 0, refused | reported |
-| G5 | Index coverage on a 50 MB image | inferred ~15 MB of x64 under the 4M cap | 1.0 |
-| G5 | Hint-free scan: 150 signatures, 50 MB stripped, 8 cores | unmeasured | ≤ 60 s, ≤ 2 GB *(proposed)* |
-| G5 | `db build --functions`: 1k and 5k functions on 50 MB | unmeasured | reported; target after first measurement |
+| G5 | Index coverage on a 50 MB image | 1.0 at 2.4 MB (590K of 4M instructions); inferred cap at ~16 MB of x64 | 1.0 |
+| G5 | Hint-free scan: 150 signatures, 50 MB stripped, 8 cores | 2.4 MB x64, 2 threads: 2.1 s, 134 MB (50 MB unmeasured) | ≤ 60 s, ≤ 2 GB *(proposed)* |
+| G5 | `db build --functions`: 1k and 5k functions on 50 MB | 1k on 2.4 MB: 4.6 s, 126 MB (50 MB unmeasured) | reported; target after first measurement |
 | G6 (fix) | Fuzzed in CI | false on `native-first` | 60 s per target per push; long campaign on home server |
 
 "Within 0.05" is a point comparison. It stays that way unless Decision 1 changes it.

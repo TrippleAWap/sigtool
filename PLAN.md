@@ -752,7 +752,55 @@ As of 2026-11-19, `real-world` branch, spec v6.
   - RW8: `scan --path DIR --jsonl OUT`, input identity (sha256, build-id, PE
     GUID) in reports, `db info` / `db list`, spec-mismatch errors naming the
     rebuild.
+  - RW6 measurement (2026-11-19, `rw/scale`, spec v6, no feature or
+    matcher change):
+    - `corpus/real.py --host`: the five tuning libraries' static archives
+      (gcc 12 `-O2`, `-ffunction-sections`, `--gc-sections`, a `main` taking
+      every export's address) linked into one static executable per arch
+      (code: x64 1.88 MB, arm64 1.60, arm32 1.51, Thumb 1.12), an LTO host,
+      one host per library leaving it out (the negative set), the plain
+      `-O2` shared objects (byte-identical to `build-world` `gcc-O2`), and an
+      x64 `-O0` host (2.42 MB of code) for the scale harness. Ground truth
+      lists the host once per library with `members`; the bench pairs such
+      an entry by its library, loads the image once, and never counts a hit
+      in an image linking the signature's own library as false.
+    - Hint-free same-arch top-1, signing the `-O2` shared object (bench
+      `--max-functions 0`, all four arches, 9530 signatures): into the host
+      1776/2768 = 0.642 [0.624, 0.659] (x64 0.708, arm64 0.767, arm32
+      0.551, Thumb 0.540; n = 692 each), into the LTO host 1074/2207 =
+      0.487 [0.466, 0.507] (x64 0.569, arm64 0.644, arm32 0.358, Thumb
+      0.375), same build 2506/2768 = 0.905. Other arch into the host 0.358,
+      merged 0.514.
+    - False hits, hint-free, accepted matches per signature per MB of
+      code scanned. Leave-one-out hosts (true negatives), shared-object
+      signatures: x64 0.176 (strong 0.006, weak 0.058, small 0.581), arm64
+      0.496 (strong 0.089), arm32 0.597 (strong 0.133), Thumb 0.943 (strong
+      0.303); 50-108 of 692 signatures per arch hit at all. Pooled over
+      every source, signatures signed in the hosts included, strong is
+      0.256 (inferred: host-signed signatures carry the libc callees both
+      hosts link). Identified answers in images without
+      the function: 81 of 74,455 scans, 0.0025 per signature per MB against
+      the 0.001 goal (G3). Identified precision 0.970 [0.968, 0.971].
+    - Scale (`examples/profile_scale.rs`, x64, signatures of the host's
+      own functions from `db build --functions`, scanning its stripped copy,
+      `SIGTOOL_THREADS=2`, median of 3, home server at load 1.2-1.8 of 4
+      cores): `-O0` host, 5299 unwind entries, 589,953 instructions per
+      index: 1 signature 0.61 s / 130 MB peak, 150 2.10 s / 134 MB, 1000
+      10.85 s (scan 6.92, joint 3.12) / 167 MB. `-O2` host (3855 entries):
+      0.50 / 1.62 / 8.02 s, 106-124 MB. `db build --functions`: 0.85 / 2.40
+      / 4.55 s for 1 / 150 / 1000 functions at 126 MB. Every hint-free scan
+      compares every unwind entry (candidates = signatures x entries, 5.30M
+      at 1000), digests agree across runs and with one thread.
+    - No budget runs out: 15% of the 4M-instruction caps, 8% of the
+      65,536-candidate cap, joint pairs 5.36M of 2^26. So the RW6 fixes were
+      not started. Inferred, not measured: the instruction caps stop at
+      about 16 MB of x64 code at this density (4.1 bytes per instruction),
+      and on an image at the candidate cap a 1000-signature module would
+      cost about 85 s of scan on 2 threads and sit at the joint pair limit.
+      These hosts are 1-3 MB; the 10-150 MB targets the plan names need
+      sources beyond the tuning libraries (wild negatives).
   - Not yet run on held-out at v6. Open from the plan: RW5 (PE corpus), RW6
-    (large haystacks and scale), a process-path bench cell, `--explain`.
+    targets past 3 MB and wild negatives, a process-path bench cell,
+    `--explain`.
 - Next: strong FP on the held-out corpus
   (milestone exit), and pointer-width-dependent constants (M10).
