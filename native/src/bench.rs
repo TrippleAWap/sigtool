@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -311,15 +311,9 @@ struct Sample {
     verdict: String,
 }
 
-/// One corpus image with its ground-truth function starts.
-struct Target {
-    arch: String,
-    source_file: String,
-    opt: String,
+/// One corpus file, loaded once however many ground-truth entries name it.
+struct Image {
     source: FileSource,
-    functions: BTreeMap<String, u64>,
-    /// Every ground-truth function, before `--max-functions` trims `functions`.
-    all_functions: BTreeMap<String, u64>,
     /// Whole-image indexes, built on first use and shared by every scan.
     context: OnceLock<ScanContext>,
     /// The same image after `strip --strip-all`, when the corpus has one.
@@ -327,12 +321,43 @@ struct Target {
     /// File size of the image and of its stripped copy, for FP cell sizes.
     bytes: u64,
     stripped_bytes: Option<u64>,
-    /// The unwind-table entries [`Target::process_view`] keeps, built on
+    /// The unwind-table entries [`Image::process_view`] keeps, built on
     /// first use.
     process_unwind: OnceLock<Vec<(u64, u64)>>,
 }
 
+/// One ground-truth entry: an image and one library's function starts in it.
+struct Target {
+    arch: String,
+    /// The library: the file stem, or the entry's `library` when the image
+    /// links several (`members`), so a host executable listed once per
+    /// library pairs with each library's own builds.
+    source_file: String,
+    opt: String,
+    image: Arc<Image>,
+    /// Libraries linked into the image, when the ground truth lists them. A
+    /// hit in an image that links the signature's own library is not false.
+    members: BTreeSet<String>,
+    functions: BTreeMap<String, u64>,
+    /// Every ground-truth function, before `--max-functions` trims `functions`.
+    all_functions: BTreeMap<String, u64>,
+}
+
 impl Target {
+    fn scan(&self, signature: &Signature, hints: bool) -> Vec<Match> {
+        self.image.scan(signature, hints)
+    }
+
+    fn scan_process(&self, signature: &Signature) -> Vec<Match> {
+        self.image.scan_process(signature)
+    }
+
+    fn scan_source(&self, hints: bool) -> (&FileSource, &ScanContext) {
+        self.image.scan_source(hints)
+    }
+}
+
+impl Image {
     /// Hint-free scans run on the stripped copy when there is one: ignoring
     /// hints on the unstripped file still leaks `.symtab` names into callee
     /// features and Thumb-mode detection.
@@ -460,6 +485,45 @@ fn kind(path: &str) -> (String, String, String) {
     (arch.to_string(), opt.to_string(), stem)
 }
 
+/// The image `entry` names, loaded once per path into `images`.
+fn load_image(
+    corpus: &Path,
+    entry: &Value,
+    path: &str,
+    images: &mut BTreeMap<String, Arc<Image>>,
+) -> Result<Arc<Image>, String> {
+    if let Some(image) = images.get(path) {
+        return Ok(image.clone());
+    }
+    let source =
+        FileSource::from_path(corpus.join(path)).map_err(|error| format!("{path}: {error}"))?;
+    let file_size = |path: &str| {
+        std::fs::metadata(corpus.join(path))
+            .map(|metadata| metadata.len())
+            .map_err(|error| format!("{path}: {error}"))
+    };
+    let bytes = file_size(path)?;
+    let stripped_bytes = entry["stripped"].as_str().map(file_size).transpose()?;
+    let stripped = match entry["stripped"].as_str() {
+        Some(stripped) => Some((
+            FileSource::from_path(corpus.join(stripped))
+                .map_err(|error| format!("{stripped}: {error}"))?,
+            OnceLock::new(),
+        )),
+        None => None,
+    };
+    let image = Arc::new(Image {
+        source,
+        context: OnceLock::new(),
+        stripped,
+        bytes,
+        stripped_bytes,
+        process_unwind: OnceLock::new(),
+    });
+    images.insert(path.to_string(), image.clone());
+    Ok(image)
+}
+
 fn load_targets(
     corpus: &Path,
     entries: &[Value],
@@ -468,31 +532,29 @@ fn load_targets(
     sample_seed: Option<u64>,
 ) -> Result<Vec<Target>, String> {
     let mut targets = Vec::new();
+    let mut images = BTreeMap::new();
     for entry in entries {
         let path = entry["path"]
             .as_str()
             .ok_or("ground truth entry without a path")?;
-        let (arch, opt, source_file) = kind(path);
+        let (arch, opt, stem) = kind(path);
         if !arches.is_empty() && !arches.contains(&arch) {
             continue;
         }
-        let source =
-            FileSource::from_path(corpus.join(path)).map_err(|error| format!("{path}: {error}"))?;
-        let file_size = |path: &str| {
-            std::fs::metadata(corpus.join(path))
-                .map(|metadata| metadata.len())
-                .map_err(|error| format!("{path}: {error}"))
+        let members: BTreeSet<String> = entry["members"]
+            .as_array()
+            .map(|members| {
+                members
+                    .iter()
+                    .filter_map(|member| Some(member.as_str()?.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let source_file = match entry["library"].as_str() {
+            Some(library) if !members.is_empty() => library.to_string(),
+            _ => stem,
         };
-        let bytes = file_size(path)?;
-        let stripped_bytes = entry["stripped"].as_str().map(file_size).transpose()?;
-        let stripped = match entry["stripped"].as_str() {
-            Some(stripped) => Some((
-                FileSource::from_path(corpus.join(stripped))
-                    .map_err(|error| format!("{stripped}: {error}"))?,
-                OnceLock::new(),
-            )),
-            None => None,
-        };
+        let image = load_image(corpus, entry, path, &mut images)?;
         let functions: BTreeMap<String, u64> = entry["functions"]
             .as_array()
             .map(|functions| {
@@ -513,14 +575,10 @@ fn load_targets(
             arch,
             source_file,
             opt,
-            source,
+            image,
+            members,
             functions,
             all_functions,
-            context: OnceLock::new(),
-            stripped,
-            bytes,
-            stripped_bytes,
-            process_unwind: OnceLock::new(),
         });
     }
     targets
@@ -645,7 +703,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     // Build every image's indexes up front, one image per worker. Built
     // lazily, jobs for the same image are adjacent, so every worker blocked
     // on one OnceLock while a single thread built it.
-    let images: Vec<&Target> = targets.iter().chain(negatives.iter()).collect();
+    // An image listed by several entries is built once.
+    let mut images: Vec<&Arc<Image>> = Vec::new();
+    for target in targets.iter().chain(negatives.iter()) {
+        if !images.iter().any(|image| Arc::ptr_eq(image, &target.image)) {
+            images.push(&target.image);
+        }
+    }
     parallel(images.len(), |index| {
         let target = images[index];
         target
@@ -672,11 +736,12 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let generated = parallel(jobs.len(), |job| {
         let (index, name, start) = &jobs[job];
         let target = &targets[*index];
-        let context = target
+        let image = &target.image;
+        let context = image
             .context
-            .get_or_init(|| ScanContext::build(&target.source));
+            .get_or_init(|| ScanContext::build(&image.source));
         generate_in(
-            &target.source,
+            &image.source,
             *start,
             None,
             Some(&target.opt),
@@ -730,13 +795,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         let (file, opt, name, a, a_start, b, b_start) = &merge_jobs[job];
         let pair = [
             MergeSample {
-                source: &targets[*a].source,
+                source: &targets[*a].image.source,
                 addr: *a_start,
                 opt: Some(opt),
                 tool: Some(compiler(opt)),
             },
             MergeSample {
-                source: &targets[*b].source,
+                source: &targets[*b].image.source,
                 addr: *b_start,
                 opt: Some(opt),
                 tool: Some(compiler(opt)),
@@ -745,11 +810,11 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         let contexts: Vec<Option<&ScanContext>> = [*a, *b]
             .iter()
             .map(|index| {
-                let target = &targets[*index];
+                let image = &targets[*index].image;
                 Some(
-                    target
+                    image
                         .context
-                        .get_or_init(|| ScanContext::build(&target.source)),
+                        .get_or_init(|| ScanContext::build(&image.source)),
                 )
             })
             .collect();
@@ -977,6 +1042,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             .iter()
             .filter(|t| {
                 t.source_file != sample.source_file
+                    && !t.members.contains(&sample.source_file)
                     && (sample.arch == MERGED || t.arch == sample.arch)
             })
             .collect()
@@ -984,7 +1050,10 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     let negative_targets = |sample: &Sample| -> Vec<&Target> {
         negatives
             .iter()
-            .filter(|t| sample.arch == MERGED || t.arch == sample.arch)
+            .filter(|t| {
+                !t.members.contains(&sample.source_file)
+                    && (sample.arch == MERGED || t.arch == sample.arch)
+            })
             .collect()
     };
     // Scan every signature once per target set; the strong cells are the
@@ -1088,7 +1157,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
         sample_seed: options.sample_seed,
-        hint_free_stripped: targets.iter().all(|t| t.stripped.is_some()),
+        hint_free_stripped: targets.iter().all(|t| t.image.stripped.is_some()),
         hint_free_false_positives,
         signatures: all.len(),
         refused,
@@ -1191,13 +1260,14 @@ fn measure_joint(
         .collect();
     for source in &sources {
         let context = source
+            .image
             .context
-            .get_or_init(|| ScanContext::build(&source.source));
+            .get_or_init(|| ScanContext::build(&source.image.source));
         let names: Vec<(&String, &u64)> = source.all_functions.iter().collect();
         let generated = parallel(names.len(), |job| {
             let (name, start) = names[job];
             generate_in(
-                &source.source,
+                &source.image.source,
                 *start,
                 Some(name),
                 Some(&source.opt),
@@ -1406,8 +1476,9 @@ fn false_positive_cells(
 ) -> Vec<FalsePositiveCell> {
     let mut counts = vec![0usize; samples.len()];
     // Images per arch, by identity: a negative image may share its
-    // `(arch, opt, stem)` with a corpus image.
-    let mut scanned: BTreeMap<&str, BTreeMap<*const Target, u64>> = BTreeMap::new();
+    // `(arch, opt, stem)` with a corpus image, and one image may be listed
+    // once per library it links.
+    let mut scanned: BTreeMap<&str, BTreeMap<*const Image, u64>> = BTreeMap::new();
     for (index, target, matches) in hits {
         if only.is_some_and(|keep| !keep[*index]) {
             continue;
@@ -1416,7 +1487,10 @@ fn false_positive_cells(
         scanned
             .entry(samples[*index].arch.as_str())
             .or_default()
-            .insert(*target as *const Target, target.scanned_bytes(hints));
+            .insert(
+                Arc::as_ptr(&target.image),
+                target.image.scanned_bytes(hints),
+            );
     }
     let mut cells: BTreeMap<String, FalsePositiveCell> = BTreeMap::new();
     for (index, (sample, count)) in samples.iter().zip(&counts).enumerate() {

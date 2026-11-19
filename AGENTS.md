@@ -95,6 +95,10 @@ cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --j
 cargo run --release --example profile_scan                  # scan cost
 cargo run --release --example profile_gen -- IMAGE ADDR [TARGET]   # gen / hint-free phase timings
 cargo run --release --example profile_g5 -- gen IMAGE SIGS.db [COUNT]   # then: scan STRIPPED SIGS.db (G5 cost)
+cargo run --release --example profile_scale -- functions IMAGE COUNT F.json   # COUNT evenly spaced starts,
+                                    # then `db build --file IMAGE --functions F.json --output S.db`, then:
+cargo run --release --example profile_scale -- run STRIPPED S.db 3   # median wall, peak RSS, instructions,
+                                    # candidates, joint pairs, budgets that ran out (scale harness, RW6)
 cargo run --release --example cross_fp -- ../corpus/build-real 4 [HITS.jsonl]   # cross-ISA false hits
                                     # (bench FP scans are same-arch only); run for any cross-ISA matcher rule
 cargo run --release --example in_module_consts -- ../corpus/build-real   # in-range constants kept per arch
@@ -114,6 +118,9 @@ python corpus/real.py               # real libraries: clang on the host, gcc via
 python corpus/real.py --heldout     # held-out libraries into corpus/build-heldout (milestone exits only)
 python corpus/real.py --world       # real-world profiles (hardened, -O3, LTO, PIE, static, previous release)
                                     # into corpus/build-world; bench it with --corpus ../corpus/build-world
+python corpus/real.py --host --jobs 2   # all five tuning libraries in one static executable per arch
+                                    # (plain, LTO, one leave-one-out negative per library; x64 -O0 under
+                                    # scale/) into corpus/build-host; bench it with --corpus ../corpus/build-host
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld), then bless
 SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the extractor
 ```

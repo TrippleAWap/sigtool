@@ -196,6 +196,19 @@ same build 0.938, LTO 0.838, previous release 0.838, hardened 0.812, `-O3`
 0.787, PIE executable 0.700, static executable 0.613. Identified precision
 there is 0.972 hint-free and 0.976 hinted, below the 0.98 goal.
 
+Needle in a host (`python corpus/real.py --host`: all five tuning libraries
+linked by gcc 12 `-O2` into one static executable per arch with
+`--gc-sections`, 1.1-1.9 MB of code), signing the plain `-O2` shared object,
+hint-free top-1 on the same arch: 0.642 into the host (x64 0.708, arm64
+0.767, arm32 0.551, Thumb 0.540; 692 attempts per arch) and 0.487 into an
+LTO host, against 0.905 for the same build. On hosts linking every library
+but the signature's own, signatures from the shared objects get 0.18 (x64)
+to 0.94 (Thumb) accepted hits per signature per MB of code, and identified
+answers in unrelated images come to 0.0025 per signature per MB (goal
+0.001). A hint-free scan of 1000 signatures over the x64 `-O0` host
+(2.4 MB of code) takes 10.9 s on 2 threads at 167 MB peak memory, and no
+budget runs out at these sizes (`examples/profile_scale.rs`).
+
 Hinted scans may use the target's symbols. Hint-free scans of stripped
 targets compare every unwind entry, while hinted scans start from anchor
 hits; that is probably why hint-free is ahead on same-build searches.
