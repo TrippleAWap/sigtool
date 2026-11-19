@@ -486,6 +486,20 @@ generation and never decodes with its own tables.
 * **Tier 2 — comparison.** Accepted only when every gate passes:
   `score >= thresholds.match`, `matched_required >= min_distinct`, and, for a
   low-information signature, shape corroboration.
+* **Targets that name no function.** An executable (PIE or static) or an
+  image built with hidden visibility exports none of its own functions, so a
+  call to one has no name there (§2.1). When the target's modules name no
+  defined function at all (no export, no function symbol the scan may use),
+  every required `callee` without `!` is optional for that scan: it still
+  earns its weight when present, but no longer counts in the required weight
+  or `min_distinct`. It stays an identifying key for the anchoring floor, so a
+  match holding none of the signature's other identifying keys still needs
+  `MIN_UNANCHORED_SIMILARITY`. A signature with no required feature left
+  scores against all its weights, these callees included, so one identified
+  by callee names alone stays out of reach there. A target
+  that names some functions but not
+  this one keeps the requirement: there, the missing name is evidence the
+  function is absent.
 * **Shape corroboration.** A signature is low-information when none of its
   required features is a `str`, a `callee` without `!`, or a `const` whose magnitude
   (either sign, as a 32-bit word per §3) is at least `0x100`. Constants such as loop steps, field offsets, and

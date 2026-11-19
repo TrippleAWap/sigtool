@@ -713,6 +713,9 @@ pub struct ScanContext {
     pub features: FeatureCache,
     /// Per-image feature frequencies, `[hint-free, hinted]`, built on first use.
     frequencies: [OnceLock<Option<Frequencies>>; 2],
+    /// Every function name the image can give a callee, built on first use
+    /// ([`unnamed_callees_optional`]).
+    callee_names: OnceLock<HashSet<String>>,
 }
 
 /// How many of an image's functions carry each feature key.
@@ -1141,8 +1144,75 @@ impl ScanContext {
             code: code.finish(),
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
+            callee_names: OnceLock::new(),
         }
     }
+}
+
+/// `signature` with the required callees a target that names no function
+/// cannot hold made optional, or `None` when nothing changes.
+///
+/// A callee key without `!` names a function of the signed image itself,
+/// resolved through that image's dynamic exports. A shared object exports
+/// its functions, but the same code linked into an executable (PIE or
+/// static) or built with hidden visibility exports none of them: the call
+/// is there, its name is not. Demanding the key then rejects the true
+/// function on evidence the target can never show. On the `--world` tier,
+/// same arch hint-free, every acceptance failure of a shared-object
+/// signature in PIE and static targets that lacked a required feature
+/// lacked such a callee (11 of 40 PIE and 13 of 40 static pairs,
+/// `examples/diagnose_cross`). The key still counts when present.
+fn unnamed_callees_optional<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    context: &ScanContext,
+) -> Option<Signature> {
+    let unnamed = |feature: &crate::sigfile::SignatureFeature| {
+        feature.required
+            && feature.kind == FeatureKind::Callee
+            && !low_information_callee(&feature.value)
+    };
+    if !signature.features.iter().any(unnamed) {
+        return None;
+    }
+    // Only a target that names no function of its own: one that names some
+    // (a shared object) and lacks this one is evidence the function is not
+    // there. Waiving in every target that lacked the name doubled the real
+    // corpus's any-verdict false positives (arm32 0.117 -> 0.217), because
+    // unrelated libraries lack it too.
+    let names = context.callee_names.get_or_init(|| {
+        source
+            .modules()
+            .iter()
+            .flat_map(|module| {
+                module
+                    .exports
+                    .iter()
+                    .map(|(name, _)| name)
+                    .chain(module.functions.values())
+            })
+            .filter_map(|name| crate::features::canonical_callee(name))
+            .map(str::to_string)
+            .collect()
+    });
+    if !names.is_empty() {
+        return None;
+    }
+    // Optional, not dropped: measured on the `--world` tier against the
+    // gcc-O2 shared object, hint-free. Optional gave PIE / static same-arch
+    // top-1 0.700 / 0.613 (from 0.613 / 0.525) with the hint-free
+    // any-verdict FP rate 0.105 -> 0.132. Dropping the keys gave 0.713 /
+    // 0.625 but 0.167, past the tolerance: a signature whose only
+    // identifying keys were these names is left with shape alone, and
+    // lookalikes in unrelated executables match it. Dropping them only when
+    // other identifying keys remain gave 0.625 / 0.537 at 0.134.
+    let mut adapted = signature.clone();
+    for feature in &mut adapted.features {
+        if unnamed(feature) {
+            feature.required = false;
+        }
+    }
+    Some(adapted)
 }
 
 /// [`scan`] with the image's shared indexes: string anchors seed candidates
@@ -1154,7 +1224,13 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
-    let mut matches = scan_in_ranked(source, signature, context, hints);
+    // The keys a target cannot name stay identifying: a match that holds
+    // none of the rest still needs `MIN_UNANCHORED_SIMILARITY`, so the
+    // lighter required set does not admit lookalikes.
+    let identifying = identifying_required(signature);
+    let adapted = unnamed_callees_optional(source, signature, context);
+    let signature = adapted.as_ref().unwrap_or(signature);
+    let mut matches = scan_in_ranked(source, signature, &identifying, context, hints);
     // Only the first match can be an answer, so only it needs a rival.
     if let Some(first) = matches.first() {
         if identified(first) {
@@ -1172,6 +1248,7 @@ pub const MAX_RIVALS: usize = 64;
 fn scan_in_ranked<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
+    identifying: &[String],
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
@@ -1235,9 +1312,8 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
         // on constants alone needs hint-free's similarity floor (see
         // `MIN_CONSTANT_ANCHORED_SIMILARITY`). Small images are exempt for
         // the same reason as in hint-free mode.
-        return hinted_floors(source, signature, matches);
+        return hinted_floors_with(source, identifying, matches);
     }
-    let identifying = identifying_required(signature);
     let frequencies = context.frequencies[usize::from(hints)]
         .get_or_init(|| Frequencies::build(source, &context.features, hints));
     let Some(frequencies) = frequencies else {
@@ -1317,10 +1393,17 @@ pub fn hinted_floors<S: ByteSource + ?Sized>(
     signature: &Signature,
     matches: Vec<Match>,
 ) -> Vec<Match> {
+    hinted_floors_with(source, &identifying_required(signature), matches)
+}
+
+fn hinted_floors_with<S: ByteSource + ?Sized>(
+    source: &S,
+    identifying: &[String],
+    matches: Vec<Match>,
+) -> Vec<Match> {
     if known_functions(source) < MIN_FREQUENCY_FUNCTIONS {
         return matches;
     }
-    let identifying = identifying_required(signature);
     matches
         .into_iter()
         .filter(enough_evidence)
