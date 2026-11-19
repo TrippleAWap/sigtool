@@ -90,6 +90,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -202,11 +203,59 @@ def is_meaningful_name(name: str | None) -> bool:
 
 
 def parse_progress(line: str) -> tuple[int, int] | None:
-    """``progress DONE/TOTAL`` lines that ``db build --functions`` prints."""
+    """``progress DONE/TOTAL`` lines that ``db build --functions`` and
+    ``scan --progress`` print."""
     match = re.fullmatch(r"progress (\d+)/(\d+)", line.strip())
     if match is None:
         return None
     return int(match.group(1)), int(match.group(2))
+
+
+def parse_phase(line: str) -> str | None:
+    """``phase NAME`` lines that ``scan --progress`` prints as a phase starts."""
+    match = re.fullmatch(r"phase ([A-Za-z0-9_-]+)", line.strip())
+    return None if match is None else match.group(1)
+
+
+class WaitStatus:
+    """What the wait box shows for one CLI run, fed the run's stderr lines.
+
+    Progress and phase lines update the status and are kept out of the
+    collected stderr, so a failure's message is the CLI's error, not a
+    thousand progress lines in front of it.
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.progress: tuple[int, int] | None = None
+        self.phase: str | None = None
+        self.collected: list[str] = []
+
+    def feed(self, line: str) -> None:
+        progress = parse_progress(line)
+        if progress is not None:
+            self.progress = progress
+            return
+        phase = parse_phase(line)
+        if phase is not None:
+            self.phase = phase
+            return
+        self.collected.append(line)
+
+    def text(self, elapsed: float) -> str:
+        parts = []
+        if self.phase:
+            parts.append(self.phase)
+        if self.progress is not None:
+            parts.append(f"{self.progress[0]} / {self.progress[1]}")
+        parts.append(f"{int(elapsed)} s")
+        return f"{self.message}\n{', '.join(parts)}"
+
+    def stderr(self) -> str:
+        return "".join(self.collected)
+
+    def error(self, returncode: int) -> str:
+        return self.stderr().strip() or f"exit code {returncode}"
 
 
 def summarize_build(report: dict) -> str:
@@ -745,7 +794,10 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
         lines.put(None)
 
     threading.Thread(target=pump, daemon=True).start()
-    collected: list[str] = []
+    status = WaitStatus(message)
+    started = time.monotonic()
+    shown = ""
+    shown_at = 0.0
     ida_kernwin.show_wait_box(message)
     try:
         while True:
@@ -756,10 +808,17 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
             if line is None:
                 break
             if line:
-                collected.append(line)
-                progress = parse_progress(line)
-                if progress is not None:
-                    ida_kernwin.replace_wait_box(f"{message}\n{progress[0]} / {progress[1]}")
+                status.feed(line)
+            now = time.monotonic()
+            # db build prints a line per function: redrawing the wait box for
+            # each would cost more than the work it reports, so redraw at
+            # most ten times a second, and only when the text changed.
+            if now - shown_at >= 0.1:
+                text = status.text(now - started)
+                if text != shown:
+                    ida_kernwin.replace_wait_box(text)
+                    shown = text
+                shown_at = now
             if ida_kernwin.user_cancelled():
                 process.kill()
                 process.wait()
@@ -767,10 +826,34 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
         returncode = process.wait()
     finally:
         ida_kernwin.hide_wait_box()
-    stderr = "".join(collected)
     if returncode not in ok_codes:
-        raise SigtoolError(stderr.strip() or f"exit code {returncode}")
-    return stderr
+        raise SigtoolError(status.error(returncode))
+    return status.stderr()
+
+
+# CLI flags newer than some installed binaries, by (path, subcommand, flag).
+_flag_support: dict[tuple[str, str, str], bool] = {}
+
+
+def _supports(subcommand: str, flag: str) -> bool:
+    """Whether the CLI's ``SUBCOMMAND --help`` lists ``flag`` (an older binary
+    rejects an unknown flag as a usage error, so newer ones are offered only
+    when present)."""
+    path = _native()
+    key = (path, subcommand, flag)
+    if key not in _flag_support:
+        try:
+            result = subprocess.run(
+                [path, *subcommand.split(), "--help"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            _flag_support[key] = re.search(rf"(?<![\w-]){re.escape(flag)}\b", result.stdout) is not None
+        except (OSError, subprocess.TimeoutExpired):
+            _flag_support[key] = False
+    return _flag_support[key]
 
 
 # Files confirmed as this session's input file, keyed by what would change if
@@ -1485,18 +1568,23 @@ class ApplyNamesHandler(_Handler):
             output = Path(temp) / "hits.json"
             # Exit 1 is "no accepted match", not a failure. Hint-free discovery
             # is the mode that resolves a module's signatures jointly.
+            arguments = [
+                "scan",
+                "--file",
+                image,
+                "--db",
+                db,
+                "--discovery",
+                "hint-free",
+                "--json",
+                str(output),
+            ]
+            # The slowest action: show which phase it is in and how many
+            # signatures are done, when the CLI can say.
+            if _supports("scan", "--progress"):
+                arguments.append("--progress")
             _run_cancellable(
-                [
-                    "scan",
-                    "--file",
-                    image,
-                    "--db",
-                    db,
-                    "--discovery",
-                    "hint-free",
-                    "--json",
-                    str(output),
-                ],
+                arguments,
                 "sigtool: scanning this IDB with the DB",
                 ok_codes=(0, 1),
             )

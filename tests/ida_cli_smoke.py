@@ -60,6 +60,7 @@ class FakeIdb:
         self.choosers: list = []
         self.registry: dict = {}
         self.clipboard = ""
+        self.wait_texts: list[str] = []
 
     def answer(self, *values) -> None:
         self.answers.extend(values)
@@ -95,7 +96,8 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin.ask_file = lambda _save, _mask, prompt: idb.next_answer(prompt)
     kernwin.ask_yn = lambda _default, prompt: idb.next_answer(prompt)
     kernwin.ask_str = lambda _default, _hist, prompt: idb.next_answer(prompt)
-    kernwin.show_wait_box = kernwin.replace_wait_box = lambda _text: None
+    kernwin.show_wait_box = lambda _text: None
+    kernwin.replace_wait_box = lambda text: idb.wait_texts.append(text)
     kernwin.hide_wait_box = lambda: None
     kernwin.user_cancelled = lambda: False
     kernwin.get_screen_ea = lambda: idb.screen_ea
@@ -542,8 +544,25 @@ def main() -> int:
         idb.__init__(apply_image, apply_idb_functions)
         idb.idb_path = str(temp / f"{apply_image.name}.i64")
         # The menu hands apply-names the DB sign-all wrote: no dialog.
+        progress_seen: list[tuple[int, int]] = []
+
+        class RecordingStatus(plugin.WaitStatus):
+            def feed(self, line: str) -> None:
+                super().feed(line)
+                if self.progress is not None:
+                    progress_seen.append(self.progress)
+
+        plugin.WaitStatus = RecordingStatus
         plugin.ApplyNamesHandler(str(db)).run()
         check(not idb.answers, "apply-names takes the menu's DB without a dialog")
+        check(
+            any(text.endswith(" s") for text in idb.wait_texts),
+            "the wait box shows the elapsed time",
+        )
+        if plugin._supports("scan", "--progress"):
+            check(bool(progress_seen), f"apply-names saw scan progress ({progress_seen[-1:]})")
+        else:
+            print("skip this CLI has no scan --progress (older than the plugin)")
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
         right = sum(1 for ea, name in renamed.items() if apply_truth.get(ea, ("",))[0] == name)
         precision = right / len(renamed) if renamed else 0.0

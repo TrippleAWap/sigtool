@@ -82,6 +82,28 @@ class NameTests(unittest.TestCase):
     def test_progress_lines(self):
         self.assertEqual(plugin.parse_progress("progress 3/40\n"), (3, 40))
         self.assertIsNone(plugin.parse_progress("skipped 0x10 f: no"))
+        self.assertIsNone(plugin.parse_progress("phase match"))
+
+    def test_phase_lines(self):
+        self.assertEqual(plugin.parse_phase("phase joint\n"), "joint")
+        self.assertIsNone(plugin.parse_phase("progress 1/2"))
+        self.assertIsNone(plugin.parse_phase("phase of the moon"))
+
+    def test_wait_status_shows_phase_progress_and_elapsed(self):
+        status = plugin.WaitStatus("sigtool: scanning")
+        self.assertEqual(status.text(0.4), "sigtool: scanning\n0 s")
+        status.feed("phase context\n")
+        status.feed("phase match\n")
+        status.feed("progress 7/40\n")
+        self.assertEqual(status.text(12.7), "sigtool: scanning\nmatch, 7 / 40, 12 s")
+
+    def test_wait_status_keeps_progress_out_of_the_error(self):
+        status = plugin.WaitStatus("sigtool: signing")
+        for line in ("progress 1/3\n", "phase match\n", "skipped 0x10 f: no\n", "error: bad\n"):
+            status.feed(line)
+        self.assertEqual(status.stderr(), "skipped 0x10 f: no\nerror: bad\n")
+        self.assertEqual(status.error(2), "skipped 0x10 f: no\nerror: bad")
+        self.assertEqual(plugin.WaitStatus("x").error(3), "exit code 3")
 
     def test_build_summary_lists_skipped(self):
         text = plugin.summarize_build(
