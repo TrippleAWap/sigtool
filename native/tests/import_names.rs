@@ -52,7 +52,7 @@ fn callees(image: &Path, rva: &str) -> Vec<String> {
         .filter(|pair| pair[0].trim_start() == "- kind: callee")
         .map(|pair| {
             let value = pair[1].trim().trim_start_matches("value: ");
-            value.trim_matches(''').to_string()
+            value.trim_matches('\'').to_string()
         })
         .collect()
 }

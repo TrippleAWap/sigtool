@@ -329,7 +329,9 @@ pub fn extract_own<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction)
         // everywhere: the same source calling `memcpy` must give the same
         // key on Linux and Windows. Measured on `corpus/real.py --pe`'s
         // mixed tier, ELF and PE signatures shared no import callee before.
-        let symbol = raw.rsplit_once('!').map_or(raw.as_str(), |(_, symbol)| symbol);
+        let symbol = raw
+            .rsplit_once('!')
+            .map_or(raw.as_str(), |(_, symbol)| symbol);
         if let Some(value) = canonical_callee(symbol) {
             let portable = is_portable_name(source, &raw);
             let value = if raw.contains('!') || is_external_import(source, &raw) {
