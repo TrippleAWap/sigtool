@@ -341,8 +341,11 @@ impl FileSource {
             let mut roots = roots.clone();
             // With no table, the exports are starts themselves.
             roots.sort_unstable();
-            let (mut found, truncated) =
-                starts::x64_call_targets_checked(&source.regions, &source.unwind, &roots);
+            let (mut found, truncated) = if arch == Arch::Arm64 {
+                starts::arm64_call_targets_checked(&source.regions, &source.unwind, &roots)
+            } else {
+                starts::x64_call_targets_checked(&source.regions, &source.unwind, &roots)
+            };
             source.start_sweep_truncated |= truncated;
             found.extend(&roots);
             synthesized = Some(found);
@@ -2243,8 +2246,9 @@ fn parse_pe_budgeted(
         relocations: None,
     };
     // Exports that point into code root the leaf-function sweep
-    // (`starts::x64_call_targets`); forwarders and data exports do not.
-    let pe_roots = (arch == Arch::X64).then(|| {
+    // (`starts::x64_call_targets`, `starts::arm64_call_targets_checked`);
+    // forwarders and data exports do not.
+    let pe_roots = matches!(arch, Arch::X64 | Arch::Arm64).then(|| {
         module
             .exports
             .iter()
