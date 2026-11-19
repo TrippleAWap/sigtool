@@ -13,7 +13,8 @@ Signatures are **feature sets, not byte patterns**: strings, normalized constant
 ```
 native/        Rust crate: sources (elf.rs: ELF/PE files, proc_win.rs: live Windows
                processes), arch decoders, normalize, recover, features, score,
-               sigfile, validate, matcher, merge, scanner, db, bench, CLI (main.rs)
+               sigfile, validate, matcher, merge, scanner, db, bench, CLI (main.rs);
+               native/fuzz/ is a separate cargo-fuzz crate (nightly only)
 ida_plugin.py  IDA front-end: UI glue over the sigtool-native CLI
 packaging/     ida-plugin.json (HCLI / Plugin Manager manifest) and package.py, which
                builds the per-platform plugin zip and CLI archive for a release
@@ -50,7 +51,7 @@ Normalization must make these cases produce the same feature records across arch
 
 ## Conventions
 
-- **Rust:** `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`. Dependencies: `iced-x86`, `yaxpeax-arm`, `capstone`, `blake2b_simd`, `serde`, `serde_json`, `serde_norway` (YAML; the maintained fork of the deprecated `serde_yaml`), `memmap2`, `crc32fast`, `clap`; Capstone builds its bundled C library, so a C toolchain is required. Windows APIs are declared with `extern "system"` FFI, not a crate.
+- **Rust:** `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`. Dependencies: `iced-x86`, `yaxpeax-arm`, `capstone`, `blake2b_simd`, `serde`, `serde_json`, `serde_norway` (YAML; the maintained fork of the deprecated `serde_yaml`), `memmap2`, `crc32fast`, `clap`; Capstone builds its bundled C library, so a C toolchain is required. Windows APIs are declared with `extern "system"` FFI, not a crate. `libfuzzer-sys` is a dependency of the separate `native/fuzz` crate only, never of the library.
 - **Python (tooling only):** `ruff format` and `ruff check` over `corpus/`, `packaging/`, `tests/vectors/`, `tests/test_ida_plugin.py`, `tests/ida_cli_smoke.py`, and `ida_plugin.py`; `python -m unittest tests/test_ida_plugin.py` tests the plugin's IDA-free parts with stubbed IDA modules. `python tests/ida_cli_smoke.py --corpus corpus/build-real` (after `cargo build --release`) runs the plugin's generate, merge, locate, sign-all, and apply-names actions end to end against the real CLI, with fake IDA modules modelling the IDB from `ground_truth.json` (sign clang-O2 x64 zlib, apply to stripped gcc-O2 by default; `--arch`, `--library`, `--sign`, `--apply` pick others). It checks the plugin-to-CLI contract, not IDA's UI or API; run the plugin in a licensed IDA before calling a plugin change done.
 - **Naming:** feature kinds are `str`, `const`, `callee`, `cfg`, `ops`. Arch identifiers: `x64`, `arm64`, `arm32`, `thumb`.
 - **Errors:** specific error types in the library; the CLI translates them to exit codes (`0` ok, `1` locate found nothing, `2` usage/input, `3` unsupported architecture or target, `4` self-test failure).
@@ -89,6 +90,11 @@ cargo run --release --example cross_fp -- ../corpus/build-real 4 [HITS.jsonl]   
 cargo run --release --example in_module_consts -- ../corpus/build-real   # in-range constants kept per arch
 SIGTOOL_THREADS=1 cargo run --release -- bench ...          # one thread (determinism checks)
 SIGTOOL_REQUIRE_TOOLS=1 cargo test --release   # fail, not skip, tests whose LLVM tools are missing (CI)
+cargo test --release --test hostile_inputs      # deterministic hostile images, signatures, DBs, raw code
+SIGTOOL_FUZZ_SEEDS=fuzz/corpus cargo test --release --test hostile_inputs write_fuzz_seeds   # seed corpora
+cargo +nightly fuzz run image -- -max_total_time=60 -timeout=10   # targets: image, signature, db, code
+                                    # (cargo install cargo-fuzz; crashes land in fuzz/artifacts/TARGET/)
+cargo +nightly fuzz run image fuzz/artifacts/image/crash-...      # replay one crash
 
 python packaging/package.py --platform windows-x86_64 --binary native/target/release/sigtool-native.exe \
     --out dist                      # plugin zip + CLI archive for one platform (release.yml runs it per target)
@@ -107,7 +113,7 @@ SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the e
 - **Toy corpus gate** (`native/tests/corpus.rs`, `bench --baseline tests/baseline/native-bench.json`): recall per discovery mode and false-positive rates against the baseline with a 0.05 tolerance. The baseline is compiler-specific (currently LLVM 22.1.5, which CI installs from the pinned release archive), because even patch releases move small cells by more than the tolerance. Update the baseline only for an intentional improvement or a compiler change, with `--save-baseline`, and review the diff.
 - **Real corpus** (`corpus/build-real`, `tests/baseline/native-real-bench.json`): zlib, lz4, cJSON, Lua, and SQLite built with clang and gcc at `-O0/-O2/-Os` for all four architectures. This is the corpus the cross-arch and hint-free numbers are read from; run it before and after any matcher, feature, or normalization change and report the deltas. It is not in the per-push CI (it needs the gcc cross image); `.github/workflows/real-bench.yml` builds it and runs the `--joint` bench against the baseline weekly.
 - **Held-out corpus** (`corpus/build-heldout`, `real.py --heldout`): zstd, libyaml, and mbedtls, same matrix. Never tune on it or read it while choosing a rule; run it only at milestone exits and record the numbers in `PLAN.md` §8.
-- **Property and robustness:** normalization is idempotent; the same code at two bases yields identical features (`relocatable_vectors_give_identical_features_at_two_bases`); random bytes never crash recovery or start synthesis.
+- **Property and robustness:** normalization is idempotent; the same code at two bases yields identical features (`relocatable_vectors_give_identical_features_at_two_bases`); random bytes never crash recovery or start synthesis. `native/tests/hostile_inputs.rs` (stable, fixed seeds, no new dependencies) builds minimal ELF64 x86-64/AArch64, ELF32 ARM, and PE32+ images, a signature, and a DB, sets every recorded header field to edge values, corrupts and truncates them, and feeds golden-vector code to recovery; nothing may panic. The cargo-fuzz targets in `native/fuzz` (`image`, `signature`, `db`, `code`) call the same drivers (`native/tests/hostile/mod.rs`), and the `fuzz` CI job runs each for 60 s on every push.
 - **Live tests** (`native/tests/live_proc_win.rs`, Windows): a spawned helper process with a known function; checks read-only access, WOW64 rejection, and that `gen`/`locate`/`scan --pid` find it.
 - New normalization rules need a vector or corpus case from real compiler output, not just a hand-written snippet.
 

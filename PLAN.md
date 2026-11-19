@@ -88,7 +88,10 @@ Set as hard gates after M8 measures them; until then they are targets.
 
 - Byte-identical signatures for identical input on Linux and Windows.
 - No crash, hang, or unbounded read on random, truncated, or hostile bytes
-  (fuzzed in CI).
+  (fuzzed in CI: the `fuzz` job runs the cargo-fuzz targets in `native/fuzz`
+  (`image`, `signature`, `db`, `code`) for 60 s each on every push, and
+  `native/tests/hostile_inputs.rs` runs fixed-seed header-field, corruption,
+  and truncation cases through the same drivers in `cargo test`).
 - Every user-visible behaviour covered by a test built from real compiler
   output.
 
@@ -325,7 +328,7 @@ documented.
 | Inlining and LTO erase function boundaries | Inline-invariant evidence (M10); accept that fully inlined copies are not findable |
 | Call-graph gaps on one arch skew joint resolution | Coverage first (M9); per-arch cells in the joint bench |
 | Slow benches discourage measuring | Cost metrics (M8), caching, a fast slice for iteration |
-| Hostile inputs | Bounds everywhere (rule 11), fuzzing in CI |
+| Hostile inputs | Bounds everywhere (rule 11), cargo-fuzz targets run in CI (`native/fuzz`), fixed-seed hostile-input test (`native/tests/hostile_inputs.rs`) |
 | Spec churn breaks users' DBs | Versioned documents, refuse old versions, freeze at v1.0 |
 
 ## 8. Status
