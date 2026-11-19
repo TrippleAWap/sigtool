@@ -42,7 +42,9 @@ impl Region {
     }
 
     pub fn end(&self) -> u64 {
-        self.start + self.data.len() as u64
+        // Saturating: a hostile header can place a region at the top of the
+        // address space, and the end is only ever compared against.
+        self.start.saturating_add(self.data.len() as u64)
     }
 
     pub fn contains(&self, addr: u64, length: usize) -> bool {
