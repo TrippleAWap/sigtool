@@ -124,12 +124,47 @@ fn rva_addressing_matches_the_image_base() {
     ]);
     let document: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&matches).unwrap()).unwrap();
+    // The toy image has symbols, so `auto` above ran hinted, which builds no
+    // index and always writes `[]`. Hint-free builds the scan context and
+    // reads the image's start lists, which is the path coverage checks.
+    // Only the report is checked here, so "found nothing" (exit 1) is fine.
+    let hint_free = dir.join("matches-hint-free.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_sigtool-native"))
+        .args([
+            "locate",
+            "--signature",
+            signature.to_str().unwrap(),
+            "--file",
+            arm_path,
+            "--discovery",
+            "hint-free",
+            "--json",
+            hint_free.to_str().unwrap(),
+            "--yes",
+        ])
+        .output()
+        .expect("run sigtool-native");
+    assert!(
+        matches!(output.status.code(), Some(0 | 1)),
+        "hint-free locate: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let hint_free_document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hint_free).unwrap()).unwrap();
+    std::fs::remove_file(&hint_free).ok();
     std::fs::remove_file(&signature).ok();
     std::fs::remove_file(&matches).ok();
     std::fs::remove_dir(&dir).ok();
     let best = &document["matches"][0];
     assert_eq!(best["rva"], serde_json::Value::String(arm_rva));
     assert_eq!(best["module"], "loops");
+    // A toy image exhausts no scan budget, in either discovery mode.
+    assert_eq!(document["truncated"], serde_json::json!([]), "{document}");
+    assert_eq!(
+        hint_free_document["truncated"],
+        serde_json::json!([]),
+        "{hint_free_document}"
+    );
 }
 
 /// A shared object's image base is 0, below its first section. The image base
@@ -741,6 +776,14 @@ fn db_build_signs_a_function_list_and_scan_reports_rvas() {
     assert!(same_db, "db build --functions is not deterministic");
     assert_eq!(report["signed"], 4, "{report}");
     assert_eq!(report["failed"], 1, "{report}");
+    // Small images exhaust no scan budget, and every report says so.
+    assert_eq!(report["truncated"], serde_json::json!([]), "{report}");
+    assert_eq!(
+        gen_report["truncated"],
+        serde_json::json!([]),
+        "{gen_report}"
+    );
+    assert_eq!(hits["truncated"], serde_json::json!([]), "{hits}");
     let rows = report["functions"].as_array().expect("functions");
     assert_eq!(rows[4]["status"], "error", "{report}");
     assert_eq!(

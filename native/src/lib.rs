@@ -13,6 +13,7 @@ mod arm32;
 mod arm64;
 pub mod arm_mode;
 pub mod bench;
+pub mod coverage;
 pub mod db;
 pub mod elf;
 pub mod errors;

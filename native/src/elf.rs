@@ -187,6 +187,8 @@ pub struct FileSource {
     /// Unwind-table entries merged with synthesized starts, sorted.
     unwind: Vec<(u64, u64)>,
     synthesized: Vec<u64>,
+    /// Start synthesis ran out of its sweep budget (`starts`).
+    start_sweep_truncated: bool,
 }
 
 impl FileSource {
@@ -250,13 +252,16 @@ impl FileSource {
             mode_map,
             unwind,
             synthesized: Vec::new(),
+            start_sweep_truncated: false,
         };
         let mut synthesized: Option<Vec<u64>> = None;
         if let Some(roots) = &parsed.pe_roots {
             let mut roots = roots.clone();
             // With no table, the exports are starts themselves.
             roots.sort_unstable();
-            let mut found = starts::x64_call_targets(&source.regions, &source.unwind, &roots);
+            let (mut found, truncated) =
+                starts::x64_call_targets_checked(&source.regions, &source.unwind, &roots);
+            source.start_sweep_truncated |= truncated;
             found.extend(&roots);
             synthesized = Some(found);
         }
@@ -264,6 +269,7 @@ impl FileSource {
             // Decoding needs the finished mode map, so this runs last.
             let mut found =
                 starts::evidence(arch, &source.regions, &pointers, &|a| source.is_thumb(a));
+            source.start_sweep_truncated |= found.sweep_truncated;
             if !parsed.pointer_slots.is_empty() {
                 // Starts known without relocated pointers: every other rule,
                 // the unwind table, and exported function values.
@@ -339,6 +345,10 @@ impl ByteSource for FileSource {
 
     fn unwind_entries(&self) -> &[(u64, u64)] {
         &self.unwind
+    }
+
+    fn start_sweep_truncated(&self) -> bool {
+        self.start_sweep_truncated
     }
 
     fn hint_function(&self, addr: u64) -> Option<(u64, u64)> {

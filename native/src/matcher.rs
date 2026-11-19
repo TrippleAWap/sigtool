@@ -1869,6 +1869,11 @@ impl ReferenceIndex {
         }
     }
 
+    /// The instruction budget this index was built with.
+    pub fn max_instructions(&self) -> usize {
+        self.max_instructions
+    }
+
     /// Instruction addresses that reference `addr`, sorted.
     pub fn referencers(&self, addr: u64) -> &[u64] {
         self.merged.get(&addr).map(Vec::as_slice).unwrap_or(&[])
@@ -2629,6 +2634,10 @@ pub struct CodeIndex {
     /// Direct call target to the call sites that reach it.
     callers: HashMap<u64, Vec<u64>>,
     const_refs: HashMap<u64, Vec<u64>>,
+    /// Instructions decoded by the pass.
+    decoded: usize,
+    /// The pass stopped at a budget with code left to decode.
+    truncated: bool,
 }
 
 /// A [`CodeIndex`] being swept. Its budgets are global across regions:
@@ -2697,6 +2706,8 @@ impl CodeIndexBuild {
 
     fn finish(self) -> CodeIndex {
         let mut index = self.index;
+        index.decoded = self.decoded;
+        index.truncated = self.done;
         for references in index.const_refs.values_mut() {
             references.sort_unstable();
             references.dedup();
@@ -2722,6 +2733,17 @@ impl CodeIndex {
             build.finish_region(region);
         }
         build.finish()
+    }
+
+    /// Instructions the discovery pass decoded.
+    pub fn decoded(&self) -> usize {
+        self.decoded
+    }
+
+    /// Whether the pass stopped at [`MAX_DISCOVERY_INSTRUCTIONS`] or
+    /// [`MAX_INDEX_RESYNCS`] before the end of the executable regions.
+    pub fn truncated(&self) -> bool {
+        self.truncated
     }
 
     /// Instructions that materialize `value`, sorted and deduplicated.

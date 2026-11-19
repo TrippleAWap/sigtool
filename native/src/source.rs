@@ -182,6 +182,13 @@ pub trait ByteSource: Sync {
         &[]
     }
 
+    /// Whether start synthesis (`starts`) stopped at its sweep budget, so
+    /// [`ByteSource::unwind_entries`] may miss functions it would have found.
+    /// Reported to the user only; no matcher rule reads it.
+    fn start_sweep_truncated(&self) -> bool {
+        false
+    }
+
     /// The unwind entry whose function contains `addr`: the greatest start at
     /// or before it, when the entry's end (if known) is past `addr`.
     fn unwind_function(&self, addr: u64) -> Option<(u64, u64)> {
