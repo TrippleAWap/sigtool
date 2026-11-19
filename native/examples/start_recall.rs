@@ -115,7 +115,11 @@ fn main() {
                 .map(|entry| entry.file_name().to_string_lossy().to_string())
                 .collect();
             // Build directories also hold PE linker maps and function lists.
-            libraries.retain(|name| [".so", ".elf", ".dll"].iter().any(|ext| name.ends_with(ext)));
+            libraries.retain(|name| {
+                [".so", ".elf", ".dll"]
+                    .iter()
+                    .any(|ext| name.ends_with(ext))
+            });
             libraries.sort();
             let (mut truth_n, mut hit_n, mut found_n, mut false_n) = (0, 0, 0, 0);
             for library in &libraries {
