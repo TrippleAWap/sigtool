@@ -644,6 +644,22 @@ before neighbour keys). `joint:N` with `N ≥ 1` counts as identifying, with
 the 0.3 answer floor of direct neighbour keys; `joint:0` (placed by
 similarity and the one-to-one constraint alone) does not.
 
+**Sources with several modules.** A live process maps many images into one
+address space; it is matched one module at a time, hint-free by default
+(it names no local function). Each module is an image of its own: its
+regions, unwind entries, exports, imports, and relocations, no symbol
+starts, and reads confined to its span. Frequencies, the acceptance gates,
+rivals, and joint resolution count that module only, exactly as for a
+stripped file of it. A signature's per-module lists are then merged: modules
+ordered by the rank of their best match (ties in address order), each
+module's list kept in its own order. When another module's best match is
+also identified-looking, its similarity counts as a rival of the first
+match, so the same function loaded twice (a library linked into the
+executable and also loaded as a DLL) is a `candidate` unless one copy is
+clearly closer. A file is a single module and is unaffected; signature
+documents and acceptance per image are unchanged, so this is no version
+change.
+
 **Self-test.** Generation runs the matcher on the same source and requires an
 accepted match at the recovered function start; a signature that cannot be
 re-found is never emitted (AGENTS.md rule 7).

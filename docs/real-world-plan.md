@@ -12,10 +12,15 @@ exposed; RW7's packed relocations and section-less ELF; RW8's batch scan,
 image identity and `db info`/`list`. On `rw/trust-tools`: RW3's process-path
 bench cell (`bench --process-like`, measured, ungated: top-1 0.010 against
 0.353 file hinted, because the scanner path has no candidate list), RW7 raw
-blobs (`--raw`), RW8 `locate --explain` / `--expect`. Open: RW3 routing `scan`
-and `locate` through `scan_in` per module (now measured as the fix the process
-path needs); RW4 distro packages, C++, joint drift; RW5; RW6; RW7 the IDA
-plugin's `--raw` fallback; RW8 generation warnings.
+blobs (`--raw`), RW8 `locate --explain` / `--expect`. On `rw/process-path`:
+RW3 `scan --pid` / `locate --pid` routed through `scan_in` per module
+(`ModuleView`, `scanner::scan_modules`, hint-free by default, `--module`),
+the bench cell measuring that same code and now gated: top-1 0.010 -> 0.244
+over the corpus, and on x64 and arm64 targets exactly the stripped file's
+hint-free rows; ARM32/Thumb targets stay behind for lack of synthesized
+starts; `ida_cli_smoke` passes. Open: RW3 the process start list on ARM,
+process-scan cost measured on Windows, a licensed-IDA run; RW4 distro packages, C++, joint drift; RW5; RW6; RW7 the IDA plugin's `--raw`
+fallback; RW8 generation warnings.
 
 RW6 measurement, on `rw/scale` (numbers in `PLAN.md` §8):
 
