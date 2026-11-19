@@ -720,6 +720,7 @@ pub fn scan_candidates<S: ByteSource + ?Sized>(
         index,
         None,
         None,
+        None,
         budget,
         None,
     )
@@ -751,6 +752,10 @@ pub struct Frequencies {
     pub postings: HashMap<String, Vec<u32>>,
     /// Start address of each ordinal.
     pub starts: Vec<u64>,
+    /// The ordinal recovered from each start the table was built from (an
+    /// unwind entry hint-free), which [`FeatureCache`] maps to the same
+    /// candidate the scan loop compares.
+    ordinals: HashMap<u64, u32>,
 }
 
 /// Images with fewer known functions give no usable frequency estimate.
@@ -787,9 +792,14 @@ impl Frequencies {
         let mut postings: HashMap<String, Vec<u32>> = HashMap::new();
         let mut functions = 0usize;
         let mut ordinal_starts: Vec<u64> = Vec::new();
-        for candidate in recovered.into_iter().flatten() {
+        let mut ordinals: HashMap<u64, u32> = HashMap::new();
+        for (index, candidate) in recovered.into_iter().enumerate() {
+            let Some(candidate) = candidate else {
+                continue;
+            };
             let ordinal = functions as u32;
             functions += 1;
+            ordinals.entry(starts[index]).or_insert(ordinal);
             ordinal_starts.push(candidate.start);
             for key in &candidate.keys {
                 *document_frequency.entry(key.clone()).or_insert(0) += 1;
@@ -801,7 +811,43 @@ impl Frequencies {
             document_frequency,
             postings,
             starts: ordinal_starts,
+            ordinals,
         })
+    }
+
+    /// Per ordinal, the unrounded score [`ScanKeys::accept`] computes for
+    /// that function, from the postings instead of a set lookup per
+    /// signature key and function, or `None` when `accept` takes its
+    /// zero-weight path. The sums run in the same feature order with the
+    /// same operations, so each value is bit-identical to `accept`'s `raw`.
+    fn raw_scores(&self, signature: &Signature, keys: &ScanKeys) -> Option<Vec<f64>> {
+        if keys.required_weight <= 0.0 {
+            return None;
+        }
+        let mut own = vec![0.0f64; self.functions];
+        let mut inherited = vec![0.0f64; self.functions];
+        // The feature that last credited an ordinal its own key: `accept`
+        // credits the inherited key only when the function lacks the key.
+        let mut held = vec![usize::MAX; self.functions];
+        for (index, (feature, (key, inherited_key))) in
+            signature.features.iter().zip(&keys.keys).enumerate()
+        {
+            for ordinal in self.postings.get(key).into_iter().flatten() {
+                own[*ordinal as usize] += feature.weight;
+                held[*ordinal as usize] = index;
+            }
+            for ordinal in self.postings.get(inherited_key).into_iter().flatten() {
+                if held[*ordinal as usize] != index {
+                    inherited[*ordinal as usize] += feature.weight * INHERITED_CREDIT;
+                }
+            }
+        }
+        Some(
+            own.iter()
+                .zip(&inherited)
+                .map(|(own, inherited)| ((own + inherited) / keys.required_weight).min(1.0))
+                .collect(),
+        )
     }
 
     /// How many of the image's functions carry every one of the candidate's
@@ -1360,6 +1406,13 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
             hints,
         )
     };
+    let frequencies = if hints {
+        None
+    } else {
+        context.frequencies[usize::from(hints)]
+            .get()
+            .and_then(Option::as_ref)
+    };
     let waiver: Option<&dyn Fn(u64, f64) -> bool> = (frequency_gated(source, context, hints)
         && !signature_neighbours.is_empty())
     .then_some(&shares_neighbour);
@@ -1373,6 +1426,7 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
         Some(&context.references),
         Some(&context.code),
         Some(&context.features),
+        frequencies,
         None,
         waiver,
     );
@@ -2355,18 +2409,36 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
     index: Option<&ReferenceIndex>,
     code: Option<&CodeIndex>,
     cache: Option<&FeatureCache>,
+    frequencies: Option<&Frequencies>,
     budget: Option<&mut RecoveryBudget>,
     shape_waiver: Option<&dyn Fn(u64, f64) -> bool>,
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
     let keys = ScanKeys::new(signature, cross_isa(signature, source.arch()));
+    // A hint-free scan compares the signature with every unwind entry, and
+    // nearly all of them hold too little of its key weight to pass
+    // `accept`'s first test. The frequency table was built from the same
+    // cached candidates, so its postings give each entry's score up front
+    // and those entries skip the per-key set lookups. Only that exact test
+    // is applied, so the matches are unchanged; a start the table does not
+    // know, or other recovery limits, take the full path.
+    let prefilter = frequencies
+        .filter(|_| !hints && limits.is_none() && cache.is_some())
+        .and_then(|table| Some((table, table.raw_scores(signature, &keys)?)));
     for start in candidate_starts(source, signature, hits, max_candidates, hints, index, code) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
                 break;
             }
             remaining.remaining -= 1;
+        }
+        if let Some((table, raw)) = &prefilter {
+            if let Some(ordinal) = table.ordinals.get(&start) {
+                if raw[*ordinal as usize] < signature.match_threshold - 1e-6 {
+                    continue;
+                }
+            }
         }
         let candidate = match cache {
             Some(cache) if limits.is_none() => cache.get_or_recover(source, start, hints),
@@ -2705,6 +2777,7 @@ pub fn self_test_in<S: ByteSource + ?Sized>(
         references,
         code,
         Some(&context.features),
+        None,
         None,
         None,
     );
