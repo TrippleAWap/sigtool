@@ -162,7 +162,7 @@ impl Builder {
 }
 
 struct Image {
-    name: &'static str,
+    name: String,
     bytes: Vec<u8>,
     fields: Vec<Field>,
     /// `fn_a`'s address in the parsed image, for the builder sanity check.
@@ -252,8 +252,10 @@ struct ElfSection {
 /// A linked shared object (`ET_DYN`) shaped like lld output after
 /// `strip --strip-all`: `.text`, `.rodata`, an unwind table, `.data` with one
 /// relocated function pointer, `.dynsym`/`.dynstr`, the relative relocation,
-/// `.bss`, and `.shstrtab`.
-fn elf_image(arch: Arch) -> Image {
+/// `.bss`, and `.shstrtab`. With `relr`, `.data` holds a second pointer and
+/// both are relocated by `.relr.dyn` (`-z pack-relative-relocs`): one place
+/// entry and one bitmap entry.
+fn elf_image(arch: Arch, relr: bool) -> Image {
     let is64 = arch != Arch::Arm32;
     let (ehsize, phentsize, shentsize) = if is64 { (64, 56, 64) } else { (52, 32, 40) };
     let pointer = if is64 { 8 } else { 4 };
@@ -373,18 +375,22 @@ fn elf_image(arch: Arch) -> Image {
         entsize: 0,
     });
 
-    // `.data`: one function pointer, written by a relative relocation.
+    // `.data`: one function pointer (two with `relr`), written by a relative
+    // relocation.
     b.align(16);
     let data_offset = b.bytes.len();
     let slot = ELF_VBASE + data_offset as u64;
     b.set("data.pointer", data_offset, pointer, fn_a);
+    if relr {
+        b.set("data.pointer2", data_offset + pointer, pointer, fn_b);
+    }
     sections.push(ElfSection {
         name: ".data",
         kind: 1,
         flags: SHF_ALLOC | SHF_WRITE,
         addr: slot,
         offset: data_offset as u64,
-        size: pointer as u64,
+        size: (pointer * if relr { 2 } else { 1 }) as u64,
         link: 0,
         info: 0,
         entsize: 0,
@@ -436,10 +442,15 @@ fn elf_image(arch: Arch) -> Image {
         entsize: 0,
     });
 
-    // `.rela.dyn` (RELA, 64-bit) or `.rel.dyn` (REL, ARM32): `*RELATIVE`.
+    // `.rela.dyn` (RELA, 64-bit) or `.rel.dyn` (REL, ARM32): `*RELATIVE`;
+    // with `relr`, `.relr.dyn`: the slot, then a bitmap naming the next word.
     b.align(16);
     let rel_offset = b.bytes.len();
-    let rel_size = if is64 {
+    let rel_size = if relr {
+        b.set("relr.place", rel_offset, pointer, slot);
+        b.set("relr.bitmap", rel_offset + pointer, pointer, 0b11);
+        2 * pointer as u64
+    } else if is64 {
         let relative = if arch == Arch::X64 { 8 } else { 1027 };
         b.set("rela.offset", rel_offset, 8, slot);
         b.set("rela.info", rel_offset + 8, 8, relative);
@@ -451,15 +462,23 @@ fn elf_image(arch: Arch) -> Image {
         8
     };
     sections.push(ElfSection {
-        name: if is64 { ".rela.dyn" } else { ".rel.dyn" },
-        kind: if is64 { 4 } else { 9 },
+        name: match (relr, is64) {
+            (true, _) => ".relr.dyn",
+            (false, true) => ".rela.dyn",
+            (false, false) => ".rel.dyn",
+        },
+        kind: match (relr, is64) {
+            (true, _) => 19,
+            (false, true) => 4,
+            (false, false) => 9,
+        },
         flags: SHF_ALLOC,
         addr: ELF_VBASE + rel_offset as u64,
         offset: rel_offset as u64,
         size: rel_size,
-        link: 5,
+        link: if relr { 0 } else { 5 },
         info: 0,
-        entsize: rel_size,
+        entsize: if relr { pointer as u64 } else { rel_size },
     });
 
     // `.bss`: no file bytes.
@@ -601,11 +620,16 @@ fn elf_image(arch: Arch) -> Image {
         file_len,
         "headers fit before the data"
     );
+    let name = match arch {
+        Arch::X64 => "elf64-x64",
+        Arch::Arm64 => "elf64-arm64",
+        _ => "elf32-arm",
+    };
     Image {
-        name: match arch {
-            Arch::X64 => "elf64-x64",
-            Arch::Arm64 => "elf64-arm64",
-            _ => "elf32-arm",
+        name: if relr {
+            format!("{name}-relr")
+        } else {
+            name.to_string()
         },
         bytes: b.bytes,
         fields: b.fields,
@@ -772,7 +796,8 @@ fn pe_image(arch: Arch) -> Image {
             "pe32p-x64"
         } else {
             "pe32p-arm64"
-        },
+        }
+        .to_string(),
         bytes: b.bytes,
         fields: b.fields,
         fn_a: PE_IMAGE_BASE + PE_TEXT_RVA,
@@ -780,13 +805,14 @@ fn pe_image(arch: Arch) -> Image {
 }
 
 fn images() -> Vec<Image> {
-    vec![
-        elf_image(Arch::X64),
-        elf_image(Arch::Arm64),
-        elf_image(Arch::Arm32),
-        pe_image(Arch::X64),
-        pe_image(Arch::Arm64),
-    ]
+    let mut images = Vec::new();
+    for arch in [Arch::X64, Arch::Arm64, Arch::Arm32] {
+        images.push(elf_image(arch, false));
+        images.push(elf_image(arch, true));
+    }
+    images.push(pe_image(Arch::X64));
+    images.push(pe_image(Arch::Arm64));
+    images
 }
 
 // -- mutation ------------------------------------------------------------------
@@ -840,7 +866,7 @@ fn truncations(length: usize, steps: usize) -> Vec<usize> {
 #[test]
 fn unmutated_inputs_parse_and_recover() {
     for image in images() {
-        let name = image.name;
+        let name = image.name.as_str();
         let source = FileSource::from_bytes(&image.bytes, "hostile.bin")
             .unwrap_or_else(|error| panic!("{name}: builder image rejected: {error:?}"));
         assert!(

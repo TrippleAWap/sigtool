@@ -29,6 +29,7 @@ const ELF_SHT_RELA: u32 = 4;
 const ELF_SHT_NOBITS: u32 = 8;
 const ELF_SHT_REL: u32 = 9;
 const ELF_SHT_DYNSYM: u32 = 11;
+const ELF_SHT_RELR: u32 = 19;
 const ELF_SHF_WRITE: u64 = 0x1;
 const ELF_SHF_ALLOC: u64 = 0x2;
 const ELF_SHF_EXECINSTR: u64 = 0x4;
@@ -781,7 +782,34 @@ fn parse_elf_budgeted(
     // As for symbols: relocation tables are disjoint in a real file (2x
     // headroom over the smallest entry).
     let mut relocation_entries_left = data.len() / 4;
+    let pointer_size = if is64 { 8 } else { 4 };
+    // A packed relative relocation's addend is the word at its place, so
+    // every place is file-backed: no more of them than the file has words.
+    let mut packed_slots_left = data.len() / pointer_size;
     for section in &sections {
+        if section.kind == ELF_SHT_RELR && e_type != ELF_ET_REL {
+            // `-z pack-relative-relocs` moves the relative relocations out of
+            // RELA/REL into this table. They must land in the same sets as
+            // their unpacked twins, or packing would change which words are
+            // addresses (SPEC.md §2.2) and which pointers seed start synthesis.
+            let raw = section_bytes(data, section, &mut budget)?;
+            for slot in relr_slots(&raw, pointer_size, &mut packed_slots_left)? {
+                if e_type == ELF_ET_DYN {
+                    relocations.push(slot);
+                }
+                if arch == Arch::Arm32 && !is64 {
+                    relative_slots.push(slot);
+                } else if is64 && start_pointers.len() < 2 * crate::unwind::MAX_UNWIND_ENTRIES {
+                    // The unpacked twin's RELA addend, which RELR keeps in place.
+                    if let Ok(word) = read_regions(&regions, slot, 8) {
+                        start_pointers.push(u64::from_le_bytes(
+                            word[..8].try_into().expect("8-byte read"),
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
         if section.kind != ELF_SHT_RELA && section.kind != ELF_SHT_REL {
             continue;
         }
@@ -1007,6 +1035,54 @@ fn parse_elf_budgeted(
     })
 }
 
+/// The places an `SHT_RELR` table relocates (gABI packed relative
+/// relocations): an even word is a place, and each odd word after it is a
+/// bitmap of the `8 * word - 1` words that follow the last place covered.
+///
+/// `left` caps the places over all tables, since a bitmap expands one word
+/// into up to 63; running out is a malformed image, not a short read.
+fn relr_slots(raw: &[u8], word: usize, left: &mut usize) -> Result<Vec<u64>, SourceFormatError> {
+    let bits = (word * 8 - 1) as u64;
+    let mut slots = Vec::new();
+    let mut push = |slot: u64, slots: &mut Vec<u64>| {
+        if *left == 0 {
+            return Err(SourceFormatError(
+                "ELF RELR tables relocate more words than the file holds".into(),
+            ));
+        }
+        *left -= 1;
+        slots.push(slot);
+        Ok(())
+    };
+    // Where the next bitmap starts; `None` before the first place, so a
+    // leading bitmap (malformed) relocates nothing.
+    let mut next: Option<u64> = None;
+    for entry in raw.chunks_exact(word) {
+        let entry = if word == 8 {
+            u64::from_le_bytes(entry.try_into().expect("8-byte chunk"))
+        } else {
+            u64::from(u32::from_le_bytes(entry.try_into().expect("4-byte chunk")))
+        };
+        if entry & 1 == 0 {
+            push(entry, &mut slots)?;
+            next = entry.checked_add(word as u64);
+            continue;
+        }
+        let Some(base) = next else {
+            continue;
+        };
+        for bit in 0..bits {
+            if (entry >> (bit + 1)) & 1 != 0 {
+                if let Some(slot) = base.checked_add(bit * word as u64) {
+                    push(slot, &mut slots)?;
+                }
+            }
+        }
+        next = base.checked_add(bits * word as u64);
+    }
+    Ok(slots)
+}
+
 /// The dynamic symbol, string, and relocation tables the `PT_DYNAMIC` segment
 /// points at, as unallocated sections appended after `first_index` existing
 /// ones (their `link` fields index the result's position in that list).
@@ -1026,6 +1102,8 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
     const DT_RELSZ: u64 = 18;
     const DT_PLTREL: u64 = 20;
     const DT_JMPREL: u64 = 23;
+    const DT_RELRSZ: u64 = 35;
+    const DT_RELR: u64 = 36;
 
     let word = |offset: usize| -> Option<u64> {
         if is64 {
@@ -1150,6 +1228,7 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
     ];
     let rela_size: u64 = if is64 { 24 } else { 12 };
     let rel_size: u64 = if is64 { 16 } else { 8 };
+    let relr_size: u64 = if is64 { 8 } else { 4 };
     let pltrel_kind = match tags.get(&DT_PLTREL) {
         Some(&DT_REL) => ELF_SHT_REL,
         _ => ELF_SHT_RELA,
@@ -1158,6 +1237,7 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
         (DT_RELA, DT_RELASZ, ELF_SHT_RELA, ".rela.dyn"),
         (DT_REL, DT_RELSZ, ELF_SHT_REL, ".rel.dyn"),
         (DT_JMPREL, DT_PLTRELSZ, pltrel_kind, ".rela.plt"),
+        (DT_RELR, DT_RELRSZ, ELF_SHT_RELR, ".relr.dyn"),
     ];
     for (address_tag, size_tag, kind, name) in tables {
         let (Some(&addr), Some(&size)) = (tags.get(&address_tag), tags.get(&size_tag)) else {
@@ -1166,10 +1246,10 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
         let Some(offset) = to_offset(addr, size) else {
             continue;
         };
-        let entsize = if kind == ELF_SHT_RELA {
-            rela_size
-        } else {
-            rel_size
+        let entsize = match kind {
+            ELF_SHT_RELA => rela_size,
+            ELF_SHT_REL => rel_size,
+            _ => relr_size,
         };
         let name = if kind == ELF_SHT_REL && name == ".rela.plt" {
             ".rel.plt"
@@ -2137,6 +2217,26 @@ mod tests {
         assert!(budget.padded(&[1, 2, 3], 3).is_err());
         assert_eq!(budget.padded(&[7, 8], 2).unwrap(), vec![7, 8]);
         assert_eq!(budget.padded(&[], 0).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn relr_bitmaps_expand_after_their_place_and_are_capped() {
+        let words: Vec<u8> = [0x1000u64, 0b1011, 0x2000, 1 | (1 << 63)]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let mut left = 16;
+        // 0x1000, then bits 0 and 2 of the next 63 words; 0x2000, then the
+        // last of its 63 words.
+        assert_eq!(
+            relr_slots(&words, 8, &mut left).unwrap(),
+            vec![0x1000, 0x1008, 0x1018, 0x2000, 0x2008 + 8 * 62]
+        );
+        assert_eq!(left, 11);
+        assert!(relr_slots(&words, 8, &mut 4).is_err());
+        // A bitmap before any place relocates nothing.
+        let leading: Vec<u8> = [3u32, 0x40].iter().flat_map(|w| w.to_le_bytes()).collect();
+        assert_eq!(relr_slots(&leading, 4, &mut 8).unwrap(), vec![0x40]);
     }
 
     #[test]
