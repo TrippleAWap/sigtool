@@ -221,9 +221,11 @@ baselines.
 - CI: fmt, clippy, all tests (including live process tests on Windows), and
   the toy bench against its baseline with tolerance 0.05.
 - Before merging matcher, feature, or normalization work: the real corpus
-  with `--joint` against `tests/baseline/native-real-bench.json`.
+  with `--joint --process-like` against
+  `tests/baseline/native-real-bench.json`.
 - Weekly (`.github/workflows/real-bench.yml`): the real corpus built with
-  both compilers and benched with `--joint` against its baseline.
+  both compilers and benched with `--joint --process-like` against its
+  baseline.
 - Milestone exit: the held-out corpus, recorded in §8.
 
 ## 6. Milestones
@@ -969,8 +971,62 @@ As of 2026-11-19, `real-world` branch, spec v6.
   and FP unchanged; real corpus identical. 35 `LZ4_loadDict` answers at
   `LZ4_loadDict_internal` (a tail call the caller index does not record)
   remain.
-- Next: the live-process scan path (RW3: candidates from a per-module
-  indexed context; it finds 0.010 top-1 today), the remaining PE findings
-  (hinted PE has no function list, import thunks counted as starts), identified answers in hosts without the function (0.0025 per signature per
-  MB), RW4 distro packages and C++, and
+  - RW3 process path (2026-11-19, `rw/process-path`): `scan --pid` and
+    `locate --pid` scan a process hint-free one module at a time
+    (`source::ModuleView`: one module's regions, its `Module`, its unwind
+    entries, no symbol starts, reads confined to its span;
+    `scanner::scan_modules`: a `ScanContext` per module, `scan_in` and
+    joint resolution per module, budgets into `truncated`). `--discovery
+    auto` picks it (`ProcessSource::symbols_stripped` is now true);
+    `--discovery hinted` keeps the anchor-only scanner. New `--module NAME`
+    on `scan`/`locate` with `--pid`. Per-signature lists of several modules
+    merge by each module's best rank, and another module's identified-looking
+    best match is the first's rival (SPEC.md §8, "Sources with several
+    modules"; no version change: documents and per-image acceptance are
+    unchanged). `bench --process-like` now calls `scan_modules` on the
+    stripped target's process view (one path, rule 13). Real corpus, spec
+    v6, `--max-functions 4 --joint --process-like` (before -> after,
+    process rows only; every file cell identical to the committed baseline
+    apart from cost):
+    - top-1 140/14088 = 0.010 -> 3437/14088 = 0.244 (file hinted 0.353,
+      hint-free 0.358); same arch same build 18/480 -> 273/480 (x64
+      100/120 and arm64 102/120, the file hint-free numbers; arm32 36/120,
+      Thumb 35/120 against 99 and 101); cross arch 99/11208 -> 2562/11208.
+    - By target arch, top-1 of 3522 each: x64 1217, arm64 1351 (both equal
+      to file hint-free), arm32 474 (file 1271), Thumb 395 (file 1198).
+      `--arch x64 --arch arm64`: every process row, identified count and FP
+      cell equals the hint-free one (top-1 1819/4164, identified 1154/1158,
+      any-verdict FP 31/347, strong 0/71).
+    - Identified precision 36/107 = 0.336 -> 2402/2486 = 0.966 (hint-free
+      0.993); strong FP 0/121 -> 2/121 (merged signatures on ARM targets),
+      any-verdict FP 1/587 -> 93/587 (hint-free 66/587; arm32 24 vs 16,
+      Thumb 23 vs 17, merged 21 vs 8, x64 and arm64 equal). The old path's
+      low FP was abstention: it found nothing.
+    - The ARM gap is the start list: `examples/diagnose_process` (same-arch
+      pairs) finds the expected function without a covering table entry in
+      925 of the 1274 ARM32/Thumb pairs it does not answer correctly. The
+      `.ARM.exidx` table alone lists few functions (lld merges adjacent
+      `EXIDX_CANTUNWIND` entries); the file source synthesizes the rest from
+      code, which a process source cannot (synthesis reads ELF pointer slots
+      and PE export roots). `proc_win` reads x64 and arm64 only, so no live
+      process meets it; it would matter for a Linux `/proc` source (M9).
+    - Cost (bench, 2 threads on a shared 4-core machine): recall 46.8 ->
+      53.2 s, FP 42.4 -> 43.5 s, peak 1.30 -> 2.05 GiB (a second context per
+      image). A live process decodes every mapped module and recovers every
+      `.pdata` function once per scan; not measured on Windows here
+      (`--module` bounds it).
+    - Process rows are now in the gated real baseline (file cells
+      unchanged), and the weekly job runs `--process-like`. Windows live
+      tests (`live_proc_win.rs`, with a new `--module` case) were
+      cross-checked with `cargo clippy --target x86_64-pc-windows-gnu` only,
+      not run. `tests/process_modules.rs` runs the path on clang + lld shared
+      objects mapped as two modules of one source. Determinism: the real
+      bench twice on 2 threads and once on 1 gives identical reports apart
+      from cost; `tests/ida_cli_smoke.py` passes.
+- Next: ARM32/Thumb process targets (no inferred starts: 925 of 1274 missed
+  pairs have no unwind entry; out of reach of the Windows process source
+  anyway), the remaining PE findings (hinted PE has no function list, import
+  thunks counted as starts), identified answers in hosts without the
+  function (0.0025 per signature per MB), wrapper answers reached by a tail
+  call (`LZ4_loadDict`), RW4 distro packages and C++, and
   pointer-width-dependent constants (M10).

@@ -35,6 +35,7 @@ sigtool-native locate --signature fn.yaml --file stripped.so --discovery hint-fr
 sigtool-native locate --signature fn.yaml --file stripped.so --explain --expect 0x4f20  # why (not) here
 sigtool-native locate --signature fn.yaml --raw text.bin --arch thumb --base 0x8000  # raw code blob
 sigtool-native scan --file image.so --db signatures.db
+sigtool-native scan --pid 1234 --db signatures.db --module foo  # live process, hint-free per module
 sigtool-native scan --path firmware/ --recursive --db signatures.db --jsonl hits.jsonl  # batch
 sigtool-native db build --signature fn.yaml --output signatures.db
 sigtool-native db build --file libfoo.so --functions names.json --report built.json --output signatures.db
@@ -67,6 +68,19 @@ scan work budget ran out, listed in `truncated`; never a timeout). A file's
 status does not change the exit code: the run exits `0` when every file got a
 line, hits or not, and `2` when `DIR`, the signatures, or `OUT` cannot be
 used. The output is byte-identical across runs and thread counts.
+
+`scan --pid` and `locate --pid` (Windows) read the process read-only and scan
+it one loaded module at a time, hint-free: a process names no local
+function, only exports and `.pdata`, so each module is matched as the
+stripped file of that module would be, with its own frequencies, trust gates,
+rivals, and joint resolution, and the matches carry `module` and `rva`.
+`--module NAME` scans one module only, which also bounds the work: every
+module's code is decoded and every `.pdata` function recovered.
+`--discovery hinted` keeps the older path (`.pdata` bounds as symbol bounds,
+candidates from anchor bytes only), which finds little: see `bench
+--process-like` below. When two modules both hold an identified-looking
+match (a library linked in and also loaded as a DLL), the weaker one is the
+first's rival, so the answer is `candidate` unless one copy is clearly closer.
 
 `locate --explain` prints, after the match list, why the matcher accepted or
 rejected the best match, or the function at `--expect RVA`: the signature
@@ -132,21 +146,28 @@ cd native && cargo run --release -- bench --baseline ../tests/baseline/native-be
 docker build -t sigtool-gcc-cross corpus/docker
 python corpus/real.py                      # zlib, lz4, cJSON, Lua, SQLite; clang + gcc; stripped copies
 cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 \
-    --baseline ../tests/baseline/native-real-bench.json
+    --joint --process-like --baseline ../tests/baseline/native-real-bench.json
 cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-functions 24 \
     --sample-seed 7                        # another function sample (milestone exits)
-cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 \
-    --process-like                         # also the live-process scan path, as discovery `process`
 ```
 
 `--process-like` scans each stripped target the way `scan --pid` scans a live
-process: no symbol starts, unwind-table bounds as hints (no synthesized
-starts), the incremental scanner. Its recall, `identified` precision, and
-false-positive rows are reported as discovery `process`; a baseline saved
-without the flag has none, so the gate does not compare them. On the real
-corpus (spec v6, `--max-functions 4`) it finds almost nothing: top-1 140 of
-14088 recall scans (0.010; file hinted 0.353, hint-free 0.358), all on x64
-targets, and of its 107 `identified` answers 36 are right (see `PLAN.md` §8).
+process: no symbol starts, only the unwind table's own entries (none of the
+starts a file source synthesizes from code), hint-free per module through the
+same code as the CLI (`scanner::scan_modules`). Its recall, `identified`
+precision, and false-positive rows are reported as discovery `process`, and
+the real baseline gates them, so run the gate with the flag. On the real
+corpus (spec v6, `--max-functions 4 --joint`), x64 and arm64 targets give
+exactly the stripped file's hint-free numbers (top-1 1217 + 1351 of 7044,
+the same identified answers and false positives). ARM32 and Thumb targets
+lose most of theirs (top-1 869 of 7044, against 2469 for the file): their
+`.ARM.exidx` lists few functions on its own, and the file source's
+synthesized starts make up the rest. Live processes are x64 and arm64 only,
+so that gap is not one a user meets today. Over all targets: top-1 3437 of
+14088 = 0.244 (hint-free file 0.358; the hinted scanner path it replaces
+0.010), identified precision 2402/2486 = 0.966, strong FP 2/121, any-verdict
+FP 93/587 (hint-free file 0/121 and 66/587); every extra error is on an ARM
+target (see `PLAN.md` §8).
 
 The text report prints every rate as `k/n = rate [low, high]`, with the 95%
 Wilson interval, and each false-positive cell with the number and size of the

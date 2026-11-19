@@ -284,11 +284,22 @@ impl ByteSource for ProcessSource {
     // so a function in an image without exports (the usual main executable)
     // was never reached. `.pdata` entries serve hint-free discovery instead.
 
+    /// A process names no local function, only exports and `.pdata`, so
+    /// `--discovery auto` scans it hint-free, one module at a time
+    /// (`scanner::scan_modules`). Measured with `bench --process-like` (real
+    /// corpus, spec v6, `--max-functions 4`, x64 and arm64 targets): top-1
+    /// 1819/4164 = 0.437, the stripped file's hint-free number exactly; the
+    /// hinted scanner path this replaced found 0.010 top-1 over the corpus.
+    fn symbols_stripped(&self) -> bool {
+        true
+    }
+
     fn unwind_entries(&self) -> &[(u64, u64)] {
         &self.unwind
     }
 
-    /// `.pdata` bounds stand in for symbol bounds. A live process has no
+    /// `.pdata` bounds stand in for symbol bounds in a forced
+    /// `--discovery hinted` scan and in generation. A live process has no
     /// symbols, and without bounds a hinted scan can only reach a function
     /// by backward sweeps from anchor hits, which a common constant spread
     /// over every loaded DLL exhausts before the target's own code. x64

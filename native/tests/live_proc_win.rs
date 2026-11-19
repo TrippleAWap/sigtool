@@ -219,6 +219,10 @@ fn gen_locate_and_scan_by_pid() {
         .args(["locate", "--pid", &pid, "--yes", "--signature"])
         .arg(&signature));
     assert_eq!(code, 0, "locate --pid failed: {stderr}");
+    assert!(
+        stderr.contains("hint-free discovery"),
+        "a process is scanned hint-free by default: {stderr}"
+    );
     let best = stdout
         .lines()
         .find(|line| line.trim_start().starts_with("1."))
@@ -235,6 +239,23 @@ fn gen_locate_and_scan_by_pid() {
     assert!(
         stdout.contains(&wanted),
         "scan hit at the function: {stdout}"
+    );
+
+    // `--module` scans the helper's own image only, and still finds it.
+    let (code, stdout, stderr) = run(cli()
+        .args([
+            "scan",
+            "--pid",
+            &pid,
+            "--module",
+            &module.name,
+            "--signature",
+        ])
+        .arg(&signature));
+    assert_eq!(code, 0, "scan --pid --module failed: {stderr}");
+    assert!(
+        stdout.contains(&wanted),
+        "scan --module hit at the function: {stdout}"
     );
 
     // Read-only: the target is still running, not suspended or killed.

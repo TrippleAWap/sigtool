@@ -1,11 +1,12 @@
 //! Process-path miss diagnosis (`bench --process-like`): each bench sample
 //! (the same `--max-functions` choice as `bench`) is scanned in the stripped
 //! copy of every same-arch build of its library the way `scan --pid` scans
-//! a live process (no symbol starts, unwind bounds as hints, the
-//! incremental scanner), then through `matcher::scan` on the same view with
-//! a reference index, then on the unstripped target through the file hinted
-//! path, and what each found is printed. Ground truth only picks addresses
-//! and labels.
+//! a live process (no symbol starts, only the unwind table's own entries,
+//! hint-free per module: `scanner::scan_modules`), then the way a forced
+//! `scan --pid --discovery hinted` does (unwind bounds as hints, the
+//! incremental scanner), then as a stripped file (`scan_in` hint-free on the
+//! stripped copy), and what each found is printed. Ground truth only picks
+//! addresses and labels.
 //!
 //! Usage: `diagnose_process CORPUS MAX_FUNCTIONS ARCH...`: a summary per
 //! arch on stderr, and one JSON object per pair the process path did not
@@ -13,15 +14,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde_json::{json, Value};
+use sigtool_native::coverage::Coverage;
 use sigtool_native::elf::FileSource;
 use sigtool_native::generate::generate_in;
-use sigtool_native::matcher::{
-    hinted_floors, identified_answer, scan, scan_in, Match, ReferenceIndex, ScanContext,
-    MAX_CANDIDATE_STARTS,
-};
-use sigtool_native::scanner::SignatureScanner;
+use sigtool_native::matcher::{identified_answer, scan_in, Match, ReferenceIndex, ScanContext};
+use sigtool_native::scanner::{scan_modules, SignatureScanner};
 use sigtool_native::source::{ByteSource, ProcessView};
 
 struct Image {
@@ -33,7 +33,8 @@ struct Image {
     functions: BTreeMap<String, u64>,
     names: BTreeMap<u64, String>,
     context: ScanContext,
-    index: ReferenceIndex,
+    stripped_context: ScanContext,
+    process_contexts: Vec<OnceLock<ScanContext>>,
     table: Vec<(u64, u64)>,
 }
 
@@ -50,7 +51,7 @@ fn limit(functions: &BTreeMap<String, u64>, max: usize) -> Vec<(String, u64)> {
 }
 
 /// The unwind-table entries a process source would have (bench's
-/// `Target::process_view`): synthesized starts dropped.
+/// `Image::process_view`): synthesized starts dropped.
 fn table(source: &FileSource) -> Vec<(u64, u64)> {
     let synthesized: BTreeSet<u64> = source.synthesized_starts().iter().copied().collect();
     source
@@ -78,11 +79,9 @@ fn load(corpus: &Path, entry: &Value) -> Option<Image> {
         .map(|(name, start)| (*start, name.clone()))
         .collect();
     let context = ScanContext::build(&source);
+    let stripped_context = ScanContext::build(&stripped);
     let table = table(&stripped);
-    let mut index = ReferenceIndex::default();
-    for region in stripped.regions().iter().filter(|region| region.executable) {
-        index.index_region(&stripped, region);
-    }
+    let process_contexts = stripped.modules().iter().map(|_| OnceLock::new()).collect();
     Some(Image {
         path: path.to_string(),
         arch,
@@ -92,7 +91,8 @@ fn load(corpus: &Path, entry: &Value) -> Option<Image> {
         functions,
         names,
         context,
-        index,
+        stripped_context,
+        process_contexts,
         table,
     })
 }
@@ -123,7 +123,7 @@ fn main() {
         .filter_map(|entry| load(corpus, entry))
         .collect();
     // Per arch: pairs, process top-1, process identified answers, of those
-    // correct, top-1 with a reference index, file hinted top-1.
+    // correct, forced-hinted process top-1, stripped file hint-free top-1.
     let mut summary: BTreeMap<String, [usize; 6]> = BTreeMap::new();
     for image in &images {
         for (name, start) in limit(&image.functions, max) {
@@ -148,6 +148,15 @@ fn main() {
                     continue;
                 };
                 let view = ProcessView::new(&target.stripped, target.table.clone());
+                let process = scan_modules(
+                    &view,
+                    std::slice::from_ref(&signature),
+                    None,
+                    Some(&target.process_contexts),
+                    &mut Coverage::new(),
+                )
+                .pop()
+                .unwrap_or_default();
                 let mut scanner = SignatureScanner::new(
                     &view,
                     vec![signature.clone()],
@@ -156,20 +165,13 @@ fn main() {
                 )
                 .expect("scanner");
                 scanner.scan_pass();
-                let process = scanner.matches(0).to_vec();
-                let indexed = hinted_floors(
-                    &view,
+                let forced_hinted = scanner.matches(0).to_vec();
+                let file = scan_in(
+                    &target.stripped,
                     &signature,
-                    scan(
-                        &view,
-                        &signature,
-                        None,
-                        MAX_CANDIDATE_STARTS,
-                        true,
-                        Some(&target.index),
-                    ),
+                    &target.stripped_context,
+                    false,
                 );
-                let hinted = scan_in(&target.source, &signature, &target.context, true);
                 let found = top(&process) == Some(expected);
                 let answered = identified_answer(&process);
                 let row = summary.entry(image.arch.clone()).or_default();
@@ -177,8 +179,8 @@ fn main() {
                 row[1] += usize::from(found);
                 row[2] += usize::from(answered);
                 row[3] += usize::from(answered && found);
-                row[4] += usize::from(top(&indexed) == Some(expected));
-                row[5] += usize::from(top(&hinted) == Some(expected));
+                row[4] += usize::from(top(&forced_hinted) == Some(expected));
+                row[5] += usize::from(top(&file) == Some(expected));
                 if found && answered {
                     continue;
                 }
@@ -199,10 +201,10 @@ fn main() {
                         "target": target.path,
                         "sample": name,
                         "anchors": signature.anchors,
-                        "hint": view.hint_function(expected).is_some(),
+                        "unwind_entry": view.unwind_function(expected).is_some(),
                         "process": label(&process),
-                        "indexed": label(&indexed),
-                        "hinted": label(&hinted),
+                        "forced_hinted": label(&forced_hinted),
+                        "file_hint_free": label(&file),
                     })
                 );
             }
@@ -211,7 +213,7 @@ fn main() {
     for (arch, row) in summary {
         eprintln!(
             "{arch}: pairs {} process top-1 {} identified {} (correct {}); \
-             with a reference index top-1 {}; file hinted top-1 {}",
+             forced-hinted process top-1 {}; stripped file hint-free top-1 {}",
             row[0], row[1], row[2], row[3], row[4], row[5]
         );
     }
