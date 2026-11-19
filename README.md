@@ -194,7 +194,7 @@ static executables, and the previous upstream release), signing the plain
 `-O2` shared object, hint-free top-1 on the same arch (80 attempts per row):
 same build 0.938, LTO 0.838, previous release 0.838, hardened 0.812, `-O3`
 0.787, PIE executable 0.700, static executable 0.613. Identified precision
-there is 0.972 hint-free and 0.976 hinted, below the 0.98 goal.
+there is 0.988 hint-free and 0.997 hinted.
 
 Needle in a host (`python corpus/real.py --host`: all five tuning libraries
 linked by gcc 12 `-O2` into one static executable per arch with
