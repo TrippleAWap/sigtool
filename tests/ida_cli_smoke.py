@@ -578,7 +578,11 @@ def main() -> int:
         relocated.unlink()
         # With no matching file anywhere, the image is rebuilt from the IDB,
         # without a dialog, and signs like the stripped copy of the binary,
-        # even with a byte of the function patched in the IDB.
+        # even with a byte of the function patched in the IDB. The analyst
+        # renamed the function; the signature carries that name.
+        renamed = f"{target}_renamed"
+        idb.names[by_name[target] + shift] = renamed
+        relocated = moved / "sigtool" / f"{renamed}.yaml"
         patched_ea = by_name[target] + shift + 1
         original = idb.content[plugin.ida_loader.get_fileregion_offset(patched_ea)]
         idb.patched[patched_ea] = original
@@ -602,6 +606,8 @@ def main() -> int:
                 hex(by_name[target]),
                 "--tool",
                 "IDA",
+                "--name",
+                renamed,
                 "--output",
                 str(reference),
             ],
@@ -614,6 +620,10 @@ def main() -> int:
             and relocated.exists()
             and relocated.read_bytes() == reference.read_bytes(),
             "without the binary, the IDB alone signs like the stripped file (no dialog)",
+        )
+        check(
+            f"\nname: {renamed}\n" in relocated.read_text(encoding="utf-8"),
+            f"the signature is named {renamed}, the IDA name",
         )
         # The clipboard holds that signature; locate finds it in the IDB alone.
         idb.jumps.clear()

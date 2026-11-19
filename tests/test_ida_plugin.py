@@ -81,6 +81,11 @@ class NameTests(unittest.TestCase):
         for name in ("inflate", "_ZN3foo3barEv", "lua_pushnumber", "submit", "sub_total"):
             self.assertTrue(plugin.is_meaningful_name(name), name)
 
+    def test_only_resolved_names_are_passed_to_the_cli(self):
+        self.assertEqual(plugin.name_arguments("decrypt_config"), ["--name", "decrypt_config"])
+        for name in (None, "", "sub_1234", "j_sub_10", "unknown_libname_3"):
+            self.assertEqual(plugin.name_arguments(name), [], name)
+
     def test_progress_lines(self):
         self.assertEqual(plugin.parse_progress("progress 3/40\n"), (3, 40))
         self.assertIsNone(plugin.parse_progress("skipped 0x10 f: no"))

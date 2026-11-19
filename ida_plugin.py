@@ -202,6 +202,13 @@ def is_meaningful_name(name: str | None) -> bool:
     return _DUMMY_NAME.search(name) is None
 
 
+def name_arguments(name: str | None) -> list[str]:
+    """``--name`` for ``gen`` or ``merge`` when IDA's name for the function is
+    a resolved one; none for a made-up name, so the CLI falls back to the
+    image's symbol, else ``sub_<module>+<rva>``."""
+    return ["--name", str(name)] if is_meaningful_name(name) else []
+
+
 def parse_progress(line: str) -> tuple[int, int] | None:
     """``progress DONE/TOTAL`` lines that ``db build --functions`` prints."""
     match = re.fullmatch(r"progress (\d+)/(\d+)", line.strip())
@@ -1378,7 +1385,18 @@ def _generate(image: str, ea: int, output: Path) -> str:
     # Signing builds the image's call graph first, which takes a while on a
     # large image: run it behind the cancellable wait box.
     return _run_cancellable(
-        ["gen", "--file", image, "--rva", hex(rva), "--tool", "IDA", "--output", str(output)],
+        [
+            "gen",
+            "--file",
+            image,
+            "--rva",
+            hex(rva),
+            *name_arguments(ida_funcs.get_func_name(ea)),
+            "--tool",
+            "IDA",
+            "--output",
+            str(output),
+        ],
         f"sigtool: signing {_function_label(ea)}",
     ).strip()
 
@@ -1439,7 +1457,12 @@ class MergeHandler(_Handler):
             return
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "merged.yaml"
-            arguments = ["merge", "--name", label, "--output", str(output)]
+            arguments = [
+                "merge",
+                *name_arguments(ida_funcs.get_func_name(ea)),
+                "--output",
+                str(output),
+            ]
             for sample in samples:
                 arguments += ["--sample", sample]
             report = _run_cancellable(
