@@ -422,6 +422,53 @@ class Segment:
 
 _SHT_PROGBITS, _SHT_STRTAB, _SHT_NOBITS = 1, 3, 8
 _SHF_WRITE, _SHF_ALLOC, _SHF_EXECINSTR = 0x1, 0x2, 0x4
+_PT_LOAD = 1
+# More program headers than any linker writes; a corrupt count is not walked.
+_MAX_PROGRAM_HEADERS = 4096
+
+
+def _elf_loads(image: bytes, is64: bool) -> list[tuple[int, int, int]]:
+    """``(p_offset, p_vaddr, p_filesz)`` of each ``PT_LOAD`` in ``image``'s
+    program headers; empty when the table is missing or out of bounds."""
+    if is64:
+        phoff = struct.unpack_from("<Q", image, 0x20)[0]
+        entsize, count = struct.unpack_from("<HH", image, 0x36)
+        layout, need = "<IIQQQQ", 48
+    else:
+        phoff = struct.unpack_from("<I", image, 0x1C)[0]
+        entsize, count = struct.unpack_from("<HH", image, 0x2A)
+        layout, need = "<IIIIII", 24
+    if entsize < need or count > _MAX_PROGRAM_HEADERS or phoff + entsize * count > len(image):
+        return []
+    loads = []
+    for index in range(count):
+        row = struct.unpack_from(layout, image, phoff + index * entsize)
+        if is64:
+            kind, _flags, offset, vaddr, _paddr, filesz = row
+        else:
+            kind, offset, vaddr, _paddr, filesz, _memsz = row
+        if kind == _PT_LOAD and filesz:
+            loads.append((offset, vaddr, filesz))
+    return loads
+
+
+def rebase_delta(image: bytes, segments: Iterable[Segment], is64: bool) -> int | None:
+    """How far the IDB moved ``image`` from its own addresses (IDA's Rebase
+    program), from where its file-backed segments sit against the ``PT_LOAD``
+    that holds their bytes: 0 when nothing says otherwise, ``None`` when the
+    segments disagree."""
+    loads = _elf_loads(image, is64)
+    deltas = set()
+    for segment in segments:
+        if segment.file_offset is None or segment.end <= segment.start:
+            continue
+        for offset, vaddr, filesz in loads:
+            if offset <= segment.file_offset < offset + filesz:
+                deltas.add(segment.start - (vaddr + segment.file_offset - offset))
+                break
+    if len(deltas) > 1:
+        return None
+    return deltas.pop() if deltas else 0
 
 
 def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
@@ -433,11 +480,19 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
     section table), plus how IDA merged unnamed sections into ``LOAD``
     segments; ``sigtool-native`` reads the dynamic symbols and relocations
     from the dynamic segment when the section table does not describe them.
+
+    A rebased IDB maps every segment above the addresses the program headers
+    give; the sections are written at the file's own addresses, since
+    ``sigtool-native`` takes the image base from the lowest ``PT_LOAD``.
     """
     if len(image) < 0x40 or image[:4] != b"\x7fELF" or image[5] != 1:
         return None
     is64 = image[4] == 2
     if not is64 and image[4] != 1:
+        return None
+    segments = list(segments)
+    delta = rebase_delta(image, segments, is64)
+    if delta is None:
         return None
     entry = struct.Struct("<IIQQQQIIQQ" if is64 else "<IIIIIIIIII")
     names = bytearray(b"\0")
@@ -459,10 +514,11 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
         size = segment.end - segment.start
         if kind == _SHT_PROGBITS and offset + size > len(image):
             return None
+        address = segment.start - delta
+        if not 0 <= address < (1 << (64 if is64 else 32)):
+            return None
         rows.append(
-            entry.pack(
-                name_offset(segment.name), kind, flags, segment.start, offset, size, 0, 0, 1, 0
-            )
+            entry.pack(name_offset(segment.name), kind, flags, address, offset, size, 0, 0, 1, 0)
         )
     table_name = name_offset(".shstrtab")
     names_offset = len(image)

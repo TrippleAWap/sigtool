@@ -299,6 +299,40 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((data[2], data[4]), (0x3, 0x1100))
         self.assertEqual(bss[1], 8)
 
+    def elf_with_loads(self):
+        # Two PT_LOADs as lld lays out a shared object: text from offset 0 at
+        # address 0, data one page up in memory.
+        image = bytearray(0x1140)
+        image[:6] = b"\x7fELF\x02\x01"
+        struct.pack_into("<QHH", image, 0x20, 0x40, 56, 0)
+        struct.pack_into("<HH", image, 0x36, 56, 2)
+        struct.pack_into("<IIQQQQQQ", image, 0x40, 1, 5, 0, 0, 0, 0x1100, 0x1100, 0x1000)
+        struct.pack_into("<IIQQQQQQ", image, 0x78, 1, 6, 0x1100, 0x2000, 0x2000, 0x40, 0x80, 0x1000)
+        return bytes(image)
+
+    def section_addresses(self, out):
+        shoff = struct.unpack_from("<Q", out, 0x28)[0]
+        count = struct.unpack_from("<H", out, 0x3C)[0]
+        return [struct.unpack_from("<IIQQ", out, shoff + 64 * i)[3] for i in range(1, count - 1)]
+
+    def test_rebased_elf_is_rebuilt_at_the_file_addresses(self):
+        image = self.elf_with_loads()
+        delta = 0x10000000
+        shifted = [
+            plugin.Segment(
+                s.name, s.start + delta, s.end + delta, s.file_offset, s.executable, s.writable
+            )
+            for s in self.segments()
+        ]
+        plain = plugin.rebuild_elf(image, self.segments())
+        self.assertEqual(self.section_addresses(plain), [0x1000, 0x2000, 0x2040])
+        self.assertEqual(plugin.rebuild_elf(image, shifted), plain)
+
+    def test_elf_segments_that_disagree_on_the_rebase_are_refused(self):
+        segments = self.segments()
+        segments[1] = plugin.Segment(".data", 0x3000, 0x3040, 0x1100, False, True)
+        self.assertIsNone(plugin.rebuild_elf(self.elf_with_loads(), segments))
+
     def test_elf_rejects_other_formats_and_segments_past_the_file(self):
         self.assertIsNone(plugin.rebuild_elf(b"MZ" + bytes(0x100), self.segments()))
         elf = b"ELF" + bytes(0x100)
