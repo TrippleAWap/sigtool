@@ -19,3 +19,4 @@ native/target/
 corpus/third_party/
 corpus/build-real/
 corpus/build-heldout/
+corpus/build-world/

@@ -101,6 +101,8 @@ python packaging/package.py --platform windows-x86_64 --binary native/target/rel
 python corpus/build.py              # toy corpus + ground truth (clang + ld.lld + llvm-readelf)
 python corpus/real.py               # real libraries: clang on the host, gcc via corpus/docker
 python corpus/real.py --heldout     # held-out libraries into corpus/build-heldout (milestone exits only)
+python corpus/real.py --world       # real-world profiles (hardened, -O3, LTO, PIE, static, previous release)
+                                    # into corpus/build-world; bench it with --corpus ../corpus/build-world
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld), then bless
 SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the extractor
 ```

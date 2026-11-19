@@ -3,6 +3,7 @@
     python corpus/real.py                  # fetch (sha256-pinned), build, write ground truth
     python corpus/real.py --max-functions 0  # keep every common function
     python corpus/real.py --heldout        # held-out libraries into corpus/build-heldout/
+    python corpus/real.py --world          # real-world build profiles into corpus/build-world/
 
 Outputs, never committed:
 
@@ -33,6 +34,13 @@ true answer on every architecture and optimization level. A deterministic
 subset (by CRC-32 of the name) keeps the bench fast; the libraries double as
 each other's false-positive corpus.
 
+--world builds the tuning libraries with gcc only, at -O2, in the profiles
+real binaries come in (WORLD_PROFILES): distro hardening flags, -O3, LTO, a
+PIE and a static executable linking the library, and the previous upstream
+release. Build names keep the `<profile>-<level>` form the bench reads, so
+the bench's "other compiler" row there means "other profile, same level".
+It is a separate tier, outside the weekly gate (docs/real-world-plan.md RW4).
+
 The purpose-written corpus in corpus/build/ stays for golden-scale checks;
 this one is what the cross-architecture numbers should be read from.
 """
@@ -60,6 +68,7 @@ CORPUS = ROOT / "corpus"
 THIRD_PARTY = CORPUS / "third_party"
 BUILD = CORPUS / "build-real"
 HELDOUT_BUILD = CORPUS / "build-heldout"
+WORLD_BUILD = CORPUS / "build-world"
 SHIM = CORPUS / "shim" / "include"
 
 TARGETS = {
@@ -75,6 +84,15 @@ GCC = {
     "arm64": ("aarch64-linux-gnu-gcc", ()),
     "arm32": ("arm-linux-gnueabihf-gcc", ("-marm", "-march=armv7-a", "-mfpu=vfpv3-d16")),
     "thumb": ("arm-linux-gnueabihf-gcc", ("-mthumb", "-march=armv7-a", "-mfpu=vfpv3-d16")),
+}
+# The --world tier strips with the target's binutils, as a distro build
+# does: llvm-strip refuses gcc's static ARM executables (a `.rel.dyn` whose
+# link field names no symbol table).
+STRIP = {
+    "x64": "strip",
+    "arm64": "aarch64-linux-gnu-strip",
+    "arm32": "arm-linux-gnueabihf-strip",
+    "thumb": "arm-linux-gnueabihf-strip",
 }
 COMPILERS = ("clang", "gcc")
 DOCKER_IMAGE = "sigtool-gcc-cross"
@@ -191,6 +209,101 @@ HELDOUT = (
         # irrelevant to function identity, as SQLite's VFS is.
         exclude=("library/net_sockets.c",),
     ),
+)
+
+
+# The release before each tuning library's pin, for the version-drift
+# profile: the same function one upstream release apart, as a user porting
+# names from an analysed build to the next one meets it.
+PREVIOUS = {
+    "zlib": Library(
+        "zlib",
+        "https://zlib.net/fossils/zlib-1.2.13.tar.gz",
+        "b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30",
+        "zlib-1.2.13",
+        ("*.c",),
+        includes=(".",),
+        defines=("Z_HAVE_UNISTD_H",),
+    ),
+    "lz4": Library(
+        "lz4",
+        "https://github.com/lz4/lz4/releases/download/v1.9.4/lz4-1.9.4.tar.gz",
+        "0b0e3aa07c8c063ddf40b082bdf7e37a1562bda40a0ff5272957f3e987e0e54b",
+        "lz4-1.9.4",
+        ("lib/lz4.c", "lib/lz4hc.c", "lib/lz4frame.c", "lib/xxhash.c"),
+        includes=("lib",),
+    ),
+    "cjson": Library(
+        "cjson",
+        "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.15.tar.gz",
+        "5308fd4bd90cef7aa060558514de6a1a4a0819974a26e6ed13973c5f624c24b2",
+        "cJSON-1.7.15",
+        ("cJSON.c", "cJSON_Utils.c"),
+        includes=(".",),
+    ),
+    "lua": Library(
+        "lua",
+        "https://www.lua.org/ftp/lua-5.4.6.tar.gz",
+        "7d5ea1b9cb6aa0b59ca3dde1c6adcb57ef83a1ba8e5432c0ecd06bf439b3ad88",
+        "lua-5.4.6",
+        ("src/*.c",),
+        includes=("src",),
+        exclude=("src/lua.c", "src/luac.c"),
+    ),
+    "sqlite": Library(
+        "sqlite",
+        "https://www.sqlite.org/2023/sqlite-amalgamation-3440200.zip",
+        "833be89b53b3be8b40a2e3d5fedb635080e3edb204957244f3d6987c2bb2345f",
+        "sqlite-amalgamation-3440200",
+        ("sqlite3.c",),
+        includes=(".",),
+        defines=(
+            "SQLITE_OS_OTHER=1",
+            "SQLITE_THREADSAFE=0",
+            "SQLITE_OMIT_LOAD_EXTENSION=1",
+        ),
+    ),
+}
+
+# Debian's hardening flags (dpkg-buildflags with hardening=+all, minus -g and
+# the prefix maps, which do not change code); arm32 has no branch protection.
+HARDENED = (
+    "-fstack-protector-strong",
+    "-fstack-clash-protection",
+    "-D_FORTIFY_SOURCE=2",
+)
+HARDENED_ARCH = {
+    "x64": ("-fcf-protection",),
+    "arm64": ("-mbranch-protection=standard",),
+    "arm32": (),
+    "thumb": (),
+}
+HARDENED_LINK = ("-Wl,-z,relro", "-Wl,-z,now")
+
+
+@dataclass(frozen=True)
+class Profile:
+    """One build profile of the --world tier."""
+
+    name: str
+    opt: str
+    # "shared": a shared object. "pie" / "static": an executable linking every
+    # library source with a stub main; its functions are not exported, so the
+    # stripped copy names none of them.
+    link: str = "shared"
+    hardened: bool = False
+    lto: bool = False
+    previous: bool = False
+
+
+WORLD_PROFILES = (
+    Profile("gcc", "-O2"),
+    Profile("gcc", "-O3"),
+    Profile("gcc+hardened", "-O2", hardened=True),
+    Profile("gcc+lto", "-O2", lto=True),
+    Profile("gcc+pie", "-O2", link="pie"),
+    Profile("gcc+static", "-O2", link="static"),
+    Profile("gcc+previous", "-O2", previous=True),
 )
 
 
@@ -319,6 +432,122 @@ def build_gcc(build: Path, library: Library, root: Path) -> dict[tuple[str, str]
     return {key: path for key, path in outputs.items() if path.exists()}
 
 
+# An executable resolves every reference at link time, so what a shared
+# object leaves to its host is supplied here: SQLite built with
+# SQLITE_OS_OTHER expects the embedder's OS layer.
+EXECUTABLE_STUBS = {
+    "sqlite": "int sqlite3_os_init(void) { return 0; } int sqlite3_os_end(void) { return 0; }",
+}
+
+
+def world_path(library: Library, arch: str, profile: Profile) -> Path:
+    outdir = WORLD_BUILD / arch / f"{profile.name}-{profile.opt.strip('-')}"
+    outdir.mkdir(parents=True, exist_ok=True)
+    # One file name for every profile: the bench pairs builds by file name.
+    return outdir / f"{library.name}.elf"
+
+
+def build_world(library: Library, roots: dict[bool, Path]) -> dict[tuple[str, str], Path]:
+    """Every --world build of one library in a single container run."""
+    main = "int main(void) { return 0; } " + EXECUTABLE_STUBS.get(library.name, "")
+    lines = ["set -u", f"printf %s {shlex.quote(main)} > /tmp/main.c"]
+    outputs: dict[tuple[str, str], Path] = {}
+    for arch, (driver, extra) in GCC.items():
+        for profile in WORLD_PROFILES:
+            root = roots[profile.previous]
+            built = PREVIOUS[library.name] if profile.previous else library
+            output = world_path(library, arch, profile)
+            outputs[(arch, f"{profile.name}-{profile.opt.strip('-')}")] = output
+            stripped = WORLD_BUILD / "stripped" / output.relative_to(WORLD_BUILD)
+            stripped.parent.mkdir(parents=True, exist_ok=True)
+            if stripped.exists() and stripped.stat().st_mtime >= Path(__file__).stat().st_mtime:
+                continue
+            container_out = "/work/" + output.relative_to(CORPUS).as_posix()
+            container_stripped = "/work/" + stripped.relative_to(CORPUS).as_posix()
+            container_root = "/work/" + root.relative_to(CORPUS).as_posix()
+            files = " ".join(
+                f"{container_root}/{path.relative_to(root).as_posix()}"
+                for path in sources(built, root)
+            )
+            flags = [profile.opt, *extra, "-w", "-Wl,--build-id=none"]
+            if profile.hardened:
+                flags += [*HARDENED, *HARDENED_ARCH[arch], *HARDENED_LINK]
+            if profile.lto:
+                flags += ["-flto=auto"]
+            if profile.link == "shared":
+                flags += ["-fPIC", "-shared"]
+            elif profile.link == "pie":
+                flags += ["-fPIE", "-pie", "/tmp/main.c"]
+            else:
+                flags += ["-static", "/tmp/main.c"]
+            flags += [f"-I{container_root}/{include}" for include in built.includes]
+            flags += [f"-D{define}" for define in built.defines]
+            quoted = " ".join(shlex.quote(flag) for flag in flags)
+            lines.append(
+                f"( {driver} {quoted} {files} -o {container_out} -lm "
+                f"&& {STRIP[arch]} --strip-all {container_out} -o {container_stripped} "
+                f"|| echo FAIL world {library.name} {arch} {profile.name}{profile.opt} ) &"
+            )
+    if len(lines) == 2:
+        return outputs
+    lines.append("wait")
+    command = ["docker", "run", "--rm", "-i", "-v", f"{CORPUS}:/work", DOCKER_IMAGE, "sh", "-s"]
+    script = ("\n".join(lines) + "\n").encode()
+    result = subprocess.run(command, input=script, capture_output=True)
+    stdout = result.stdout.decode(errors="replace")
+    if result.returncode != 0 or "FAIL" in stdout:
+        print(stdout[-2000:], result.stderr.decode(errors="replace")[-3000:])
+    return {key: path for key, path in outputs.items() if path.exists()}
+
+
+def main_world(args: argparse.Namespace, readelf: str) -> int:
+    libraries = [lib for lib in LIBRARIES if not args.library or lib.name in args.library]
+    roots = {
+        library.name: {False: fetch(library), True: fetch(PREVIOUS[library.name])}
+        for library in libraries
+    }
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+        jobs = {
+            library.name: pool.submit(build_world, library, roots[library.name])
+            for library in libraries
+        }
+    binaries: list[dict[str, object]] = []
+    for library in libraries:
+        outputs = jobs[library.name].result()
+        expected = len(GCC) * len(WORLD_PROFILES)
+        if len(outputs) != expected:
+            print(f"  {library.name}: {expected - len(outputs)} builds failed; skipped")
+            continue
+        built = {key: function_symbols(readelf, path, key[0]) for key, path in outputs.items()}
+        # Functions present in every profile, the previous release included:
+        # one added or removed between releases has no true answer.
+        common = set.intersection(*(set(symbols) for symbols in built.values()))
+        chosen = select(common, args.max_functions)
+        print(f"{library.name}: {len(common)} common functions, {len(chosen)} selected")
+        for (arch, build_name), symbols in sorted(built.items()):
+            binary = outputs[(arch, build_name)]
+            stripped = WORLD_BUILD / "stripped" / binary.relative_to(WORLD_BUILD)
+            binaries.append(
+                {
+                    "path": binary.relative_to(WORLD_BUILD).as_posix(),
+                    "stripped": stripped.relative_to(WORLD_BUILD).as_posix(),
+                    "arch": arch,
+                    "library": library.name,
+                    "functions": [
+                        {"name": name, "start": symbols[name][0], "size": symbols[name][1]}
+                        for name in chosen
+                    ],
+                    "total_symbols": len(symbols),
+                }
+            )
+    WORLD_BUILD.mkdir(parents=True, exist_ok=True)
+    document = {"binaries": binaries, "negative": []}
+    (WORLD_BUILD / "ground_truth.json").write_text(
+        json.dumps(document, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return 0
+
+
 def function_symbols(readelf: str, binary: Path, arch: str) -> dict[str, tuple[int, int]]:
     """Defined FUNC symbols with a size, minus names that occur twice."""
     text = subprocess.run(
@@ -378,6 +607,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=f"build the held-out libraries into {HELDOUT_BUILD.relative_to(ROOT).as_posix()}/",
     )
+    parser.add_argument(
+        "--world",
+        action="store_true",
+        help=f"build the real-world profiles into {WORLD_BUILD.relative_to(ROOT).as_posix()}/",
+    )
     args = parser.parse_args(argv)
     args.compiler = tuple(args.compiler or COMPILERS)
     catalog, build = (HELDOUT, HELDOUT_BUILD) if args.heldout else (LIBRARIES, BUILD)
@@ -387,6 +621,8 @@ def main(argv: list[str] | None = None) -> int:
     llvm_strip = shutil.which("llvm-strip")
     if clang is None or readelf is None or llvm_strip is None:
         raise SystemExit("clang, llvm-readelf, and llvm-strip must be on PATH")
+    if args.world:
+        return main_world(args, readelf)
 
     libraries = [lib for lib in catalog if not args.library or lib.name in args.library]
     roots = {library.name: fetch(library) for library in libraries}
