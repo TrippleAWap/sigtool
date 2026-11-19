@@ -231,6 +231,11 @@ baselines.
 Ordered by what unblocks the most. Each has exit criteria; a milestone is
 done when they hold and are recorded in §8.
 
+The real-world plan ([`docs/real-world-plan.md`](docs/real-world-plan.md),
+2026-11-19) adds milestones RW1-RW8 for binaries the corpus does not yet
+cover (other versions, distro and hardened builds, executables, PE, large
+hosts, live processes) and orders them ahead of further M10 tuning.
+
 ### M8. Honest measurement (next)
 
 Before tuning further, make sure the numbers can be trusted.
