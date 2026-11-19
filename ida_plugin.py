@@ -157,10 +157,8 @@ DEFAULT_SETTINGS = (
     | SET_LIST_MATCHES
     | SET_CONFIRM_RENAMES
 )
-# Generation decodes one function; locating sweeps the image. Both are bounded
-# so a pathological input cannot hang the IDA UI thread forever. Whole-IDB
-# runs have no fixed bound; they show a wait box with a cancel button instead.
-TIMEOUT_SECONDS = 300
+# CLI runs have no time limit: a large image legitimately takes minutes, so
+# every run shows a wait box whose Cancel button kills it instead.
 # The signature spec this plugin was released with (native/src/spec.rs
 # SPEC_VERSION; a unit test keeps them equal). A CLI writing another spec
 # still runs, but its signatures and DBs will not load in a matching build.
@@ -903,8 +901,9 @@ def _input_file() -> str:
     if rebuilt is not None:
         return rebuilt
 
-    # Last resort, for a format the IDB cannot be rebuilt into yet (PE): the
-    # binary is not where IDA recorded it nor beside the IDB.
+    # Last resort, for an IDB that is neither ELF nor PE (or whose PE headers
+    # IDA did not keep): the binary is not where IDA recorded it nor beside
+    # the IDB.
     where = f"not at {recorded}" if recorded else "no path recorded"
     path = ida_kernwin.ask_file(
         False, root or "*", f"Where is {root or 'the input file'}? ({where}, not beside the IDB)"
@@ -1362,7 +1361,7 @@ class _Handler(ida_kernwin.action_handler_t):
             self.run(ctx)
         except SigtoolCancelled:
             ida_kernwin.msg("sigtool: cancelled\n")
-        except (SigtoolError, subprocess.TimeoutExpired, OSError) as error:
+        except (SigtoolError, OSError) as error:
             ida_kernwin.warning(f"sigtool: {error}")
         return 1
 
