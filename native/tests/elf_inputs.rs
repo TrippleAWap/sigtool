@@ -306,6 +306,15 @@ fn packed_relative_relocations_match_their_unpacked_twin() {
     }
 }
 
+/// Android's packed format (`APS2`) re-encodes every dynamic relocation, not
+/// only the relative ones, so imports and relocated words must survive it.
+#[test]
+fn android_packed_relocations_match_their_unpacked_twin() {
+    if common::have_tools(&PACKED_TOOLS) {
+        assert_packed_twin("-Wl,--pack-dyn-relocs=android", "ANDROID_REL");
+    }
+}
+
 /// What a hint-free scan reads from an image's tables, which must not depend
 /// on whether the section headers survive, and the module's lowest address.
 ///

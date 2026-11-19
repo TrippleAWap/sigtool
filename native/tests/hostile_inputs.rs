@@ -239,6 +239,14 @@ const SHF_WRITE: u64 = 1;
 const SHF_ALLOC: u64 = 2;
 const SHF_EXECINSTR: u64 = 4;
 
+/// How the builder stores the dynamic relocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Packing {
+    None,
+    Relr,
+    Android,
+}
+
 struct ElfSection {
     name: &'static str,
     kind: u32,
@@ -254,10 +262,12 @@ struct ElfSection {
 /// A linked shared object (`ET_DYN`) shaped like lld output after
 /// `strip --strip-all`: `.text`, `.rodata`, an unwind table, `.data` with one
 /// relocated function pointer, `.dynsym`/`.dynstr`, the relative relocation,
-/// `.bss`, and `.shstrtab`. With `relr`, `.data` holds a second pointer and
-/// both are relocated by `.relr.dyn` (`-z pack-relative-relocs`): one place
-/// entry and one bitmap entry.
-fn elf_image(arch: Arch, relr: bool) -> Image {
+/// `.bss`, and `.shstrtab`. With [`Packing::Relr`], `.data` holds a second
+/// pointer and both are relocated by `.relr.dyn` (`-z pack-relative-relocs`):
+/// one place entry and one bitmap entry. With [`Packing::Android`], the one
+/// relocation is an `APS2` stream (`--pack-dyn-relocs=android`).
+fn elf_image(arch: Arch, packing: Packing) -> Image {
+    let relr = packing == Packing::Relr;
     let is64 = arch != Arch::Arm32;
     let (ehsize, phentsize, shentsize) = if is64 { (64, 56, 64) } else { (52, 32, 40) };
     let pointer = if is64 { 8 } else { 4 };
@@ -452,6 +462,38 @@ fn elf_image(arch: Arch, relr: bool) -> Image {
         b.set("relr.place", rel_offset, pointer, slot);
         b.set("relr.bitmap", rel_offset + pointer, pointer, 0b11);
         2 * pointer as u64
+    } else if packing == Packing::Android {
+        // Count, first offset, then one group sharing offset delta, info,
+        // and (RELA) addend: flags 1 | 2 (| 4 | 8). Each value is a 5-byte
+        // SLEB128 so the fields have fixed places.
+        let relative = match arch {
+            Arch::X64 => 8,
+            Arch::Arm64 => 1027,
+            _ => 23,
+        };
+        let mut values = vec![
+            ("aps2.count", 1),
+            ("aps2.offset", 0),
+            ("aps2.group_size", 1),
+            ("aps2.group_flags", if is64 { 15 } else { 3 }),
+            ("aps2.offset_delta", slot),
+            ("aps2.info", relative),
+        ];
+        if is64 {
+            values.push(("aps2.addend", fn_a));
+        }
+        b.raw(rel_offset, b"APS2");
+        for (index, (name, value)) in values.iter().enumerate() {
+            let at = rel_offset + 4 + 5 * index;
+            let mut encoded = 0u64;
+            for byte in 0..5 {
+                let septet = (value >> (7 * byte)) & 0x7f;
+                let more = if byte < 4 { 0x80 } else { 0 };
+                encoded |= (septet | more) << (8 * byte);
+            }
+            b.set(*name, at, 5, encoded);
+        }
+        (4 + 5 * values.len()) as u64
     } else if is64 {
         let relative = if arch == Arch::X64 { 8 } else { 1027 };
         b.set("rela.offset", rel_offset, 8, slot);
@@ -464,15 +506,19 @@ fn elf_image(arch: Arch, relr: bool) -> Image {
         8
     };
     sections.push(ElfSection {
-        name: match (relr, is64) {
-            (true, _) => ".relr.dyn",
-            (false, true) => ".rela.dyn",
-            (false, false) => ".rel.dyn",
+        name: match (packing, is64) {
+            (Packing::Relr, _) => ".relr.dyn",
+            (Packing::Android, true) => ".android.rela.dyn",
+            (Packing::Android, false) => ".android.rel.dyn",
+            (Packing::None, true) => ".rela.dyn",
+            (Packing::None, false) => ".rel.dyn",
         },
-        kind: match (relr, is64) {
-            (true, _) => 19,
-            (false, true) => 4,
-            (false, false) => 9,
+        kind: match (packing, is64) {
+            (Packing::Relr, _) => 19,
+            (Packing::Android, true) => 0x6000_0002,
+            (Packing::Android, false) => 0x6000_0001,
+            (Packing::None, true) => 4,
+            (Packing::None, false) => 9,
         },
         flags: SHF_ALLOC,
         addr: ELF_VBASE + rel_offset as u64,
@@ -628,10 +674,10 @@ fn elf_image(arch: Arch, relr: bool) -> Image {
         _ => "elf32-arm",
     };
     Image {
-        name: if relr {
-            format!("{name}-relr")
-        } else {
-            name.to_string()
+        name: match packing {
+            Packing::None => name.to_string(),
+            Packing::Relr => format!("{name}-relr"),
+            Packing::Android => format!("{name}-aps2"),
         },
         bytes: b.bytes,
         fields: b.fields,
@@ -732,6 +778,8 @@ fn sectionless(image: Image, arch: Arch) -> Image {
         (".rela.dyn", 7, 8),
         (".rel.dyn", 17, 18),
         (".relr.dyn", 36, 35),
+        (".android.rela.dyn", 0x6000_0011, 0x6000_0012),
+        (".android.rel.dyn", 0x6000_000f, 0x6000_0010),
     ] {
         if let Some((addr, size)) = find(name) {
             tags.push(("relocations", address_tag, addr));
@@ -974,11 +1022,19 @@ fn pe_image(arch: Arch) -> Image {
 fn images() -> Vec<Image> {
     let mut images = Vec::new();
     for arch in [Arch::X64, Arch::Arm64, Arch::Arm32] {
-        images.push(elf_image(arch, false));
-        images.push(elf_image(arch, true));
-        images.push(sectionless(elf_image(arch, false), arch));
+        images.push(elf_image(arch, Packing::None));
+        images.push(elf_image(arch, Packing::Relr));
+        images.push(elf_image(arch, Packing::Android));
+        images.push(sectionless(elf_image(arch, Packing::None), arch));
     }
-    images.push(sectionless(elf_image(Arch::Arm64, true), Arch::Arm64));
+    images.push(sectionless(
+        elf_image(Arch::Arm64, Packing::Relr),
+        Arch::Arm64,
+    ));
+    images.push(sectionless(
+        elf_image(Arch::Arm32, Packing::Android),
+        Arch::Arm32,
+    ));
     images.push(pe_image(Arch::X64));
     images.push(pe_image(Arch::Arm64));
     images

@@ -30,6 +30,8 @@ const ELF_SHT_NOBITS: u32 = 8;
 const ELF_SHT_REL: u32 = 9;
 const ELF_SHT_DYNSYM: u32 = 11;
 const ELF_SHT_RELR: u32 = 19;
+const ELF_SHT_ANDROID_REL: u32 = 0x6000_0001;
+const ELF_SHT_ANDROID_RELA: u32 = 0x6000_0002;
 const ELF_SHF_WRITE: u64 = 0x1;
 const ELF_SHF_ALLOC: u64 = 0x2;
 const ELF_SHF_EXECINSTR: u64 = 0x4;
@@ -788,18 +790,25 @@ fn parse_elf_budgeted(
             }
             continue;
         }
-        if section.kind != ELF_SHT_RELA && section.kind != ELF_SHT_REL {
+        // Android's packed tables (`--pack-dyn-relocs=android`) hold the same
+        // entries as their unpacked twins, so they are decoded into that form.
+        let (kind, packed) = match section.kind {
+            ELF_SHT_ANDROID_RELA => (ELF_SHT_RELA, true),
+            ELF_SHT_ANDROID_REL => (ELF_SHT_REL, true),
+            kind => (kind, false),
+        };
+        if kind != ELF_SHT_RELA && kind != ELF_SHT_REL {
             continue;
         }
         // `Elf32_Rel` is 8 bytes (ARM32 uses REL, not RELA); the addend that
         // RELA adds is never read here.
-        let rel_struct_size = match (is64, section.kind == ELF_SHT_RELA) {
+        let rel_struct_size = match (is64, kind == ELF_SHT_RELA) {
             (true, true) => 24usize,
             (true, false) => 16,
             (false, true) => 12,
             (false, false) => 8,
         };
-        let entry_size = if section.entsize != 0 {
+        let entry_size = if section.entsize != 0 && !packed {
             section.entsize as usize
         } else {
             rel_struct_size
@@ -808,6 +817,16 @@ fn parse_elf_budgeted(
             continue;
         }
         let raw = section_bytes(data, section, &mut budget)?;
+        let raw: Cow<'_, [u8]> = if packed {
+            Cow::Owned(android_relocations(
+                &raw,
+                is64,
+                kind == ELF_SHT_RELA,
+                relocation_entries_left,
+            )?)
+        } else {
+            raw
+        };
         let count = raw.len() / entry_size;
         if count > relocation_entries_left {
             return Err(SourceFormatError(
@@ -846,7 +865,7 @@ fn parse_elf_budgeted(
             };
             if is64
                 && e_type != ELF_ET_REL
-                && section.kind == ELF_SHT_RELA
+                && kind == ELF_SHT_RELA
                 && r_info & 0xffff_ffff == relative
             {
                 if start_pointers.len() < 2 * crate::unwind::MAX_UNWIND_ENTRIES {
@@ -1362,6 +1381,111 @@ fn section_table(
     Ok(sections)
 }
 
+/// Android's packed relocations (`APS2`, as bionic reads them) re-encoded as
+/// plain `Elf*_Rela` (`rela`) or `Elf*_Rel` entries.
+///
+/// The stream is SLEB128 values: the count and first offset, then groups
+/// whose flags say which of offset delta, info, and addend delta the group
+/// shares and which each entry carries. More than `limit` entries is a
+/// malformed table; a truncated stream keeps the entries before the cut.
+fn android_relocations(
+    raw: &[u8],
+    is64: bool,
+    rela: bool,
+    limit: usize,
+) -> Result<Vec<u8>, SourceFormatError> {
+    const GROUPED_BY_INFO: i64 = 1;
+    const GROUPED_BY_OFFSET_DELTA: i64 = 2;
+    const GROUPED_BY_ADDEND: i64 = 4;
+    const GROUP_HAS_ADDEND: i64 = 8;
+    let Some(stream) = raw.strip_prefix(b"APS2") else {
+        return Ok(Vec::new());
+    };
+    let mut cursor = 0usize;
+    let mut next = || -> Option<i64> {
+        let mut value = 0i64;
+        for shift in (0..64).step_by(7) {
+            let byte = *stream.get(cursor)?;
+            cursor += 1;
+            value |= i64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                if shift + 7 < 64 && byte & 0x40 != 0 {
+                    value |= -1i64 << (shift + 7);
+                }
+                return Some(value);
+            }
+        }
+        None
+    };
+    let mut out = Vec::new();
+    let (Some(count), Some(mut offset)) = (next(), next()) else {
+        return Ok(out);
+    };
+    let count = usize::try_from(count).unwrap_or(0);
+    if count > limit {
+        return Err(SourceFormatError(
+            "ELF packed relocations hold more entries than the file".into(),
+        ));
+    }
+    let mut emit = |offset: i64, info: i64, addend: i64| {
+        for value in [offset, info, addend].iter().take(if rela { 3 } else { 2 }) {
+            if is64 {
+                out.extend_from_slice(&value.to_le_bytes());
+            } else {
+                out.extend_from_slice(&(*value as u32).to_le_bytes());
+            }
+        }
+    };
+    let (mut info, mut addend, mut done) = (0i64, 0i64, 0usize);
+    'groups: while done < count {
+        let (Some(size), Some(flags)) = (next(), next()) else {
+            break;
+        };
+        let delta = if flags & GROUPED_BY_OFFSET_DELTA != 0 {
+            match next() {
+                Some(delta) => delta,
+                None => break,
+            }
+        } else {
+            0
+        };
+        if flags & GROUPED_BY_INFO != 0 {
+            let Some(value) = next() else { break };
+            info = value;
+        }
+        let has_addend = rela && flags & GROUP_HAS_ADDEND != 0;
+        if has_addend && flags & GROUPED_BY_ADDEND != 0 {
+            let Some(value) = next() else { break };
+            addend = addend.wrapping_add(value);
+        } else if !has_addend {
+            addend = 0;
+        }
+        // A group never holds more than the entries still to come; a zero or
+        // negative size consumes its header and nothing else.
+        let size = usize::try_from(size).unwrap_or(0).min(count - done);
+        for _ in 0..size {
+            let step = if flags & GROUPED_BY_OFFSET_DELTA != 0 {
+                delta
+            } else {
+                let Some(step) = next() else { break 'groups };
+                step
+            };
+            offset = offset.wrapping_add(step);
+            if flags & GROUPED_BY_INFO == 0 {
+                let Some(value) = next() else { break 'groups };
+                info = value;
+            }
+            if has_addend && flags & GROUPED_BY_ADDEND == 0 {
+                let Some(value) = next() else { break 'groups };
+                addend = addend.wrapping_add(value);
+            }
+            emit(offset, info, addend);
+            done += 1;
+        }
+    }
+    Ok(out)
+}
+
 /// The places an `SHT_RELR` table relocates (gABI packed relative
 /// relocations): an even word is a place, and each odd word after it is a
 /// bitmap of the `8 * word - 1` words that follow the last place covered.
@@ -1431,6 +1555,10 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
     const DT_JMPREL: u64 = 23;
     const DT_RELRSZ: u64 = 35;
     const DT_RELR: u64 = 36;
+    const DT_ANDROID_REL: u64 = 0x6000_000f;
+    const DT_ANDROID_RELSZ: u64 = 0x6000_0010;
+    const DT_ANDROID_RELA: u64 = 0x6000_0011;
+    const DT_ANDROID_RELASZ: u64 = 0x6000_0012;
 
     let word = |offset: usize| -> Option<u64> {
         if is64 {
@@ -1565,6 +1693,18 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
         (DT_REL, DT_RELSZ, ELF_SHT_REL, ".rel.dyn"),
         (DT_JMPREL, DT_PLTRELSZ, pltrel_kind, ".rela.plt"),
         (DT_RELR, DT_RELRSZ, ELF_SHT_RELR, ".relr.dyn"),
+        (
+            DT_ANDROID_RELA,
+            DT_ANDROID_RELASZ,
+            ELF_SHT_ANDROID_RELA,
+            ".rela.dyn",
+        ),
+        (
+            DT_ANDROID_REL,
+            DT_ANDROID_RELSZ,
+            ELF_SHT_ANDROID_REL,
+            ".rel.dyn",
+        ),
     ];
     for (address_tag, size_tag, kind, name) in tables {
         let (Some(&addr), Some(&size)) = (tags.get(&address_tag), tags.get(&size_tag)) else {
@@ -2564,6 +2704,43 @@ mod tests {
         // A bitmap before any place relocates nothing.
         let leading: Vec<u8> = [3u32, 0x40].iter().flat_map(|w| w.to_le_bytes()).collect();
         assert_eq!(relr_slots(&leading, 4, &mut 8).unwrap(), vec![0x40]);
+    }
+
+    #[test]
+    fn packed_relocation_streams_never_panic_and_stay_bounded() {
+        let mut state = 0x9e37_79b9u32;
+        for size in [0usize, 3, 4, 5, 9, 64, 4096] {
+            for prefix in [&b""[..], b"APS2"] {
+                let mut data = prefix.to_vec();
+                data.extend((0..size).map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                }));
+                for (is64, rela) in [(true, true), (true, false), (false, true), (false, false)] {
+                    let entry = match (is64, rela) {
+                        (true, true) => 24,
+                        (true, false) => 16,
+                        (false, true) => 12,
+                        (false, false) => 8,
+                    };
+                    if let Ok(out) = android_relocations(&data, is64, rela, 1000) {
+                        assert!(out.len() <= 1000 * entry);
+                        assert_eq!(out.len() % entry, 0);
+                    }
+                }
+                let _ = relr_slots(&data, 8, &mut 100_000);
+                let _ = relr_slots(&data, 4, &mut 100_000);
+            }
+        }
+        // A huge count is refused, and a group of size 0 consumes its header.
+        assert!(android_relocations(b"APS2\xff\xff\x03\x00", true, true, 10).is_err());
+        let zero_groups = [b"APS2".to_vec(), vec![2, 0x10], [0u8, 0].repeat(64)].concat();
+        assert_eq!(
+            android_relocations(&zero_groups, true, true, 10).unwrap(),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
