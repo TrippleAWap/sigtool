@@ -343,6 +343,32 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
     }
 }
 
+/// Wilson score interval at 95% for `successes` of `n`; `(0, 1)` for `n = 0`.
+/// Corpus cells hold tens of samples, where the normal approximation's
+/// interval leaves [0, 1] and collapses to a point at rates 0 and 1.
+fn wilson(successes: usize, n: usize) -> (f64, f64) {
+    if n == 0 {
+        return (0.0, 1.0);
+    }
+    const Z: f64 = 1.959_963_984_540_054;
+    let n = n as f64;
+    let p = successes as f64 / n;
+    let z2 = Z * Z;
+    let denominator = 1.0 + z2 / n;
+    let centre = (p + z2 / (2.0 * n)) / denominator;
+    let half = Z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
+    ((centre - half).max(0.0), (centre + half).min(1.0))
+}
+
+/// `k/n = rate [low, high]`: the rate with its n and 95% Wilson interval.
+fn rate_text(successes: usize, n: usize) -> String {
+    let (low, high) = wilson(successes, n);
+    format!(
+        "{successes}/{n} = {:.3} [{low:.3}, {high:.3}]",
+        ratio(successes, n)
+    )
+}
+
 /// `(arch, opt, file stem)` from `arch/opt/file.elf` or `negative/arch/opt/file.elf`.
 fn kind(path: &str) -> (String, String, String) {
     let parts: Vec<&str> = path
@@ -1449,7 +1475,9 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
 
 /// PLAN.md §2 (G1, G3) v1.0 goals, evaluated on a report. Informational: the gate
 /// is [`compare`]; this says how far the tool is from "done".
-pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
+/// Each goal is `(name, successes, n, goal, met)`; `met` compares the point
+/// rate, like the gate.
+pub fn targets(report: &BenchReport) -> Vec<(String, usize, usize, f64, bool)> {
     let mut out = Vec::new();
     let mut rate = |name: &str, filter: &dyn Fn(&RecallCell) -> bool, goal: f64| {
         let (hits, top, attempts) = report
@@ -1460,9 +1488,21 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
                 (h + c.hits, t + c.top_hits, a + c.attempts)
             });
         let value = ratio(hits, attempts);
-        out.push((format!("{name} (found)"), value, goal, value >= goal));
+        out.push((
+            format!("{name} (found)"),
+            hits,
+            attempts,
+            goal,
+            value >= goal,
+        ));
         let value = ratio(top, attempts);
-        out.push((format!("{name} (top-1)"), value, goal, value >= goal));
+        out.push((
+            format!("{name} (top-1)"),
+            top,
+            attempts,
+            goal,
+            value >= goal,
+        ));
     };
     // Groups: same arch (comparison quality), cross arch from one sample (the
     // goal), merged (two samples), and merged held out (an architecture
@@ -1538,13 +1578,14 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
             (w + c.signatures_with_hits, t + c.signatures)
         });
         let value = ratio(with, total);
-        out.push((label.to_string(), value, ceiling, value <= ceiling));
+        out.push((label.to_string(), with, total, ceiling, value <= ceiling));
     }
     for cell in &report.identified {
         let value = cell.precision();
         out.push((
             format!("identified precision, {}", cell.discovery),
-            value,
+            cell.correct,
+            cell.answers + cell.unrelated_answers,
             0.98,
             value >= 0.98,
         ));
@@ -1577,14 +1618,12 @@ pub fn render(report: &BenchReport) -> String {
             let same_build = cell.source_opt == cell.target_opt;
             let _ = writeln!(
                 text,
-                "  {} {}->{}: {}/{} = {:.3}  top-1 {:.3}{}",
+                "  {} {}->{}: {}  top-1 {}{}",
                 cell.arch,
                 cell.source_opt,
                 cell.target_opt,
-                cell.hits,
-                cell.attempts,
-                cell.rate(),
-                cell.top_rate(),
+                rate_text(cell.hits, cell.attempts),
+                rate_text(cell.top_hits, cell.attempts),
                 if same_build { "  (same build)" } else { "" }
             );
             let bucket = if same_build { &mut same } else { &mut cross };
@@ -1593,13 +1632,9 @@ pub fn render(report: &BenchReport) -> String {
         }
         let _ = writeln!(
             text,
-            "  total same build: {}/{} = {:.3}\n  total cross build: {}/{} = {:.3}",
-            same.0,
-            same.1,
-            ratio(same.0, same.1),
-            cross.0,
-            cross.1,
-            ratio(cross.0, cross.1)
+            "  total same build: {}\n  total cross build: {}",
+            rate_text(same.0, same.1),
+            rate_text(cross.0, cross.1)
         );
     }
     for (label, cells) in [
@@ -1628,11 +1663,9 @@ pub fn render(report: &BenchReport) -> String {
         for cell in cells {
             let _ = writeln!(
                 text,
-                "  {}: {}/{} = {:.3}, total hits {}, {} targets ({:.1} MiB)",
+                "  {}: {}, total hits {}, {} targets ({:.1} MiB)",
                 cell.arch,
-                cell.signatures_with_hits,
-                cell.signatures,
-                cell.rate(),
+                rate_text(cell.signatures_with_hits, cell.signatures),
                 cell.hits,
                 cell.targets,
                 cell.target_bytes as f64 / (1024.0 * 1024.0)
@@ -1649,17 +1682,16 @@ pub fn render(report: &BenchReport) -> String {
     for cell in &report.identified {
         let _ = writeln!(
             text,
-            "  {}: precision {}/{} = {:.3} ({} wrong where the function is, {} where it is not); \
-             abstention {}/{} = {:.3}",
+            "  {}: precision {} ({} wrong where the function is, {} where it is not); \
+             abstention {}",
             cell.discovery,
-            cell.correct,
-            cell.answers + cell.unrelated_answers,
-            cell.precision(),
+            rate_text(cell.correct, cell.answers + cell.unrelated_answers),
             cell.answers - cell.correct,
             cell.unrelated_answers,
-            cell.unrelated_scans - cell.unrelated_answers,
-            cell.unrelated_scans,
-            cell.abstention()
+            rate_text(
+                cell.unrelated_scans - cell.unrelated_answers,
+                cell.unrelated_scans
+            )
         );
     }
     for discovery in [HINTED, HINT_FREE] {
@@ -1678,21 +1710,20 @@ pub fn render(report: &BenchReport) -> String {
         for cell in cells {
             let _ = writeln!(
                 text,
-                "  {} / {}: {}/{} = {:.3}",
+                "  {} / {}: {}",
                 cell.library,
                 cell.row,
-                cell.top_hits,
-                cell.attempts,
-                cell.top_rate()
+                rate_text(cell.top_hits, cell.attempts)
             );
         }
     }
     let _ = writeln!(text, "\nv1.0 goals (PLAN.md §2)");
-    for (name, value, goal, met) in targets(report) {
+    for (name, successes, n, goal, met) in targets(report) {
         let _ = writeln!(
             text,
-            "  [{}] {name}: {value:.3} (target {}{goal:.2})",
+            "  [{}] {name}: {} (target {}{goal:.2})",
             if met { "met" } else { "   " },
+            rate_text(successes, n),
             if name.contains("FP rate") { "<=" } else { ">=" }
         );
     }
@@ -1728,18 +1759,18 @@ pub fn render(report: &BenchReport) -> String {
         for (group, (attempts, alone, joint)) in groups {
             let _ = writeln!(
                 text,
-                "  {group}: {:.3} -> {:.3} ({alone} -> {joint} of {attempts})",
-                ratio(alone, attempts),
-                ratio(joint, attempts)
+                "  {group}: {} -> {}",
+                rate_text(alone, attempts),
+                rate_text(joint, attempts)
             );
         }
         for cell in &report.joint_false_positives {
             let _ = writeln!(
                 text,
-                "  {} signatures hitting other libraries: {:.3} -> {:.3}",
+                "  {} signatures hitting other libraries: {} -> {}",
                 cell.library,
-                ratio(cell.independent_with_hits, cell.signatures),
-                ratio(cell.joint_with_hits, cell.signatures)
+                rate_text(cell.independent_with_hits, cell.signatures),
+                rate_text(cell.joint_with_hits, cell.signatures)
             );
         }
     }
@@ -1952,6 +1983,20 @@ mod tests {
         let failures = compare(&baseline, &current, DEFAULT_TOLERANCE);
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].starts_with("library top-1 recall"));
+    }
+
+    #[test]
+    fn wilson_intervals_match_hand_computed_values() {
+        // Worked by hand from Wilson (1927): at 0/n the upper bound is
+        // z^2 / (n + z^2), which a normal-approximation interval would give as 0.
+        let close = |(low, high): (f64, f64), want: (f64, f64)| {
+            (low - want.0).abs() < 5e-4 && (high - want.1).abs() < 5e-4
+        };
+        assert!(close(wilson(0, 10), (0.0, 0.2775)));
+        assert!(close(wilson(5, 10), (0.2366, 0.7634)));
+        assert!(close(wilson(10, 10), (0.7225, 1.0)));
+        assert_eq!(wilson(0, 0), (0.0, 1.0));
+        assert_eq!(rate_text(5, 10), "5/10 = 0.500 [0.237, 0.763]");
     }
 
     #[test]
