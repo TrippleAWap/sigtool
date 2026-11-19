@@ -252,6 +252,10 @@ struct BenchArgs {
     /// Keep at most N ground-truth functions per binary (0 = all)
     #[arg(long = "max-functions", default_value_t = 0)]
     max_functions: usize,
+    /// With --max-functions, pick functions by CRC-32 of this seed and the
+    /// name instead of the name alone (a fresh sample for milestone exits)
+    #[arg(long = "sample-seed", value_name = "N")]
+    sample_seed: Option<u64>,
     /// Only one discovery mode: hinted or hint-free
     #[arg(long, value_parser = ["hinted", "hint-free"])]
     discovery: Option<String>,
@@ -1311,6 +1315,7 @@ fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
     let options = bench::BenchOptions {
         arches: args.arch.clone(),
         max_functions: args.max_functions,
+        sample_seed: args.sample_seed,
         discovery: args.discovery.clone(),
         skip_false_positives: args.no_fp,
         fp_report: args.fp_report.clone(),

@@ -238,6 +238,9 @@ pub struct Cost {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchReport {
     pub spec_version: String,
+    /// `--sample-seed` of the run; absent for the default, name-only sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_seed: Option<u64>,
     /// True when every hint-free scan ran on a `strip --strip-all` copy.
     #[serde(default)]
     pub hint_free_stripped: bool,
@@ -394,6 +397,7 @@ fn load_targets(
     entries: &[Value],
     arches: &BTreeSet<String>,
     max_functions: usize,
+    sample_seed: Option<u64>,
 ) -> Result<Vec<Target>, String> {
     let mut targets = Vec::new();
     for entry in entries {
@@ -436,7 +440,7 @@ fn load_targets(
             })
             .unwrap_or_default();
         let all_functions = functions.clone();
-        let functions = limit_functions(functions, max_functions);
+        let functions = limit_functions(functions, max_functions, sample_seed);
         targets.push(Target {
             arch,
             source_file,
@@ -465,13 +469,29 @@ fn parallel<T: Send, F: Fn(usize) -> T + Sync>(count: usize, job: F) -> Vec<T> {
 
 /// Keep the first `limit` functions by CRC-32 of the name (0 keeps all). The
 /// choice depends only on names, so every build of a library keeps the same set.
-fn limit_functions(functions: BTreeMap<String, u64>, limit: usize) -> BTreeMap<String, u64> {
+/// A `seed` ranks by CRC-32 of its little-endian bytes followed by the name
+/// instead: a different sample of the same libraries, so a milestone exit is
+/// not measured only on the functions every change was tuned against.
+fn limit_functions(
+    functions: BTreeMap<String, u64>,
+    limit: usize,
+    seed: Option<u64>,
+) -> BTreeMap<String, u64> {
     if limit == 0 || functions.len() <= limit {
         return functions;
     }
+    let rank = |name: &str| match seed {
+        None => crc32fast::hash(name.as_bytes()),
+        Some(seed) => {
+            let mut hasher = crc32fast::Hasher::new();
+            hasher.update(&seed.to_le_bytes());
+            hasher.update(name.as_bytes());
+            hasher.finalize()
+        }
+    };
     let mut ranked: Vec<(u32, String, u64)> = functions
         .into_iter()
-        .map(|(name, start)| (crc32fast::hash(name.as_bytes()), name, start))
+        .map(|(name, start)| (rank(&name), name, start))
         .collect();
     ranked.sort();
     ranked
@@ -500,6 +520,9 @@ pub struct BenchOptions {
     pub arches: Vec<String>,
     /// Ground-truth functions kept per binary; 0 keeps all.
     pub max_functions: usize,
+    /// Rank functions for `max_functions` by CRC-32 of seed and name instead
+    /// of name alone (see [`limit_functions`]).
+    pub sample_seed: Option<u64>,
     /// Only this discovery mode (`hinted` or `hint-free`); `None` runs both.
     pub discovery: Option<String>,
     /// Skip both false-positive measurements (recall-only iteration).
@@ -533,12 +556,14 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         document["binaries"].as_array().unwrap_or(&empty),
         &arches,
         max_functions,
+        options.sample_seed,
     )?;
     let negatives = load_targets(
         corpus,
         document["negative"].as_array().unwrap_or(&empty),
         &arches,
         max_functions,
+        options.sample_seed,
     )?;
     if targets.is_empty() {
         return Err(format!("no corpus binaries under {}", corpus.display()));
@@ -913,6 +938,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     }
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
+        sample_seed: options.sample_seed,
         hint_free_stripped: targets.iter().all(|t| t.stripped.is_some()),
         hint_free_false_positives,
         signatures: all.len(),
@@ -1602,6 +1628,9 @@ pub fn render(report: &BenchReport) -> String {
         "signatures: {}  refused: {}  merged pairs refused: {}",
         report.signatures, report.refused, report.merged_refused
     );
+    if let Some(seed) = report.sample_seed {
+        let _ = writeln!(text, "sample seed: {seed}");
+    }
     for (arch, counts) in &report.verdicts {
         let line: Vec<String> = counts.iter().map(|(v, n)| format!("{v}={n}")).collect();
         let _ = writeln!(text, "  {arch}: {}", line.join(" "));
@@ -1997,6 +2026,24 @@ mod tests {
         assert!(close(wilson(10, 10), (0.7225, 1.0)));
         assert_eq!(wilson(0, 0), (0.0, 1.0));
         assert_eq!(rate_text(5, 10), "5/10 = 0.500 [0.237, 0.763]");
+    }
+
+    #[test]
+    fn sample_seed_changes_only_the_ranking() {
+        let functions: BTreeMap<String, u64> = (0..64u64)
+            .map(|index| (format!("function_{index}"), index))
+            .collect();
+        let unseeded = limit_functions(functions.clone(), 8, None);
+        // No seed: the name-only CRC ranking every saved baseline used.
+        let mut by_name: Vec<&String> = functions.keys().collect();
+        by_name.sort_by_key(|name| (crc32fast::hash(name.as_bytes()), *name));
+        let expected: BTreeSet<&String> = by_name.into_iter().take(8).collect();
+        assert_eq!(unseeded.keys().collect::<BTreeSet<_>>(), expected);
+        let seeded = limit_functions(functions.clone(), 8, Some(7));
+        assert_eq!(seeded.len(), 8);
+        assert_ne!(seeded, unseeded);
+        assert_eq!(seeded, limit_functions(functions.clone(), 8, Some(7)));
+        assert_ne!(seeded, limit_functions(functions, 8, Some(8)));
     }
 
     #[test]
