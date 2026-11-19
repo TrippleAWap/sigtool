@@ -2,9 +2,38 @@
 
 ## v6 — real-world targets
 
-`SPEC_VERSION` is `6`. Feature records are unchanged; acceptance changes for
+`SPEC_VERSION` is `6`. x86-64 `const` records change (immediates of
+instructions using `rbp` as a register are kept) and acceptance changes for
 targets that name no function, so v5 documents and DBs are refused (rule 16)
 and must be regenerated or rebuilt (`db build --file IMAGE --functions F`).
+
+### x86-64 immediates beside `rbp`
+
+* The x86 constant rule skips instructions that touch the stack pointer
+  (stack adjustments are ABI). It counted `rbp`/`ebp` as the stack pointer
+  too, in every operand position, so immediates in `imul edi, ebp, K`, `cmp
+  ebp, K`, and `-O0`'s `mov dword [rbp-4], K` gave no record. gcc omits the
+  frame pointer from `-O1` up and allocates `rbp` like any register, and the
+  ARM decoders test only `sp`. Only `rsp`/`esp`/`sp` count now; the op-class
+  histogram (`ops:stack`) is unchanged. Golden vectors `x64-O0`,
+  `x64-cet-O0`, `x64-pic-O0` gain the records.
+* Real corpus (`--max-functions 4 --joint`): 290 top-1 cells up, 27 down;
+  hint-free top-1 other compiler 0.412 -> 0.427, cross arch 0.433 -> 0.446,
+  cross arch other compiler 0.287 -> 0.302; hinted cross arch 0.374 -> 0.386;
+  joint top-1 9338 -> 9421; strong FP 0.000, negative 0.000, hint-free
+  any-verdict 0.115 -> 0.112, hinted any-verdict 0.075 -> 0.083; identified
+  precision hint-free 0.995 (3163 -> 3203 correct), hinted 0.994 -> 0.995.
+  Dropped past tolerance (one function each of 16-18): merged->arm32 gcc-O0
+  -> clang-O0 / gcc-O2 / gcc-Os and merged->arm64 clang-O0 -> gcc-O2,
+  gcc-O0 -> clang-O2, hint-free. Real-world tier: hint-free top-1 hits 9672
+  -> 9905, every FP rate unchanged.
+
+### Packed relocations
+
+* `SHT_RELR`/`DT_RELR` and Android APS2 tables are part of the relocation
+  set (SPEC.md §2.2); an image packed with `-z pack-relative-relocs` or
+  `--pack-dyn-relocs=android` gives the features of its unpacked twin. No
+  corpus image is packed, so no measured number moves.
 
 ### Callees in targets that name no function
 

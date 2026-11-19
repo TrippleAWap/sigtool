@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn canonical_yaml_matches_python_reference() {
         // Produced by the Python reference for the same signature.
-        let expected = "spec_version: '5'\nname: banner_direct\nconfidence: low\nanchors:\n- str:direct banner literal\nthresholds:\n  match: 0.85\n  min_distinct: 1\nfeatures:\n- kind: cfg\n  value: blocks:1\n  weight: 0.25\n  required: false\n- kind: str\n  value: direct banner literal\n  weight: 1.262\n  required: true\nprovenance:\n- arch: x64\n  module: fixture\n  rva: '0x1110'\n";
+        let expected = "spec_version: '6'\nname: banner_direct\nconfidence: low\nanchors:\n- str:direct banner literal\nthresholds:\n  match: 0.85\n  min_distinct: 1\nfeatures:\n- kind: cfg\n  value: blocks:1\n  weight: 0.25\n  required: false\n- kind: str\n  value: direct banner literal\n  weight: 1.262\n  required: true\nprovenance:\n- arch: x64\n  module: fixture\n  rva: '0x1110'\n";
         assert_eq!(sample().to_yaml().expect("yaml"), expected);
     }
 
