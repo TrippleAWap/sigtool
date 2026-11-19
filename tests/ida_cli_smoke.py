@@ -412,6 +412,10 @@ def main() -> int:
     import ida_plugin as plugin
 
     plugin._clipboard_text = lambda: idb.clipboard
+    # Every CLI document the plugin reads budgets from, to check it does.
+    budget_reads: list[dict] = []
+    describe_truncation = plugin.describe_truncation
+    plugin.describe_truncation = lambda doc: budget_reads.append(doc) or describe_truncation(doc)
     plugin._set_clipboard = lambda text: setattr(idb, "clipboard", text) or True
 
     by_name = {name: ea for ea, (name, _size) in sign_truth.items()}
@@ -466,6 +470,10 @@ def main() -> int:
         idb.answer(str(yaml))
         plugin.LocateHandler().run()
         check(not idb.answers, "without one on the clipboard, locate asks for a file")
+        check(
+            len(budget_reads) == 2 and all("truncated" in doc for doc in budget_reads),
+            "locate reads the exhausted budgets from both JSON documents",
+        )
 
         db = outputs / f"{sign_image.name}.db"
         plugin.SignAllHandler().run()
@@ -560,6 +568,7 @@ def main() -> int:
         plugin.WaitStatus = RecordingStatus
         plugin.ApplyNamesHandler(str(db)).run()
         check(not idb.answers, "apply-names takes the menu's DB without a dialog")
+        check("truncated" in budget_reads[-1], "apply-names reads the scan's exhausted budgets")
         if plugin._supports("scan", "--progress"):
             check(bool(progress_seen), f"apply-names saw scan progress ({progress_seen[-1:]})")
         else:

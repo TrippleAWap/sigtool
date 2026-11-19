@@ -117,6 +117,25 @@ class NameTests(unittest.TestCase):
         )
         self.assertIn("signed 1 of 2", text)
         self.assertIn("0x20 b: refused (self-test)", text)
+        self.assertNotIn("incomplete", text)
+
+    def test_truncation_is_described(self):
+        self.assertIsNone(plugin.describe_truncation({}))
+        self.assertIsNone(plugin.describe_truncation({"truncated": []}))
+        document = {
+            "truncated": [
+                {"budget": "reference_index", "count": 4000000, "limit": 4000000},
+                {"budget": "joint pairs", "count": None, "limit": 65536},
+            ]
+        }
+        self.assertEqual(
+            plugin.describe_truncation(document),
+            "incomplete: budgets ran out: reference index (limit 4000000), "
+            "joint pairs (limit 65536)",
+        )
+        summary = plugin.summarize_build({"signed": 0, "functions": [], **document})
+        self.assertEqual(summary.splitlines()[0], "signed 0 of 0 functions")
+        self.assertIn("incomplete: budgets ran out: reference index", summary)
 
 
 class ChooseRenamesTests(unittest.TestCase):

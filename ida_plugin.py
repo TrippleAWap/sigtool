@@ -258,10 +258,34 @@ class WaitStatus:
         return self.stderr().strip() or f"exit code {returncode}"
 
 
+def describe_truncation(document: dict) -> str | None:
+    """Which work budgets ran out, from a ``truncated`` array of CLI JSON, or ``None``.
+
+    A scan past a budget (README "Limits") misses functions it never reached,
+    so "no match" or a short rename list is not a real negative then.
+    """
+    entries = document.get("truncated") or []
+    if not isinstance(entries, list) or not entries:
+        return None
+    parts = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        budget = str(entry.get("budget") or "?").replace("_", " ")
+        limit = entry.get("limit")
+        parts.append(f"{budget} (limit {limit})" if limit is not None else budget)
+    if not parts:
+        return None
+    return f"incomplete: budgets ran out: {', '.join(parts)}"
+
+
 def summarize_build(report: dict) -> str:
     """A short text summary of a ``db build --report`` document."""
     rows = report.get("functions", [])
     lines = [f"signed {report.get('signed', 0)} of {len(rows)} functions"]
+    truncation = describe_truncation(report)
+    if truncation:
+        lines.append(truncation)
     skipped = [row for row in rows if row.get("status") != "signed"]
     if skipped:
         lines.append(f"skipped {len(skipped)}:")
@@ -831,6 +855,14 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
     return status.stderr()
 
 
+def _echo_cli_lines(stderr: str, prefixes: tuple[str, ...] = ("sigtool-native:",)) -> None:
+    """Copy the CLI's own notes (budget warnings, the discovery mode) to the
+    Output window; the wait box swallowed them."""
+    for line in stderr.splitlines():
+        if line.startswith(prefixes):
+            ida_kernwin.msg(f"sigtool: {line.removeprefix('sigtool-native: ')}\n")
+
+
 # CLI flags newer than some installed binaries, by (path, subcommand, flag).
 _flag_support: dict[tuple[str, str, str], bool] = {}
 
@@ -1266,9 +1298,7 @@ def _sign_to_db(
             f"sigtool: signing {what}",
         )
         report = json.loads(report_path.read_text(encoding="utf-8"))
-    for line in stderr.splitlines():
-        if line.startswith("skipped "):
-            ida_kernwin.msg(f"sigtool: {line}\n")
+    _echo_cli_lines(stderr, ("skipped ", "sigtool-native:"))
     _last_paths["db"] = path
     _remember("db", path)
     summary = summarize_build(report)
@@ -1389,7 +1419,7 @@ class LocateHandler(_Handler):
             image = _input_file()
             output = Path(temp) / "matches.json"
             # Exit 1 is "no accepted match"; the JSON is written either way.
-            _run_cancellable(
+            stderr = _run_cancellable(
                 [
                     "locate",
                     "--signature",
@@ -1404,18 +1434,25 @@ class LocateHandler(_Handler):
                 ok_codes=(0, 1),
             )
             result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+        _echo_cli_lines(stderr)
         name = str(result.get("signature") or Path(signature).stem)
+        truncation = describe_truncation(result)
         rows = match_rows(result.get("matches", []), int(ida_nalt.get_imagebase()))
         if not rows:
             ida_kernwin.msg(f"sigtool: no match for {name} (from {source}) in this IDB\n")
-            ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB")
+            note = (
+                f"\n\n{truncation}, so the function may be in code the scan skipped"
+                if truncation
+                else ""
+            )
+            ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB{note}")
             return
         ida_kernwin.msg(f"sigtool: {name} (from {source}): {len(rows)} match(es)\n")
         for row in rows:
             ida_kernwin.msg(f"sigtool:   {' '.join(row.cells)}\n")
         if _setting(SET_LIST_MATCHES):
             show_results(
-                f"sigtool: matches for {name}",
+                f"sigtool: matches for {name}" + (f" ({truncation})" if truncation else ""),
                 [
                     ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
                     ["Score", 8],
@@ -1496,9 +1533,10 @@ class RenameChooser(ida_kernwin.Choose):
     """The proposed renames, selected per [`default_selection`]; the rows still
     selected are applied."""
 
-    def __init__(self, proposals: list[Proposal], base: int) -> None:
+    def __init__(self, proposals: list[Proposal], base: int, note: str | None = None) -> None:
+        title = "sigtool: proposed renames (select the rows to apply)"
         super().__init__(
-            "sigtool: proposed renames (select the rows to apply)",
+            f"{title} ({note})" if note else title,
             [
                 ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
                 ["Current name", 24],
@@ -1584,16 +1622,15 @@ class ApplyNamesHandler(_Handler):
             # signatures are done, when the CLI can say.
             if _supports("scan", "--progress"):
                 arguments.append("--progress")
-            _run_cancellable(
+            stderr = _run_cancellable(
                 arguments,
                 "sigtool: scanning this IDB with the DB",
                 ok_codes=(0, 1),
             )
-            hits = (
-                json.loads(output.read_text(encoding="utf-8")).get("hits", [])
-                if output.exists()
-                else []
-            )
+            document = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+        _echo_cli_lines(stderr)
+        hits = document.get("hits", [])
+        truncation = describe_truncation(document)
         base = int(ida_nalt.get_imagebase())
 
         def name_owner(name: str) -> int | None:
@@ -1611,13 +1648,16 @@ class ApplyNamesHandler(_Handler):
         for name, reason in skipped:
             ida_kernwin.msg(f"sigtool: not renaming {name}: {reason}\n")
         if not proposals:
+            note = f"\n\n{truncation}" if truncation else ""
             ida_kernwin.warning(
                 f"sigtool: no renames to propose ({len(hits)} hits, {len(skipped)} skipped; "
-                "see the Output window)"
+                f"see the Output window){note}"
             )
             return
+        if truncation:
+            ida_kernwin.msg(f"sigtool: {truncation}; code the scan skipped got no proposals\n")
         if _setting(SET_CONFIRM_RENAMES):
-            chosen = RenameChooser(proposals, base).ask()
+            chosen = RenameChooser(proposals, base, truncation).ask()
         else:
             chosen = default_selection(proposals, _setting(SET_PRESELECT_USER_NAMES))
         source = Path(db).name
