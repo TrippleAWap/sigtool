@@ -46,6 +46,18 @@ tables (`.eh_frame`, `.ARM.exidx`, `.pdata`), function starts synthesized from
 code evidence where tables are missing (stripped ARM), dynamic symbols,
 relocations, and the code itself.
 
+ELF files are read as the loader reads them. Packed relocations (lld
+`-z pack-relative-relocs`, Android `--pack-dyn-relocs=android`) count like
+their unpacked twins. An image without section headers (`llvm-objcopy
+--strip-sections`, common in firmware) is read from its program headers:
+`PT_LOAD` segments, the `PT_DYNAMIC` tables, and the unwind tables behind
+`PT_GNU_EH_FRAME` and `PT_ARM_EXIDX`. Without sections, data that shares an
+executable segment with code is swept as code. GNU ld puts `.rodata` there
+on ARM and AArch64, so results can differ from the `--strip-all` copy. On
+the real corpus the first hint-free match was the same for 453 of 480
+signatures: all 300 on lld-linked and x86-64 images, and 153 of 180 on GNU
+ld ARM32, Thumb, and AArch64 images (`examples/sectionless.rs`).
+
 ### In IDA
 
 `ida_plugin.py` (IDA 8.4+ / 9.x) is a thin wrapper over `sigtool-native`: copy
