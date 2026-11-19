@@ -79,6 +79,7 @@ class FakeIdb:
         self.choosers: list = []
         self.registry: dict = {}
         self.clipboard = ""
+        self.wait_texts: list[str] = []
         self.messages: list[str] = []
         self.prompts: list[str] = []
         # `user_cancelled` answers True from this poll on (None: never).
@@ -124,7 +125,8 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin.ask_file = lambda _save, _mask, prompt: idb.next_answer(prompt)
     kernwin.ask_yn = lambda _default, prompt: idb.next_answer(prompt)
     kernwin.ask_str = lambda _default, _hist, prompt: idb.next_answer(prompt)
-    kernwin.show_wait_box = kernwin.replace_wait_box = lambda _text: None
+    kernwin.show_wait_box = lambda _text: None
+    kernwin.replace_wait_box = lambda text: idb.wait_texts.append(text)
     kernwin.hide_wait_box = lambda: None
     kernwin.user_cancelled = lambda: idb.user_cancelled()
     kernwin.get_screen_ea = lambda: idb.screen_ea
@@ -209,7 +211,11 @@ def install_fakes(idb: FakeIdb) -> None:
         return next((ea for ea, owned in idb.names.items() if owned == text), BADADDR)
 
     def set_name(ea, text, _flags):
-        idb.names[ea] = text
+        # An empty name clears it; IDA shows its dummy name again.
+        if text:
+            idb.names[ea] = text
+        else:
+            idb.names.pop(ea, None)
         return True
 
     name.get_name_ea = get_name_ea
@@ -425,6 +431,9 @@ def main() -> int:
         "--merge-arch", default="arm64", help="arch of the second merge sample (same build)"
     )
     parser.add_argument("--function", default=None, help="function to generate and locate")
+    parser.add_argument(
+        "--shape-only", action="store_true", help="also list shape-only matches when applying"
+    )
     # A floor that catches a broken plugin-to-CLI contract (a wrong base or
     # RVA parse renames almost nothing right), not the matcher's precision
     # target: that is measured by the real-corpus bench.
@@ -457,6 +466,10 @@ def main() -> int:
     import ida_plugin as plugin
 
     plugin._clipboard_text = lambda: idb.clipboard
+    # Every CLI document the plugin reads budgets from, to check it does.
+    budget_reads: list[dict] = []
+    describe_truncation = plugin.describe_truncation
+    plugin.describe_truncation = lambda doc: budget_reads.append(doc) or describe_truncation(doc)
     plugin._set_clipboard = lambda text: setattr(idb, "clipboard", text) or True
 
     by_name = {name: ea for ea, (name, _size) in sign_truth.items()}
@@ -513,11 +526,56 @@ def main() -> int:
         idb.answer(str(yaml))
         plugin.LocateHandler().run()
         check(not idb.answers, "without one on the clipboard, locate asks for a file")
+        check(
+            len(budget_reads) == 2 and all("truncated" in doc for doc in budget_reads),
+            "locate reads the exhausted budgets from both JSON documents",
+        )
+
+        # Explain: at the cursor (asking for the signature file, as the
+        # clipboard holds none), then from the locate list's first row.
+        idb.screen_ea = by_name[target] + 1
+        idb.answer(str(yaml))
+        plugin.ExplainHandler().run()
+        explained = idb.infos[-1] if idb.infos else ""
+        check(
+            not idb.answers
+            and explained.startswith(f"{target} at {by_name[target]:#x}")
+            and "\ngates:\n" in explained
+            and "\nmatched (" in explained,
+            f"explain at the cursor shows the gates ({explained.splitlines()[0]})",
+        )
+        listing = idb.choosers[-1]
+        row_ctx = types.SimpleNamespace(widget_title=listing.title, chooser_selection=[0])
+        plugin.ExplainRowHandler().run(row_ctx)
+        check(
+            idb.infos[-1].startswith(f"{target} at {listing.rows[0].ea:#x}")
+            and "rank 1 of" in idb.infos[-1],
+            "explain this row explains the locate list's best match",
+        )
 
         db = outputs / f"{sign_image.name}.db"
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
+        plugin.ShowDbHandler(str(db)).run()
+        listing = idb.choosers[-1]
+        signed = int(summary.split()[1])
+        check(
+            listing.title.startswith(f"sigtool: {db.name}: {signed} signatures, spec ")
+            and len(listing.rows) == signed
+            and all(row.ea is None and row.cells[1] for row in listing.rows),
+            f"the DB's contents list its {signed} signatures ({listing.title})",
+        )
+        check(
+            "\nverdicts: " in summary and "\nconfidence: " in summary,
+            "the sign-all summary counts verdicts and confidence: "
+            + "; ".join(summary.splitlines()[1:3]),
+        )
+        check(
+            any(text.endswith(" s") for text in idb.wait_texts)
+            and all(text.endswith(" s") for text in idb.wait_texts),
+            f"the wait box shows progress and the elapsed time ({idb.wait_texts[-1:]})",
+        )
 
         # The Functions view's selection, not the cursor: three named rows
         # (indices into the sorted function list) sign into one DB.
@@ -648,6 +706,8 @@ def main() -> int:
 
         # First from the IDB alone: the renames must be the ones the file gives.
         idb.__init__(apply_image, apply_idb_functions, shift)
+        if args.shape_only:
+            idb.registry["settings"] = plugin.DEFAULT_SETTINGS | plugin.SET_REVIEW_SHAPE_ONLY
         idb.recorded = str(temp / "gone" / apply_image.name)
         idb.idb_path = str(temp / "rebuilt-apply" / f"{apply_image.name}.i64")
         plugin.ApplyNamesHandler(str(db)).run()
@@ -655,9 +715,26 @@ def main() -> int:
 
         idb.__init__(apply_image, apply_idb_functions, shift)
         idb.idb_path = str(temp / "apply" / f"{apply_image.name}.i64")
+        if args.shape_only:
+            idb.registry["settings"] = plugin.DEFAULT_SETTINGS | plugin.SET_REVIEW_SHAPE_ONLY
+        before_apply = dict(idb.names)
         # The menu hands apply-names the DB sign-all wrote: no dialog.
+        progress_seen: list[tuple[int, int]] = []
+
+        class RecordingStatus(plugin.WaitStatus):
+            def feed(self, line: str) -> None:
+                super().feed(line)
+                if self.progress is not None:
+                    progress_seen.append(self.progress)
+
+        plugin.WaitStatus = RecordingStatus
         plugin.ApplyNamesHandler(str(db)).run()
         check(not idb.answers, "apply-names takes the menu's DB without a dialog")
+        check("truncated" in budget_reads[-1], "apply-names reads the scan's exhausted budgets")
+        if plugin._supports("scan", "--progress"):
+            check(bool(progress_seen), f"apply-names saw scan progress ({progress_seen[-1:]})")
+        else:
+            print("skip this CLI has no scan --progress (older than the plugin)")
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
         check(
             from_idb == renamed,
@@ -673,6 +750,21 @@ def main() -> int:
             if apply_truth.get(ea, ("",))[0] != name:
                 truth = apply_truth.get(ea, (None,))[0]
                 print(f"     wrong: {ea:#x} named {name}, ground truth {truth}")
+        review = next(c for c in idb.choosers if c.title.startswith("sigtool: proposed renames"))
+        unsure = [
+            (index, int(cells[0], 16), cells[2], cells[4])
+            for index, cells in enumerate(review.items)
+            if cells[4] != "identified"
+        ]
+        for kind in ("candidate", "shape-only"):
+            rows = [row for row in unsure if row[3] == kind]
+            good = sum(1 for _i, ea, name, _k in rows if apply_truth.get(ea, ("",))[0] == name)
+            print(f"     review rows ({kind}): {len(rows)}, {good} right by ground truth")
+        check(
+            not any(index in review.deflt for index, *_rest in unsure)
+            and not any(renamed.get(ea) == name for _i, ea, name, _k in unsure),
+            f"{len(unsure)} unsure matches are listed unselected and not applied",
+        )
         check(len(renamed) > 0, "apply renamed functions")
         check(precision >= args.min_precision, f"rename precision >= {args.min_precision}")
         check(
@@ -683,7 +775,10 @@ def main() -> int:
             idb.choosers[-1].title.startswith("sigtool: renamed"),
             "renames are listed in a results chooser",
         )
-
+        check(
+            all(plugin._sigtool_owned(ea) for ea in renamed),
+            "the renamed functions count as sigtool's, not the analyst's",
+        )
         # Sign-all from the menu in this IDB: the field shows the DB just
         # applied (the other IDB's), but signing writes this IDB's own DB.
         reference_db = db.read_bytes()
@@ -711,6 +806,15 @@ def main() -> int:
             and db.read_bytes() == reference_db
             and idb.messages[-1] == "sigtool: cancelled\n",
             "replacing another IDB's DB asks first, and No keeps it",
+        )
+        # Revert: every sigtool name goes back to what it replaced.
+        idb.answer(1)
+        plugin.RevertNamesHandler().run()
+        check(
+            not idb.answers
+            and idb.names == before_apply
+            and not any("sigtool:" in text for text in idb.comments.values()),
+            f"revert restores the {len(renamed)} old names and drops the provenance lines",
         )
     return 0
 

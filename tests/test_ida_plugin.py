@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import json
 import re
 import struct
 import sys
@@ -58,7 +59,7 @@ def hit(name, rva, evidence="identified", score=0.9, signature_id=None):
     }
 
 
-def choose(hits, names=None, user=(), overwrite=False):
+def choose(hits, names=None, user=(), overwrite=False, review=()):
     names = names or {}
     owners = {name: rva for rva, name in names.items()}
     return plugin.choose_renames(
@@ -67,6 +68,7 @@ def choose(hits, names=None, user=(), overwrite=False):
         user_named=lambda rva: rva in user,
         name_owner=owners.get,
         overwrite_user=overwrite,
+        review=review,
     )
 
 
@@ -89,6 +91,28 @@ class NameTests(unittest.TestCase):
     def test_progress_lines(self):
         self.assertEqual(plugin.parse_progress("progress 3/40\n"), (3, 40))
         self.assertIsNone(plugin.parse_progress("skipped 0x10 f: no"))
+        self.assertIsNone(plugin.parse_progress("phase match"))
+
+    def test_phase_lines(self):
+        self.assertEqual(plugin.parse_phase("phase joint\n"), "joint")
+        self.assertIsNone(plugin.parse_phase("progress 1/2"))
+        self.assertIsNone(plugin.parse_phase("phase of the moon"))
+
+    def test_wait_status_shows_phase_progress_and_elapsed(self):
+        status = plugin.WaitStatus("sigtool: scanning")
+        self.assertEqual(status.text(0.4), "sigtool: scanning\n0 s")
+        status.feed("phase context\n")
+        status.feed("phase match\n")
+        status.feed("progress 7/40\n")
+        self.assertEqual(status.text(12.7), "sigtool: scanning\nmatch, 7 / 40, 12 s")
+
+    def test_wait_status_keeps_progress_out_of_the_error(self):
+        status = plugin.WaitStatus("sigtool: signing")
+        for line in ("progress 1/3\n", "phase match\n", "skipped 0x10 f: no\n", "error: bad\n"):
+            status.feed(line)
+        self.assertEqual(status.stderr(), "skipped 0x10 f: no\nerror: bad\n")
+        self.assertEqual(status.error(2), "skipped 0x10 f: no\nerror: bad")
+        self.assertEqual(plugin.WaitStatus("x").error(3), "exit code 3")
 
     def test_build_summary_lists_skipped(self):
         text = plugin.summarize_build(
@@ -102,6 +126,54 @@ class NameTests(unittest.TestCase):
         )
         self.assertIn("signed 1 of 2", text)
         self.assertIn("0x20 b: refused (self-test)", text)
+        self.assertNotIn("incomplete", text)
+
+    def test_build_summary_counts_verdict_and_confidence(self):
+        def signed(verdict, confidence):
+            row = {"rva": "0x10", "status": "signed"}
+            return {**row, "verdict": verdict, "confidence": confidence}
+
+        text = plugin.summarize_build(
+            {
+                "signed": 3,
+                "functions": [
+                    signed("weak", "single-arch"),
+                    signed("good", "single-arch"),
+                    signed("weak", "low"),
+                    {"rva": "0x20", "status": "refused", "verdict": "ignored"},
+                ],
+            }
+        )
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "signed 3 of 4 functions")
+        self.assertEqual(lines[1], "verdicts: good 1, weak 2")
+        self.assertEqual(lines[2], "confidence: low 1, single-arch 2")
+
+    def test_report_quality(self):
+        report = (
+            "signature inflate  (abc)\narch x64  verdict weak  confidence single-arch\n"
+            "features 9 (required 1, optional 8)"
+        )
+        self.assertEqual(plugin.report_quality(report), "weak, single-arch")
+        self.assertIsNone(plugin.report_quality("no report"))
+
+    def test_truncation_is_described(self):
+        self.assertIsNone(plugin.describe_truncation({}))
+        self.assertIsNone(plugin.describe_truncation({"truncated": []}))
+        document = {
+            "truncated": [
+                {"budget": "reference_index", "count": 4000000, "limit": 4000000},
+                {"budget": "joint pairs", "count": None, "limit": 65536},
+            ]
+        }
+        self.assertEqual(
+            plugin.describe_truncation(document),
+            "incomplete: budgets ran out: reference index (limit 4000000), "
+            "joint pairs (limit 65536)",
+        )
+        summary = plugin.summarize_build({"signed": 0, "functions": [], **document})
+        self.assertEqual(summary.splitlines()[0], "signed 0 of 0 functions")
+        self.assertIn("incomplete: budgets ran out: reference index", summary)
 
 
 class ChooseRenamesTests(unittest.TestCase):
@@ -160,6 +232,44 @@ class ChooseRenamesTests(unittest.TestCase):
         )
         self.assertEqual([(p.rva, p.name, p.score) for p in proposals], [(0x40, "d", 0.7)])
         self.assertEqual(sorted(name for name, _ in skipped), ["a", "b", "c", "c"])
+
+    def test_unsure_matches_follow_for_review_and_are_never_preselected(self):
+        hits = [
+            hit("inflate", 0x200),
+            {**hit("deflate", 0x300, "candidate"), "answer_withheld": "tie", "matched": 3},
+            hit("crc32", 0x400, "shape-only"),
+        ]
+        proposals, skipped = choose(hits, user={0x300}, overwrite=True)
+        self.assertEqual([p.name for p in proposals], ["inflate"])
+        proposals, skipped = choose(hits, review=("candidate",), overwrite=True)
+        self.assertEqual([(p.name, p.evidence) for p in proposals][1:], [("deflate", "candidate")])
+        self.assertEqual((proposals[1].withheld, proposals[1].matched), ("tie", 3))
+        self.assertEqual(skipped, [("crc32", "best match is shape-only at +0x400")])
+        proposals, _ = choose(hits, review=("candidate", "shape-only"))
+        self.assertEqual([p.name for p in proposals], ["inflate", "deflate", "crc32"])
+        self.assertEqual(plugin.default_selection(proposals), [0])
+        self.assertEqual(plugin.default_selection(proposals, True), [0])
+
+    def test_unsure_matches_never_contradict_identified_ones(self):
+        hits = [
+            hit("inflate", 0x200),
+            hit("deflate", 0x200, "candidate"),  # the address is taken
+            hit("inflate", 0x500, "candidate", signature_id="inflate-2"),  # the name is
+            hit("crc32", 0x600, "candidate"),
+            hit("crc32", 0x700, "candidate", signature_id="crc32-2"),  # two addresses
+        ]
+        proposals, skipped = choose(hits, review=("candidate",))
+        self.assertEqual([(p.rva, p.name) for p in proposals], [(0x200, "inflate")])
+        reasons = dict(skipped)
+        self.assertIn("an identified match claims", reasons["deflate"])
+        self.assertIn("an identified match is at +0x200", reasons["inflate"])
+        self.assertEqual(reasons["crc32"], "matched 2 addresses")
+
+    def test_identified_proposals_do_not_depend_on_review(self):
+        hits = [hit("a", 0x10), hit("b", 0x20), hit("c", 0x10, "candidate")]
+        plain, _ = choose(hits)
+        reviewed, _ = choose(hits, review=("candidate", "shape-only"))
+        self.assertEqual([p for p in reviewed if p.trusted], plain)
 
     def test_chooser_selection_is_normalized(self):
         self.assertEqual(plugin._chosen(None), [])
@@ -280,11 +390,59 @@ class ProvenanceTests(unittest.TestCase):
     def test_comment_is_appended_once(self):
         first = plugin.provenance_comment("", self.proposal(), "zlib.db")
         self.assertEqual(
-            first, "sigtool: inflate from zlib.db (signature abc123, score 0.912, identified)"
+            first,
+            "sigtool: inflate (was sub_200) from zlib.db "
+            "(signature abc123, score 0.912, identified)",
         )
         self.assertEqual(plugin.provenance_comment(first, self.proposal(), "zlib.db"), first)
         kept = plugin.provenance_comment("analyst note\n", self.proposal(), "zlib.db")
         self.assertEqual(kept, f"analyst note\n{first}")
+
+    def test_last_provenance_line_is_parsed(self):
+        self.assertIsNone(plugin.parse_provenance(""))
+        self.assertIsNone(plugin.parse_provenance("analyst: sigtool: x from y"))
+        old_format = "sigtool: inflate from zlib.db (signature a, score 1.000, identified)"
+        self.assertEqual(plugin.parse_provenance(old_format), ("inflate", None))
+        twice = (
+            "note\nsigtool: inflate (was sub_200) from a.db (signature a)\n"
+            "sigtool: inflate2 (was inflate) from b.db (signature b)"
+        )
+        self.assertEqual(plugin.parse_provenance(twice), ("inflate2", "inflate"))
+
+    def test_sigtool_owned_only_while_the_name_is_unchanged(self):
+        comment = "sigtool: op<int> (was sub_200) from a.db (signature a)"
+        self.assertTrue(plugin.sigtool_owned("op<int>", comment))
+        # IDA stored the name with characters replaced (SN_NOCHECK).
+        validate = lambda name: re.sub(r"[<>]", "_", name)  # noqa: E731
+        self.assertTrue(plugin.sigtool_owned("op_int_", comment, validate))
+        self.assertFalse(plugin.sigtool_owned("my_op", comment, validate))
+        self.assertFalse(plugin.sigtool_owned("op<int>", "analyst note"))
+
+    def test_revert_plan(self):
+        functions = [
+            (0x200, "inflate", "note\nsigtool: inflate (was sub_200) from a.db (s)"),
+            (0x300, "my_name", "sigtool: deflate (was sub_300) from a.db (s)"),  # renamed since
+            (0x400, "crc", "sigtool: crc from a.db (s)"),  # no old name recorded
+            (
+                0x500,
+                "adler2",
+                "sigtool: adler (was sub_500) from a.db (s)\n"
+                "sigtool: adler2 (was adler) from b.db (s)",
+            ),
+            (0x600, "plain", "just a comment"),
+            (0x700, "zlib_inflate", "sigtool: zlib_inflate (was my_inflate) from a.db (s)"),
+        ]
+        reverts, skipped = plugin.revert_plan(functions)
+        self.assertEqual(
+            [(r.rva, r.current, r.old, r.comment) for r in reverts],
+            [
+                (0x200, "inflate", "", "note"),
+                (0x500, "adler2", "adler", "sigtool: adler (was sub_500) from a.db (s)"),
+                (0x700, "zlib_inflate", "my_inflate", ""),
+            ],
+        )
+        self.assertEqual([name for name, _ in skipped], ["crc", "deflate"])
+        self.assertIn("renamed since", dict(skipped)["deflate"])
 
     def test_proposals_carry_the_signature_id(self):
         proposals, _ = choose([hit("inflate", 0x200, signature_id="sig-1")])
@@ -310,6 +468,132 @@ class MatchRowTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].ea, 0x140000200)
         self.assertEqual(rows[0].cells, ("0x140000200", "0.912", "identified", "inflate", "2"))
+
+    def test_label_is_the_idb_name_when_meaningful(self):
+        matches = [
+            {"rva": "0x200", "evidence": "identified", "label": "inflate"},
+            {"rva": "0x300", "evidence": "candidate", "label": None},
+            {"rva": "0x400", "evidence": "candidate", "label": "deflate"},
+        ]
+        names = {0x1200: "my_inflate", 0x1300: "sub_1300", 0x1400: "sub_1400"}
+        rows = plugin.match_rows(matches, 0x1000, names.get)
+        self.assertEqual([row.cells[3] for row in rows], ["my_inflate", "sub_1300", "deflate"])
+
+    def test_jump_only_to_an_identified_best_match(self):
+        def rows(*evidence):
+            return [plugin.Row(0x10 * i, ("", "", e, "", "")) for i, e in enumerate(evidence)]
+
+        self.assertEqual(plugin.locate_actions([], True, True), (False, False))
+        self.assertEqual(plugin.locate_actions(rows("identified"), True, False), (True, False))
+        self.assertEqual(plugin.locate_actions(rows("identified"), False, True), (False, True))
+        # A guess is never jumped to, and is listed even with listing off.
+        for evidence in ("candidate", "shape-only"):
+            self.assertEqual(
+                plugin.locate_actions(rows(evidence, "identified"), True, False), (False, True)
+            )
+
+
+# `locate --explain --expect 0x15bb0 --discovery hint-free --json` of zlib's
+# `inflate` signature (x64 clang-O2) on the same image: inflateUndermine fails
+# the score gate. Captured from sigtool-native 0.1.1 (spec 7).
+EXPLAIN = json.loads(
+    """{"address": "0x15bb0", "answer_floor": null, "answer_withheld": null, "candidate": true,
+    "carriers": null, "chance": null, "cross_isa": false, "decided": "score", "end": "0x15bf4",
+    "evidence": null, "gates": [{"gate": "candidate", "needed": null, "passed": true,
+    "value": null}, {"gate": "score", "needed": 0.75, "passed": false, "value": 0.650246}],
+    "inherited": [], "label": "inflateUndermine", "matched": ["cfg:loops:1", "const:0x0",
+    "const:0x1f", "const:0xffffc0cc", "const:0xfffffffe", "ops:ret:2"], "matched_required": 4,
+    "matches": 1, "min_distinct": 3, "missed": [{"key": "cfg:blocks:8", "required": false},
+    {"key": "cfg:edges:9", "required": false}, {"key": "const:0x1e", "required": true},
+    {"key": "const:0x3f3f", "required": true}, {"key": "const:0x3f40", "required": true},
+    {"key": "ops:arith:5", "required": false}, {"key": "ops:branch:2", "required": false},
+    {"key": "ops:cmp:7", "required": false}, {"key": "ops:cond:7", "required": false},
+    {"key": "ops:load:6", "required": false}, {"key": "ops:move:7", "required": false},
+    {"key": "ops:stack:10", "required": false}], "module": "zlib", "neighbours": {"missed":
+    ["in2:const:0x40000000", "in:str:1.3.1", "in:str:unexpected end of file"], "shared": []},
+    "optional_callees": [], "rank": null, "required": 7, "rival": null, "rva": "0x15bb0",
+    "score": 0.650246, "similarity": 0.309496, "start": "0x15bb0", "threshold": 0.75}"""
+)
+
+
+class ExplainTests(unittest.TestCase):
+    def test_captured_explanation(self):
+        text = plugin.format_explanation(EXPLAIN, "inflate", "0x15bb0 (sub_15BB0)")
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "inflate at 0x15bb0 (sub_15BB0): decided by the score gate")
+        self.assertEqual(lines[1], "not among the 1 matches")
+        self.assertEqual(
+            lines[2],
+            "score 0.650 (threshold 0.75), similarity 0.309, required 4/7 (min distinct 3)",
+        )
+        self.assertIn("  candidate          pass", lines)
+        self.assertIn("  score              FAIL 0.65 vs 0.75", lines)
+        self.assertIn("missed, required (3): const:0x1e const:0x3f3f const:0x3f40", lines)
+        self.assertIn(
+            "matched (6): cfg:loops:1 const:0x0 const:0x1f const:0xffffc0cc "
+            "const:0xfffffffe ops:ret:2",
+            lines,
+        )
+        self.assertNotIn("not identified", text)
+        self.assertNotIn("inherited", text)
+
+    def test_withheld_answer_and_rank(self):
+        explain = {
+            **EXPLAIN,
+            "decided": "answer",
+            "rank": 1,
+            "matches": 2,
+            "evidence": "candidate",
+            "answer_withheld": "rival",
+            "answer_floor": 0.85,
+            "rival": 0.8123,
+            "inherited": ["inl:str:x"],
+        }
+        text = plugin.format_explanation(explain, "inflate", "0x15bb0")
+        self.assertIn("rank 1 of 2 matches, candidate", text)
+        self.assertTrue(text.startswith("inflate at 0x15bb0: decided by the answer gate"))
+        accepted = plugin.format_explanation({**EXPLAIN, "decided": "accepted"}, "f", "0x1")
+        self.assertTrue(accepted.startswith("f at 0x1: accepted\n"))
+        self.assertIn("not identified: rival (answer floor 0.85, rival 0.812)", text)
+        self.assertIn("inherited from callees (1): inl:str:x", text)
+
+    def test_missing_explanation(self):
+        self.assertIn("nothing to explain", plugin.format_explanation(None, "inflate", "0x10"))
+
+
+class DbContentsTests(unittest.TestCase):
+    def test_db_summary(self):
+        info = {
+            "spec_version": "7",
+            "signatures": 3,
+            "confidence": {"single-arch": 2, "low": 1},
+            "arches": {"x64": 3, "arm64": 1},
+        }
+        self.assertEqual(
+            plugin.describe_db(info),
+            "3 signatures, spec 7; confidence: low 1, single-arch 2; arch: arm64 1, x64 3",
+        )
+        self.assertEqual(
+            plugin.describe_db({"spec_version": "7", "signatures": 0}), "0 signatures, spec 7"
+        )
+
+    def test_db_rows(self):
+        listing = {
+            "signatures": [
+                {
+                    "name": "deflate",
+                    "signature_id": "ab",
+                    "arches": ["arm64", "x64"],
+                    "confidence": "multi-arch",
+                },
+                {"name": "inflate", "signature_id": "cd", "arches": [], "confidence": "low"},
+            ]
+        }
+        rows = plugin.db_rows(listing)
+        self.assertEqual([row.ea for row in rows], [None, None])
+        self.assertEqual(rows[0].cells, ("deflate", "ab", "arm64+x64", "multi-arch"))
+        self.assertEqual(rows[1].cells, ("inflate", "cd", "", "low"))
+        self.assertEqual(plugin.db_rows({}), [])
 
 
 class InputFileTests(unittest.TestCase):
