@@ -1235,16 +1235,7 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
         // on constants alone needs hint-free's similarity floor (see
         // `MIN_CONSTANT_ANCHORED_SIMILARITY`). Small images are exempt for
         // the same reason as in hint-free mode.
-        if source.function_starts().len() < MIN_FREQUENCY_FUNCTIONS {
-            return matches;
-        }
-        let identifying = identifying_required(signature);
-        return matches
-            .into_iter()
-            .filter(enough_evidence)
-            .filter(|found| anchored_enough(&identifying, found))
-            .filter(constants_enough)
-            .collect();
+        return hinted_floors(source, signature, matches);
     }
     let identifying = identifying_required(signature);
     let frequencies = context.frequencies[usize::from(hints)]
@@ -1301,6 +1292,41 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
             .then(left.address.cmp(&right.address))
     });
     kept
+}
+
+/// Functions an image is known to have, for telling a small image from a
+/// large one: symbol starts or unwind entries, whichever is more. A live
+/// process names no symbol starts, only `.pdata` bounds, so counting starts
+/// alone exempted every process scan from the hinted floors.
+fn known_functions<S: ByteSource + ?Sized>(source: &S) -> usize {
+    source
+        .function_starts()
+        .len()
+        .max(source.unwind_entries().len())
+}
+
+/// The trust floors every hinted match passes ([`scan_in`]): a shape-only
+/// lookalike needs [`MIN_SHAPE_ONLY_SIMILARITY`], a match holding none of
+/// the signature's identifying keys [`MIN_UNANCHORED_SIMILARITY`], and one
+/// resting on constants alone [`MIN_CONSTANT_ANCHORED_SIMILARITY`]. Images
+/// with fewer than [`MIN_FREQUENCY_FUNCTIONS`] known functions keep every
+/// match, as in hint-free mode. Shared with the incremental scanner, so a
+/// process scan is held to the floors the bench measures on files.
+pub fn hinted_floors<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    matches: Vec<Match>,
+) -> Vec<Match> {
+    if known_functions(source) < MIN_FREQUENCY_FUNCTIONS {
+        return matches;
+    }
+    let identifying = identifying_required(signature);
+    matches
+        .into_iter()
+        .filter(enough_evidence)
+        .filter(|found| anchored_enough(&identifying, found))
+        .filter(constants_enough)
+        .collect()
 }
 
 /// Similarity a hint-free candidate needs when a shared neighbour key, not
