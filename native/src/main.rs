@@ -42,6 +42,7 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::Value;
 
+use sigtool_native::arch::Arch;
 use sigtool_native::coverage::Coverage;
 use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
@@ -91,19 +92,41 @@ enum Command {
     Bench(BenchArgs),
 }
 
+/// `--raw FILE --arch A --base ADDR`: a code blob without a container.
+#[derive(Args)]
+struct RawArgs {
+    /// Raw code blob (firmware, a dump of one code region): one executable
+    /// region at --base, no symbols or relocations; hint-free only
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["arch", "base"],
+        conflicts_with_all = ["file", "pid"]
+    )]
+    raw: Option<PathBuf>,
+    /// With --raw, the blob's architecture
+    #[arg(long, requires = "raw", value_parser = ["x64", "arm64", "arm32", "thumb"])]
+    arch: Option<String>,
+    /// With --raw, the address the blob's first byte is mapped at
+    #[arg(long, value_name = "ADDR", requires = "raw")]
+    base: Option<String>,
+}
+
 #[derive(Args)]
 struct GenArgs {
     /// ELF or PE image
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
+        required_unless_present_any = ["pid", "raw"],
         conflicts_with = "pid"
     )]
     file: Option<PathBuf>,
     /// Live Windows process to read (read-only)
     #[arg(long, value_name = "PID")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Absolute address, e.g. 0x1000
     #[arg(long, value_name = "ADDR", conflicts_with = "rva")]
     addr: Option<String>,
@@ -139,13 +162,15 @@ struct LocateArgs {
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
+        required_unless_present_any = ["pid", "raw"],
         conflicts_with = "pid"
     )]
     file: Option<PathBuf>,
     /// Live Windows process to scan (read-only)
     #[arg(long, value_name = "PID")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Write the match list as JSON
     #[arg(long, value_name = "FILE")]
     json: Option<PathBuf>,
@@ -174,15 +199,22 @@ struct ScanArgs {
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present_any = ["pid", "path"],
+        required_unless_present_any = ["pid", "path", "raw"],
         conflicts_with_all = ["pid", "path"]
     )]
     file: Option<PathBuf>,
     /// Live Windows process to scan (read-only)
     #[arg(long, value_name = "PID", conflicts_with = "path")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Scan every regular file in this directory (batch mode; needs --jsonl)
-    #[arg(long, value_name = "DIR", requires = "jsonl", conflicts_with = "json")]
+    #[arg(
+        long,
+        value_name = "DIR",
+        requires = "jsonl",
+        conflicts_with_all = ["json", "raw"]
+    )]
     path: Option<PathBuf>,
     /// With --path, also scan subdirectories (symlinks are never followed)
     #[arg(long, requires = "path")]
@@ -388,12 +420,13 @@ fn main() -> ExitCode {
 
 fn run_gen(args: GenArgs) -> Result<u8, CliError> {
     // A live process has no input file to hash, so its report says `null`.
-    let (target, input): (Box<dyn ByteSource>, Value) = match &args.file {
-        Some(path) => {
+    let (target, input): (Box<dyn ByteSource>, Value) = match (&args.file, load_raw(&args.raw)?) {
+        (_, Some((source, identity))) => (Box::new(source), identity_value(&identity)),
+        (Some(path), None) => {
             let (source, identity) = load_file_with_identity(path)?;
             (Box::new(source), identity_value(&identity))
         }
-        None => (load_target(None, args.pid)?, Value::Null),
+        (None, None) => (load_target(None, args.pid, &args.raw)?, Value::Null),
     };
     let source = target.as_ref();
     let addr = resolve_address(
@@ -405,7 +438,7 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
     // The image's call graph gives the signature its neighbour keys. A live
     // process is not indexed: the code index would decode every loaded DLL,
     // so `gen --pid` runs no budgeted pass and always reports `[]`.
-    let context = args.file.is_some().then(|| ScanContext::build(source));
+    let context = args.pid.is_none().then(|| ScanContext::build(source));
     let result = generate_in(
         source,
         addr,
@@ -661,7 +694,8 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
 
 fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     let signature = load_signature(&args.signature)?;
-    let target = load_target(args.file.as_deref(), args.pid)?;
+    check_raw_discovery(&args.raw, &args.discovery)?;
+    let target = load_target(args.file.as_deref(), args.pid, &args.raw)?;
     let source = target.as_ref();
     let hints = use_hints(source, &args.discovery);
     eprintln!(
@@ -1075,7 +1109,8 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     if let (Some(dir), Some(out)) = (&args.path, &args.jsonl) {
         return run_batch_scan(dir, args.recursive, out, &signatures, &args.discovery);
     }
-    let target = load_target(args.file.as_deref(), args.pid)?;
+    check_raw_discovery(&args.raw, &args.discovery)?;
+    let target = load_target(args.file.as_deref(), args.pid, &args.raw)?;
     let source = target.as_ref();
 
     let hints = use_hints(source, &args.discovery);
@@ -1913,8 +1948,60 @@ fn identity_value(identity: &ImageIdentity) -> Value {
     Value::Object(object.into_iter().collect())
 }
 
-/// Open the `--file` image or the `--pid` process (clap enforces exactly one).
-fn load_target(file: Option<&Path>, pid: Option<u32>) -> Result<Box<dyn ByteSource>, CliError> {
+/// Open the `--raw` blob and identify it from the same bytes, or `None`
+/// without `--raw`.
+fn load_raw(raw: &RawArgs) -> Result<Option<(FileSource, ImageIdentity)>, CliError> {
+    let (Some(path), Some(arch), Some(base)) = (&raw.raw, &raw.arch, &raw.base) else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Err(CliError::input(format!(
+            "no such raw file: {}",
+            path.display()
+        )));
+    }
+    let arch = Arch::parse(arch).ok_or_else(|| CliError::input(format!("unknown arch {arch}")))?;
+    let base = parse_address(base, "--base")?;
+    let size = std::fs::metadata(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?
+        .len();
+    // Refused before reading, so a huge file is never loaded.
+    if size > sigtool_native::elf::MAX_RAW_BYTES as u64 {
+        return Err(CliError::input(format!(
+            "{}: {size} bytes exceeds the raw blob limit of {} bytes",
+            path.display(),
+            sigtool_native::elf::MAX_RAW_BYTES
+        )));
+    }
+    let data = std::fs::read(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?;
+    let source = FileSource::from_raw(&data, &file_name(path), arch, base)
+        .map_err(|error| CliError::input(format!("{}: {error}", path.display())))?;
+    Ok(Some((source, identify(&data))))
+}
+
+/// A raw blob has no symbols or bounds: only hint-free discovery can find
+/// anything in it, so asking for hints is refused rather than answered with
+/// an empty scan.
+fn check_raw_discovery(raw: &RawArgs, discovery: &str) -> Result<(), CliError> {
+    if raw.raw.is_some() && discovery == "hinted" {
+        return Err(CliError::input(
+            "--raw blobs have no symbols: use --discovery hint-free or auto",
+        ));
+    }
+    Ok(())
+}
+
+/// Open the `--file` image, the `--raw` blob, or the `--pid` process (clap
+/// enforces exactly one).
+fn load_target(
+    file: Option<&Path>,
+    pid: Option<u32>,
+    raw: &RawArgs,
+) -> Result<Box<dyn ByteSource>, CliError> {
+    if let Some((source, _)) = load_raw(raw)? {
+        return Ok(Box::new(source));
+    }
     match (file, pid) {
         (Some(path), _) => Ok(Box::new(load_file(path)?)),
         (None, Some(pid)) => ProcessSource::open(pid)
