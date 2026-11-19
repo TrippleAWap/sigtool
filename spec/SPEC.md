@@ -168,7 +168,8 @@ reaches. Names are the only callee form: an unnamed target's address (or a
   process a call into another module) is written `*!import`: ELF does not
   record the providing library, and the module a PE import names
   (`ucrtbase!memcpy`) is dropped so the same call gives the same key in every
-  format. A shared object's call to its own export
+  format. An import by ordinal keeps its DLL (`ws2_32!#23`): the number means
+  nothing without it. A shared object's call to its own export
   through the PLT keeps the plain name. A callee value containing `!` is never
   an anchor and, like a small constant, does not make a signature
   high-information or corroborate a match (§8): `memcpy` and `free` are
@@ -253,7 +254,8 @@ vectors).
   literal-pool words, and immediate operands of the same comparison and
   arithmetic mnemonics (condition suffixes stripped).
 * Immediates that encode ABI or addressing are excluded: anything touching the
-  stack or frame pointer, and shift amounts.
+  stack pointer (x86-64 `rsp`/`esp`/`sp`, ARM `sp`; `rbp`, `r11` and `x29` are
+  ordinary registers here since v6), and shift amounts.
 
 ## 4. Buckets
 
@@ -491,7 +493,9 @@ generation and never decodes with its own tables.
 * **Targets that name no function.** An executable (PIE or static) or an
   image built with hidden visibility exports none of its own functions, so a
   call to one has no name there (§2.1). When the target's modules name no
-  defined function at all (no export, no function symbol the scan may use),
+  defined function at all (no export pointing into code, and, in hinted
+  scans only, no function symbol; data exports such as a PIE's copy-relocated
+  `stderr` name no function),
   every required `callee` without `!` is optional for that scan: it still
   earns its weight when present, but no longer counts in the required weight
   or `min_distinct`. It stays an identifying key for the anchoring floor, so a

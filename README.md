@@ -64,7 +64,9 @@ file, sorted by the `/`-separated relative path: `path`, `sha256`, `size`,
 --json` writes them. `status` is `ok`, `unsupported` (not ELF or PE, or an
 unsupported architecture), `error` (unreadable or malformed; a subdirectory
 that cannot be listed also gets an `error` line), or `budget-exhausted` (a
-scan work budget ran out, listed in `truncated`; never a timeout). A file's
+scan work budget ran out, listed in `truncated`; never a timeout). Only the
+first four bytes of a file that is not an image are read, so its `sha256` is
+`null`; an image larger than 1 GiB is `unsupported` the same way. A file's
 status does not change the exit code: the run exits `0` when every file got a
 line, hits or not, and `2` when `DIR`, the signatures, or `OUT` cannot be
 used. The output is byte-identical across runs and thread counts.
@@ -171,8 +173,9 @@ target (see `PLAN.md` §8).
 
 The text report prints every rate as `k/n = rate [low, high]`, with the 95%
 Wilson interval, and each false-positive cell with the number and size of the
-images it scanned. A baseline comparison fails a false-positive cell that
-scanned no images. `--max-functions N` keeps the N functions per binary with
+images it scanned. A baseline comparison fails a false-positive cell the
+baseline measured when the current run scanned no images for it; a cell
+neither run measured (the real corpus has no negative set) is not gated. `--max-functions N` keeps the N functions per binary with
 the lowest CRC-32 of the name; `--sample-seed S` ranks by CRC-32 of the
 seed's eight little-endian bytes followed by the name instead.
 
