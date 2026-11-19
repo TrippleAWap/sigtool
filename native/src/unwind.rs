@@ -394,6 +394,21 @@ pub fn eh_frame_extent(hdr: &Region, regions: &[Region]) -> Option<(u64, u64)> {
 /// RVAs); ARM64 entries are 8 bytes (begin RVA, packed or .xdata RVA), with
 /// the function length in the packed form only.
 pub fn pdata(data: &[u8], image_base: u64, arm64: bool) -> Vec<UnwindEntry> {
+    pdata_with(data, image_base, arm64, &|_| None)
+}
+
+/// [`pdata`], reading an AArch64 entry's `.xdata` record through `xdata`
+/// (an RVA to its first word). A packed entry carries its length in the
+/// `.pdata` word itself; an unpacked one points at `.xdata`, whose first
+/// word holds the length in words (bits 0-17). Without it the entry has no
+/// end, so a tail `b` out of the function looks like a branch inside it and
+/// its target is never offered as a start (`starts::arm64_call_targets_checked`).
+pub fn pdata_with(
+    data: &[u8],
+    image_base: u64,
+    arm64: bool,
+    xdata: &dyn Fn(u64) -> Option<u32>,
+) -> Vec<UnwindEntry> {
     let mut entries = Vec::new();
     if arm64 {
         for chunk in data.as_chunks::<8>().0.iter().take(MAX_UNWIND_ENTRIES) {
@@ -406,7 +421,10 @@ pub fn pdata(data: &[u8], image_base: u64, arm64: bool) -> Vec<UnwindEntry> {
             let end = if unwind & 0b11 != 0 {
                 start + u64::from((unwind >> 2) & 0x7ff) * 4
             } else {
-                0
+                xdata(u64::from(unwind))
+                    .map(|header| u64::from(header & 0x3_ffff) * 4)
+                    .filter(|length| *length > 0)
+                    .map_or(0, |length| start + length)
             };
             entries.push((start, end));
         }

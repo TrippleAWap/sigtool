@@ -2153,7 +2153,8 @@ pub(crate) fn pe_metadata(
         if pdata_rva != 0 && pdata_size != 0 {
             let size = (pdata_size as usize).min(max_pdata_bytes);
             if let Some(bytes) = image.span(u64::from(pdata_rva), size) {
-                metadata.unwind = crate::unwind::pdata(&bytes, image_base, arm64);
+                metadata.unwind =
+                    crate::unwind::pdata_with(&bytes, image_base, arm64, &|rva| image.u32(rva));
             }
         }
     }
