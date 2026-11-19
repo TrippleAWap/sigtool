@@ -737,9 +737,9 @@ pub struct ScanContext {
     pub features: FeatureCache,
     /// Per-image feature frequencies, `[hint-free, hinted]`, built on first use.
     frequencies: [OnceLock<Option<Frequencies>>; 2],
-    /// Every function name the image can give a callee, built on first use
-    /// ([`unnamed_callees_optional`]).
-    callee_names: OnceLock<HashSet<String>>,
+    /// Every function name the image can give a callee, `[hint-free,
+    /// hinted]`, built on first use ([`unnamed_callees_optional`]).
+    callee_names: [OnceLock<HashSet<String>>; 2],
 }
 
 /// How many of an image's functions carry each feature key.
@@ -1201,7 +1201,7 @@ impl ScanContext {
             code: code.finish(),
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
-            callee_names: OnceLock::new(),
+            callee_names: [OnceLock::new(), OnceLock::new()],
         }
     }
 }
@@ -1223,6 +1223,7 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
     context: &ScanContext,
+    hints: bool,
 ) -> Option<Signature> {
     let unnamed = |feature: &crate::sigfile::SignatureFeature| {
         feature.required
@@ -1237,16 +1238,28 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
     // there. Waiving in every target that lacked the name doubled the real
     // corpus's any-verdict false positives (arm32 0.117 -> 0.217), because
     // unrelated libraries lack it too.
-    let names = context.callee_names.get_or_init(|| {
+    // Function exports only: a PIE defines the data it copy-relocates
+    // (`stderr`, `optarg`) as dynamic exports, and those name no function.
+    // `.symtab` names count only when the scan may read them (hint-free
+    // reads only what survives stripping, hard rule 10).
+    let names = context.callee_names[usize::from(hints)].get_or_init(|| {
+        let in_code = |address: u64| {
+            source
+                .regions()
+                .iter()
+                .any(|region| region.executable && region.start <= address && address < region.end())
+        };
         source
             .modules()
             .iter()
             .flat_map(|module| {
-                module
+                let exports = module
                     .exports
                     .iter()
-                    .map(|(name, _)| name)
-                    .chain(module.functions.values())
+                    .filter(|(_, address)| in_code(*address))
+                    .map(|(name, _)| name);
+                let symbols = module.functions.values().filter(move |_| hints);
+                exports.chain(symbols)
             })
             .filter_map(|name| crate::features::canonical_callee(name))
             .map(str::to_string)
@@ -1285,7 +1298,7 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     // none of the rest still needs `MIN_UNANCHORED_SIMILARITY`, so the
     // lighter required set does not admit lookalikes.
     let identifying = identifying_required(signature);
-    let adapted = unnamed_callees_optional(source, signature, context);
+    let adapted = unnamed_callees_optional(source, signature, context, hints);
     let signature = adapted.as_ref().unwrap_or(signature);
     let mut matches = scan_in_ranked(source, signature, &identifying, context, hints);
     // Only the first match can be an answer, so only it needs a rival.
@@ -1989,7 +2002,7 @@ pub fn explain<S: ByteSource + ?Sized>(
     let matches = scan_in(source, signature, context, hints);
     let rank = matches.iter().position(|found| found.address == address);
     let identifying = identifying_required(signature);
-    let adapted = unnamed_callees_optional(source, signature, context);
+    let adapted = unnamed_callees_optional(source, signature, context, hints);
     let adapted_signature = adapted.as_ref().unwrap_or(signature);
     let optional_callees = match &adapted {
         Some(adapted) => signature
