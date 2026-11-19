@@ -565,3 +565,73 @@ fn spec_mismatch_names_the_rebuild() {
     assert!(stderr.contains("spec version"), "{stderr}");
     assert!(stderr.contains("regenerate it"), "{stderr}");
 }
+
+/// `db info` and `db list` summarize and list a DB, sorted by name, and
+/// refuse a stale one the way `scan --db` does.
+#[test]
+fn db_info_and_list_describe_a_db() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("db-info");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let db_path = db.to_str().unwrap();
+    let before = std::fs::read(&db).unwrap();
+
+    let info: Value = serde_json::from_str(&run(&["db", "info", db_path, "--json"])).unwrap();
+    let info_text = run(&["db", "info", db_path]);
+    let list: Value = serde_json::from_str(&run(&["db", "list", db_path, "--json"])).unwrap();
+    let list_text = run(&["db", "list", db_path]);
+    let stale_db = dir.join("stale.db");
+    stale_copy(&db, &stale_db);
+    let stale_info = sigtool(&["db", "info", stale_db.to_str().unwrap()], &[]);
+    let stale_list = sigtool(&["db", "list", stale_db.to_str().unwrap()], &[]);
+    let after = std::fs::read(&db).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(before, after, "db info or list changed the DB");
+    let spec = sigtool_native::spec::SPEC_VERSION;
+    assert_eq!(info["spec_version"], spec, "{info}");
+    assert_eq!(info["signatures"], 4, "{info}");
+    assert_eq!(info["arches"], serde_json::json!({"x64": 4}), "{info}");
+    let confidence_total: u64 = info["confidence"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|count| count.as_u64().unwrap())
+        .sum();
+    assert_eq!(confidence_total, 4, "{info}");
+    assert!(
+        info_text.starts_with(&format!("spec {spec}\nsignatures 4\n")),
+        "{info_text}"
+    );
+    assert!(info_text.contains("arch x64 4\n"), "{info_text}");
+
+    let rows = list["signatures"].as_array().unwrap();
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["bottom", "lower", "middle", "top"], "{list}");
+    for row in rows {
+        assert_eq!(row["arches"], serde_json::json!(["x64"]), "{row}");
+        assert!(row["signature_id"].is_string(), "{row}");
+        assert!(row["confidence"].is_string(), "{row}");
+    }
+    let text_rows: Vec<Vec<&str>> = list_text
+        .lines()
+        .map(|line| line.split("  ").collect())
+        .collect();
+    assert_eq!(text_rows.len(), 4, "{list_text}");
+    for (fields, row) in text_rows.iter().zip(rows) {
+        assert_eq!(fields[0], row["name"], "{list_text}");
+        assert_eq!(fields[1], row["signature_id"], "{list_text}");
+        assert_eq!(fields[2], "x64", "{list_text}");
+        assert_eq!(fields[3], row["confidence"], "{list_text}");
+    }
+    assert_names_db_rebuild("db info", &stale_info);
+    assert_names_db_rebuild("db list", &stale_list);
+}
