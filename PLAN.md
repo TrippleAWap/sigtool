@@ -943,9 +943,25 @@ As of 2026-11-19, `real-world` branch, spec v6.
     - Not done: MinGW gcc builds, real MSVC (RW5b), PDB ground truth (no
       `llvm-pdbutil` in the pinned toolchain on the home server; the map
       gives the same addresses), `.reloc` and delay-load imports.
+- PE follow-ups (2026-11-19, `real-world`):
+  - Spec v7: import callees drop their providing module (`ucrtbase!memcpy`
+    -> `*!memcpy`, as ELF already wrote them). Mixed ELF/PE tier hint-free
+    top-1, same arch ELF <-> PE same level 0.633 -> 0.667, merged 0.648 ->
+    0.686; 34 cells up, none down; joint top-1 4534 -> 4591; every FP rate
+    unchanged. PE-only tier and real corpus unchanged.
+  - AArch64 PE starts: a `bl`/tail-`b` sweep from `.pdata` extents and
+    exports (`starts::arm64_call_targets_checked`, the x64 sweep's
+    counterpart), and unpacked `.pdata` entries' lengths read from `.xdata`
+    (they had no end, so tail calls out of them were never seen). PE start
+    recall arm64 0.815 -> 0.950 (precision 0.998 -> 0.950, the same import
+    thunks as x64's 0.949). PE tier hint-free top-1: same arch same build
+    0.725 -> 0.795, other profile 0.658 -> 0.767, cross arch 0.415 -> 0.455,
+    merged 0.699 -> 0.778; 60 cells up, none down; identified precision
+    0.960 -> 0.982; hint-free any-verdict FP 0.076 -> 0.090. Mixed tier: 31
+    cells up, none down, identified precision 0.939 -> 0.984, joint top-1
+    4591 -> 4734. Real corpus identical.
 - Next: the live-process scan path (RW3: candidates from a per-module
-  indexed context; it finds 0.010 top-1 today), the PE findings (hinted PE
-  has no function list, arm64 PE export starts, `*!` vs `ucrtbase!` import
-  callees), identified precision on the real-world tier (0.972) and in hosts
+  indexed context; it finds 0.010 top-1 today), the remaining PE findings
+  (hinted PE has no function list, import thunks counted as starts), identified precision on the real-world tier (0.972) and in hosts
   (0.0025 per signature per MB), RW4 distro packages and C++, and
   pointer-width-dependent constants (M10).
