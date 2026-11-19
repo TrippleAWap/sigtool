@@ -1383,6 +1383,11 @@ fn batch_row(relative: &str) -> BTreeMap<String, Value> {
 /// 3), `error` (unreadable, malformed, or a scan failure), or
 /// `budget-exhausted` (scanned, but a work budget ran out, so `truncated` is
 /// non-empty and hits may be missing; never based on wall time).
+/// Largest file a batch scan reads: the raw-blob limit, far above any image
+/// the corpus or a real module set has, so one huge file costs a line, not
+/// the machine's memory.
+const MAX_BATCH_IMAGE_BYTES: u64 = sigtool_native::elf::MAX_RAW_BYTES as u64;
+
 fn batch_line(
     relative: &str,
     path: &Path,
@@ -1394,6 +1399,52 @@ fn batch_line(
         row.insert("status".to_string(), Value::String(status.to_string()));
         row.insert("error".to_string(), Value::String(message));
     };
+    // Read only the magic first: a directory of firmware dumps or media
+    // holds files far larger than any image the scanner takes (rule 11).
+    let size = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            fail(&mut row, "error", format!("cannot read: {error}"));
+            return row;
+        }
+    };
+    let mut magic = [0u8; 4];
+    let head = std::fs::File::open(path).and_then(|mut file| {
+        use std::io::Read;
+        let mut read = 0;
+        while read < magic.len() {
+            match file.read(&mut magic[read..])? {
+                0 => break,
+                n => read += n,
+            }
+        }
+        Ok(read)
+    });
+    let head = match head {
+        Ok(read) => &magic[..read],
+        Err(error) => {
+            fail(&mut row, "error", format!("cannot read: {error}"));
+            return row;
+        }
+    };
+    if container(head) == Container::Other {
+        row.insert("size".to_string(), Value::Number(size.into()));
+        fail(
+            &mut row,
+            "unsupported",
+            "not an ELF or PE image".to_string(),
+        );
+        return row;
+    }
+    if size > MAX_BATCH_IMAGE_BYTES {
+        row.insert("size".to_string(), Value::Number(size.into()));
+        fail(
+            &mut row,
+            "unsupported",
+            format!("image of {size} bytes exceeds the {MAX_BATCH_IMAGE_BYTES}-byte limit"),
+        );
+        return row;
+    }
     let data = match std::fs::read(path) {
         Ok(data) => data,
         Err(error) => {
