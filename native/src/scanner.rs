@@ -20,7 +20,7 @@
 //! persisted.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::coverage::Coverage;
 use crate::errors::SignatureError;
@@ -42,15 +42,79 @@ pub fn scan_all<S: ByteSource + ?Sized>(
     signatures: &[Signature],
     hints: bool,
 ) -> Vec<Vec<Match>> {
+    scan_all_with(source, context, signatures, hints, None)
+}
+
+/// One phase of a whole-image scan, as a progress hook sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanPhase {
+    /// Building the image's [`ScanContext`]; the caller builds it, so only
+    /// the caller reports it.
+    Context,
+    /// Feature frequencies shared by every signature.
+    Frequencies,
+    /// Matching each signature on its own.
+    Match,
+    /// Joint resolution of each module's signatures (hint-free only).
+    Joint,
+}
+
+impl ScanPhase {
+    /// Stable name for front-ends (`scan --progress` prints `phase NAME`).
+    pub fn name(self) -> &'static str {
+        match self {
+            ScanPhase::Context => "context",
+            ScanPhase::Frequencies => "frequencies",
+            ScanPhase::Match => "match",
+            ScanPhase::Joint => "joint",
+        }
+    }
+}
+
+/// Progress hook: `(phase, done, total)`, with `total` the signature count.
+/// A call with `done == 0` marks the start of `phase`; during
+/// [`ScanPhase::Match`] it is called again after each signature finishes,
+/// from whichever worker thread finished it, with `done` counting up by one
+/// (calls never overlap).
+pub type ScanProgress<'a> = &'a (dyn Fn(ScanPhase, usize, usize) + Sync);
+
+/// [`scan_all`] with an optional progress hook. The hook only observes: the
+/// matches are the same with or without it. The library never prints; a
+/// front-end decides what to show (`scan --progress`).
+pub fn scan_all_with<S: ByteSource + ?Sized>(
+    source: &S,
+    context: &ScanContext,
+    signatures: &[Signature],
+    hints: bool,
+    progress: Option<ScanProgress<'_>>,
+) -> Vec<Vec<Match>> {
+    let total = signatures.len();
+    let report = |phase: ScanPhase, done: usize| {
+        if let Some(hook) = progress {
+            hook(phase, done, total);
+        }
+    };
     // Signatures share only the context's caches, so they scan in parallel;
     // results keep signature order.
     if signatures.len() > 1 {
+        report(ScanPhase::Frequencies, 0);
         context.prepare_frequencies(source, hints);
     }
+    report(ScanPhase::Match, 0);
+    // Counted and reported under one lock, so the hook sees 1, 2, ... M in
+    // order whichever worker finishes a signature.
+    let finished = Mutex::new(0usize);
     let mut all: Vec<Vec<Match>> = crate::parallel::map(signatures.len(), |index| {
-        scan_in(source, &signatures[index], context, hints)
+        let matches = scan_in(source, &signatures[index], context, hints);
+        if progress.is_some() {
+            let mut done = finished.lock().unwrap_or_else(|error| error.into_inner());
+            *done += 1;
+            report(ScanPhase::Match, *done);
+        }
+        matches
     });
     if !hints {
+        report(ScanPhase::Joint, 0);
         crate::joint::resolve(source, context, signatures, &mut all, false);
     }
     all

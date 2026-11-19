@@ -35,6 +35,7 @@ sigtool-native locate --signature fn.yaml --file stripped.so --discovery hint-fr
 sigtool-native locate --signature fn.yaml --file stripped.so --explain --expect 0x4f20  # why (not) here
 sigtool-native locate --signature fn.yaml --raw text.bin --arch thumb --base 0x8000  # raw code blob
 sigtool-native scan --file image.so --db signatures.db
+sigtool-native scan --file image.so --db signatures.db --json hits.json --progress  # phases on stderr
 sigtool-native scan --pid 1234 --db signatures.db --module foo  # live process, hint-free per module
 sigtool-native scan --path firmware/ --recursive --db signatures.db --jsonl hits.jsonl  # batch
 sigtool-native db build --signature fn.yaml --output signatures.db
@@ -84,6 +85,14 @@ candidates from anchor bytes only), which finds little: see `bench
 --process-like` below. When two modules both hold an identified-looking
 match (a library linked in and also loaded as a DLL), the weaker one is the
 first's rival, so the answer is `candidate` unless one copy is clearly closer.
+
+`scan --progress` (files and `--raw` blobs) prints `phase NAME` to stderr as
+each phase starts (`context`, `frequencies`, `match`, `joint`; `frequencies`
+only for more than one signature, `joint` only hint-free) and, while
+signatures are matched, `progress N/M` each time another percent of the `M`
+signatures has finished, ending at `M/M`, so a front-end gets about a hundred
+lines however large the DB. The hits and the JSON are the same with or without
+it, and without it stderr is unchanged.
 
 `locate --explain` prints, after the match list, why the matcher accepted or
 rejected the best match, or the function at `--expect RVA`: the signature

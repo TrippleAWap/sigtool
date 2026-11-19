@@ -74,6 +74,8 @@ cargo run --release -- locate --signature S.yaml --raw BLOB --arch thumb --base 
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --process-like   # + live-process path rows
 cargo run --release --example diagnose_process -- ../corpus/build-real 4 x64 arm64   # process-path misses
 cargo run --release -- scan --file IMAGE --signature S.yaml   # or --db signatures.db, --pid P
+cargo run --release -- scan --file IMAGE --db signatures.db --json H.json --progress   # phase and
+                                    # progress N/M lines on stderr (files and --raw only)
 cargo run --release -- scan --pid P --db signatures.db --module M   # hint-free per module (scanner::scan_modules);
                                     # --discovery hinted keeps the old anchor-only scanner path
 cargo run --release -- scan --path DIR --recursive --db signatures.db --jsonl OUT.jsonl

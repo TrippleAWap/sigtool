@@ -635,3 +635,78 @@ fn db_info_and_list_describe_a_db() {
     assert_names_db_rebuild("db info", &stale_info);
     assert_names_db_rebuild("db list", &stale_list);
 }
+
+/// `scan --progress` prints its phases and about one `progress N/M` line per
+/// percent of signatures matched, ending at `M/M`; without the flag stderr
+/// has none of them, and the JSON is the same either way.
+#[test]
+fn scan_progress_reports_phases_without_changing_the_result() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("scan-progress");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let scan = |json: &Path, progress: bool| {
+        let mut args = vec![
+            "scan",
+            "--file",
+            image.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--discovery",
+            "hint-free",
+            "--json",
+            json.to_str().unwrap(),
+        ];
+        if progress {
+            args.push("--progress");
+        }
+        let output = sigtool(&args, &[]);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stderr).expect("utf-8")
+    };
+    let plain_json = dir.join("plain.json");
+    let progress_json = dir.join("progress.json");
+    let plain = scan(&plain_json, false);
+    let reported = scan(&progress_json, true);
+    let plain_document = std::fs::read(&plain_json).unwrap();
+    let progress_document = std::fs::read(&progress_json).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(
+        plain_document, progress_document,
+        "--progress changed the JSON"
+    );
+    assert!(
+        !plain.contains("phase ") && !plain.contains("progress "),
+        "{plain}"
+    );
+    let phases: Vec<&str> = reported
+        .lines()
+        .filter_map(|line| line.strip_prefix("phase "))
+        .collect();
+    assert_eq!(
+        phases,
+        ["context", "frequencies", "match", "joint"],
+        "{reported}"
+    );
+    let counts: Vec<&str> = reported
+        .lines()
+        .filter_map(|line| line.strip_prefix("progress "))
+        .collect();
+    // Four signatures: each one is another percent, so each is printed, and
+    // the lines stay in order although signatures finish on several threads.
+    assert_eq!(counts, ["1/4", "2/4", "3/4", "4/4"], "{reported}");
+    let rest: Vec<&str> = reported
+        .lines()
+        .filter(|line| !line.starts_with("phase ") && !line.starts_with("progress "))
+        .collect();
+    assert_eq!(rest, plain.lines().collect::<Vec<_>>(), "{reported}");
+}

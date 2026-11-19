@@ -55,7 +55,7 @@ use sigtool_native::matcher::{
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
-use sigtool_native::scanner::{scan_all, scan_modules, ScanHit, SignatureScanner};
+use sigtool_native::scanner::{scan_all_with, scan_modules, ScanHit, ScanPhase, SignatureScanner};
 use sigtool_native::sigfile::Signature;
 use sigtool_native::source::{ByteSource, Module};
 
@@ -245,6 +245,10 @@ struct ScanArgs {
     /// With --pid, scan only this module (name or file name, as `gen --module`)
     #[arg(long, value_name = "NAME", requires = "pid")]
     module: Option<String>,
+    /// Print `phase NAME` and `progress N/M` lines to stderr while a file or
+    /// raw blob is scanned (about one per percent of signatures matched)
+    #[arg(long, conflicts_with = "path")]
+    progress: bool,
 }
 
 #[derive(Args)]
@@ -1132,7 +1136,14 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
 
     let hints = use_hints(source, &args.discovery);
     let only = only_module(source, args.module.as_deref())?;
-    let (hits, coverage) = scan_source(source, &signatures, hints, args.pid.is_some(), only)?;
+    let (hits, coverage) = scan_source(
+        source,
+        &signatures,
+        hints,
+        args.pid.is_some(),
+        only,
+        args.progress,
+    )?;
     warn_coverage(&coverage);
 
     if let Some(path) = &args.json {
@@ -1162,20 +1173,29 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
 
 /// One `scan` of one target, the same for `--file`, `--pid` and each file of
 /// `--path`. `only` (a module base, `--module`) applies to `--pid`.
+/// `progress` (`--progress`) prints the phases and matched counts of a file
+/// scan to stderr.
 fn scan_source(
     source: &dyn ByteSource,
     signatures: &[Signature],
     hints: bool,
     live: bool,
     only: Option<u64>,
+    progress: bool,
 ) -> Result<(Vec<ScanHit>, Coverage), CliError> {
     let mut coverage = Coverage::new();
     let hits = if !live {
+        let printer = ProgressPrinter::default();
+        let hook = |phase: ScanPhase, done: usize, total: usize| printer.report(phase, done, total);
+        let hook: Option<&(dyn Fn(ScanPhase, usize, usize) + Sync)> = progress.then_some(&hook);
+        if let Some(hook) = hook {
+            hook(ScanPhase::Context, 0, signatures.len());
+        }
         // Files get the bench's path (see `run_locate`).
         let context = ScanContext::build(source);
         coverage.add_context(&context);
         coverage.add_source(source, hints);
-        let all = scan_all(source, &context, signatures, hints);
+        let all = scan_all_with(source, &context, signatures, hints, hook);
         scan_hits(source, signatures, all)?
     } else if !hints {
         // A process one module at a time (see `run_locate`).
@@ -1194,6 +1214,33 @@ fn scan_source(
         hits
     };
     Ok((hits, coverage))
+}
+
+/// `scan --progress` output: a `phase NAME` line when a phase starts, and
+/// during matching a `progress N/M` line each time another percent of the
+/// signatures has finished (every signature below 100), so front-ends get
+/// about a hundred lines however large the DB. The scanner reports matched
+/// counts in order, one call at a time.
+#[derive(Default)]
+struct ProgressPrinter {
+    /// Last percent printed, `None` before the first `progress` line.
+    last: std::sync::Mutex<Option<usize>>,
+}
+
+impl ProgressPrinter {
+    fn report(&self, phase: ScanPhase, done: usize, total: usize) {
+        if done == 0 {
+            eprintln!("phase {}", phase.name());
+            return;
+        }
+        let percent = done * 100 / total.max(1);
+        let mut last = self.last.lock().unwrap_or_else(|error| error.into_inner());
+        if last.is_some_and(|last| percent <= last) {
+            return;
+        }
+        *last = Some(percent);
+        eprintln!("progress {done}/{total}");
+    }
 }
 
 /// The base of the module `--module` names, checked against the target.
@@ -1489,7 +1536,7 @@ fn batch_line(
         let source =
             FileSource::from_bytes(&data, &file_name(path)).map_err(classify_source_error)?;
         let hints = use_hints(&source, discovery);
-        let (hits, coverage) = scan_source(&source, signatures, hints, false, None)?;
+        let (hits, coverage) = scan_source(&source, signatures, hints, false, None, false)?;
         let mut document = scan_document(&source, &hits);
         Ok::<_, CliError>((
             source.arch().as_str().to_string(),
