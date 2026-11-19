@@ -56,7 +56,7 @@ def hit(name, rva, evidence="identified", score=0.9, signature_id=None):
     }
 
 
-def choose(hits, names=None, user=(), overwrite=False):
+def choose(hits, names=None, user=(), overwrite=False, review=()):
     names = names or {}
     owners = {name: rva for rva, name in names.items()}
     return plugin.choose_renames(
@@ -65,6 +65,7 @@ def choose(hits, names=None, user=(), overwrite=False):
         user_named=lambda rva: rva in user,
         name_owner=owners.get,
         overwrite_user=overwrite,
+        review=review,
     )
 
 
@@ -223,6 +224,44 @@ class ChooseRenamesTests(unittest.TestCase):
         )
         self.assertEqual([(p.rva, p.name, p.score) for p in proposals], [(0x40, "d", 0.7)])
         self.assertEqual(sorted(name for name, _ in skipped), ["a", "b", "c", "c"])
+
+    def test_unsure_matches_follow_for_review_and_are_never_preselected(self):
+        hits = [
+            hit("inflate", 0x200),
+            {**hit("deflate", 0x300, "candidate"), "answer_withheld": "tie", "matched": 3},
+            hit("crc32", 0x400, "shape-only"),
+        ]
+        proposals, skipped = choose(hits, user={0x300}, overwrite=True)
+        self.assertEqual([p.name for p in proposals], ["inflate"])
+        proposals, skipped = choose(hits, review=("candidate",), overwrite=True)
+        self.assertEqual([(p.name, p.evidence) for p in proposals][1:], [("deflate", "candidate")])
+        self.assertEqual((proposals[1].withheld, proposals[1].matched), ("tie", 3))
+        self.assertEqual(skipped, [("crc32", "best match is shape-only at +0x400")])
+        proposals, _ = choose(hits, review=("candidate", "shape-only"))
+        self.assertEqual([p.name for p in proposals], ["inflate", "deflate", "crc32"])
+        self.assertEqual(plugin.default_selection(proposals), [0])
+        self.assertEqual(plugin.default_selection(proposals, True), [0])
+
+    def test_unsure_matches_never_contradict_identified_ones(self):
+        hits = [
+            hit("inflate", 0x200),
+            hit("deflate", 0x200, "candidate"),  # the address is taken
+            hit("inflate", 0x500, "candidate", signature_id="inflate-2"),  # the name is
+            hit("crc32", 0x600, "candidate"),
+            hit("crc32", 0x700, "candidate", signature_id="crc32-2"),  # two addresses
+        ]
+        proposals, skipped = choose(hits, review=("candidate",))
+        self.assertEqual([(p.rva, p.name) for p in proposals], [(0x200, "inflate")])
+        reasons = dict(skipped)
+        self.assertIn("an identified match claims", reasons["deflate"])
+        self.assertIn("an identified match is at +0x200", reasons["inflate"])
+        self.assertEqual(reasons["crc32"], "matched 2 addresses")
+
+    def test_identified_proposals_do_not_depend_on_review(self):
+        hits = [hit("a", 0x10), hit("b", 0x20), hit("c", 0x10, "candidate")]
+        plain, _ = choose(hits)
+        reviewed, _ = choose(hits, review=("candidate", "shape-only"))
+        self.assertEqual([p for p in reviewed if p.trusted], plain)
 
     def test_chooser_selection_is_normalized(self):
         self.assertEqual(plugin._chosen(None), [])

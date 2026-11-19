@@ -387,6 +387,9 @@ def main() -> int:
         "--merge-arch", default="arm64", help="arch of the second merge sample (same build)"
     )
     parser.add_argument("--function", default=None, help="function to generate and locate")
+    parser.add_argument(
+        "--shape-only", action="store_true", help="also list shape-only matches when applying"
+    )
     # A floor that catches a broken plugin-to-CLI contract (a wrong base or
     # RVA parse renames almost nothing right), not the matcher's precision
     # target: that is measured by the real-corpus bench.
@@ -561,6 +564,8 @@ def main() -> int:
         }
         idb.__init__(apply_image, apply_idb_functions)
         idb.idb_path = str(temp / f"{apply_image.name}.i64")
+        if args.shape_only:
+            idb.registry["settings"] = plugin.DEFAULT_SETTINGS | plugin.SET_REVIEW_SHAPE_ONLY
         # The menu hands apply-names the DB sign-all wrote: no dialog.
         progress_seen: list[tuple[int, int]] = []
 
@@ -589,6 +594,21 @@ def main() -> int:
             if apply_truth.get(ea, ("",))[0] != name:
                 truth = apply_truth.get(ea, (None,))[0]
                 print(f"     wrong: {ea:#x} named {name}, ground truth {truth}")
+        review = next(c for c in idb.choosers if c.title.startswith("sigtool: proposed renames"))
+        unsure = [
+            (index, int(cells[0], 16), cells[2], cells[4])
+            for index, cells in enumerate(review.items)
+            if cells[4] != "identified"
+        ]
+        for kind in ("candidate", "shape-only"):
+            rows = [row for row in unsure if row[3] == kind]
+            good = sum(1 for _i, ea, name, _k in rows if apply_truth.get(ea, ("",))[0] == name)
+            print(f"     review rows ({kind}): {len(rows)}, {good} right by ground truth")
+        check(
+            not any(index in review.deflt for index, *_rest in unsure)
+            and not any(renamed.get(ea) == name for _i, ea, name, _k in unsure),
+            f"{len(unsure)} unsure matches are listed unselected and not applied",
+        )
         check(len(renamed) > 0, "apply renamed functions")
         check(precision >= args.min_precision, f"rename precision >= {args.min_precision}")
         check(

@@ -137,6 +137,7 @@ SET_AUTO_JUMP = 1 << 4
 SET_LIST_MATCHES = 1 << 5
 SET_CONFIRM_RENAMES = 1 << 6
 SET_PRESELECT_USER_NAMES = 1 << 7
+SET_REVIEW_SHAPE_ONLY = 1 << 8
 SETTINGS = (
     (SET_COPY_TO_CLIPBOARD, "Copy created signatures to the clipboard"),
     (SET_SAVE_BESIDE_IDB, "Save signatures and DBs in a sigtool folder beside the IDB (no dialog)"),
@@ -146,6 +147,7 @@ SETTINGS = (
     (SET_LIST_MATCHES, "List every match in a window"),
     (SET_CONFIRM_RENAMES, "Confirm renames in a list before applying them"),
     (SET_PRESELECT_USER_NAMES, "Also replace user names when applying (preselected)"),
+    (SET_REVIEW_SHAPE_ONLY, "Also list shape-only matches for review when applying (often wrong)"),
 )
 DEFAULT_SETTINGS = (
     SET_COPY_TO_CLIPBOARD
@@ -178,8 +180,13 @@ _DUMMY_NAME = re.compile(
     r"_[0-9A-Fa-f]+(?:_\d+)?$"
 )
 # Only an `identified` match is a trusted answer (spec: untied first match on
-# naming evidence); `candidate` and `shape-only` are never applied as names.
+# naming evidence); `candidate` and `shape-only` are never applied as names
+# unless the analyst selects them in the rename chooser.
 ACCEPTED_EVIDENCE = frozenset({"identified"})
+# Listed for review in the rename chooser, unselected. Shape-only matches
+# need a setting: in a sqlite self-apply 18 of their 95 best hits were wrong.
+REVIEW_EVIDENCE = ("candidate",)
+SHAPE_ONLY_EVIDENCE = ("shape-only",)
 
 
 class SigtoolError(Exception):
@@ -332,6 +339,28 @@ class Proposal:
     signature_id: str = ""
     # The function already carries a user name this rename would replace.
     replaces_user_name: bool = False
+    # Why the CLI withheld the answer (``scan --json`` ``answer_withheld``;
+    # empty when identified or when the CLI does not say).
+    withheld: str = ""
+    # Required features the match hit, when the CLI reports it.
+    matched: int | None = None
+
+    @property
+    def trusted(self) -> bool:
+        """An ``identified`` answer; anything else is listed for review only."""
+        return self.evidence in ACCEPTED_EVIDENCE
+
+
+def _matched_count(hit: dict) -> int | None:
+    # `scan --json` gives a count; `locate --json` a list of keys.
+    value = hit.get("matched")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, list):
+        return len(value)
+    return None
 
 
 def choose_renames(
@@ -340,13 +369,21 @@ def choose_renames(
     user_named: Callable[[int], bool],
     name_owner: Callable[[str], int | None],
     overwrite_user: bool = False,
+    review: Iterable[str] = (),
 ) -> tuple[list[Proposal], list[tuple[str, str]]]:
     """Renames to propose from ``scan --json`` hits, and what was skipped why.
 
     ``hits`` are best first per signature, so a signature's first hit is its
     answer. ``current_name`` and ``user_named`` describe the IDB at an RVA;
     ``name_owner`` gives the RVA already carrying a name, or ``None``.
+
+    Best hits whose evidence is in ``review`` (``candidate``, ``shape-only``)
+    follow the identified proposals, for review only: they pass the same
+    checks among themselves, and one that claims an address or a name an
+    identified hit claims is dropped, so reviewing them never contradicts an
+    identified answer. The identified proposals do not depend on them.
     """
+    review = frozenset(review) - ACCEPTED_EVIDENCE
     skipped: list[tuple[str, str]] = []
     best: dict[str, dict] = {}
     for hit in hits:
@@ -354,71 +391,98 @@ def choose_renames(
         best.setdefault(key, hit)
 
     claims: dict[int, list[dict]] = {}
+    unsure: dict[int, list[dict]] = {}
     for hit in best.values():
         name = str(hit.get("name") or "")
-        if hit.get("evidence") not in ACCEPTED_EVIDENCE:
-            skipped.append((name, f"best match is {hit.get('evidence')}"))
-            continue
+        evidence = hit.get("evidence")
         if not name or hit.get("rva") is None:
             skipped.append((name, "hit has no name or rva"))
             continue
-        claims.setdefault(int(str(hit["rva"]), 16), []).append(hit)
+        rva = int(str(hit["rva"]), 16)
+        if evidence in ACCEPTED_EVIDENCE:
+            claims.setdefault(rva, []).append(hit)
+        elif evidence in review:
+            unsure.setdefault(rva, []).append(hit)
+        else:
+            skipped.append((name, f"best match is {evidence} at +{rva:#x}"))
 
-    # One name per address and one address per name, or the answer is unsure.
-    by_name: dict[str, set[int]] = {}
-    for rva, group in claims.items():
-        for hit in group:
-            by_name.setdefault(str(hit["name"]), set()).add(rva)
-
-    proposals: list[Proposal] = []
-    for rva in sorted(claims):
-        group = claims[rva]
-        names = sorted({str(hit["name"]) for hit in group})
-        if len(names) > 1:
-            for name in names:
-                skipped.append((name, f"{len(names)} signatures claim +{rva:#x}"))
-            continue
-        name = names[0]
-        if len(by_name[name]) > 1:
-            skipped.append((name, f"matched {len(by_name[name])} addresses"))
-            continue
-        hit = max(group, key=lambda item: float(item.get("score") or 0.0))
-        current = current_name(rva)
-        if current == name:
-            skipped.append((name, "already named"))
-            continue
-        replaces_user_name = user_named(rva)
-        if replaces_user_name and not overwrite_user:
-            skipped.append((name, f"+{rva:#x} already has user name {current!r}"))
-            continue
-        owner = name_owner(name)
-        if owner is not None and owner != rva:
-            skipped.append((name, f"name already used at +{owner:#x}"))
-            continue
-        proposals.append(
-            Proposal(
-                rva=rva,
-                name=name,
-                score=float(hit.get("score") or 0.0),
-                evidence=str(hit.get("evidence")),
-                current=current,
-                signature_id=str(hit.get("signature_id") or ""),
-                replaces_user_name=replaces_user_name,
+    def resolve(claims: dict[int, list[dict]], taken: Callable[[int, str], str | None]):
+        # One name per address and one address per name, or the answer is unsure.
+        by_name: dict[str, set[int]] = {}
+        for rva, group in claims.items():
+            for hit in group:
+                by_name.setdefault(str(hit["name"]), set()).add(rva)
+        out: list[Proposal] = []
+        for rva in sorted(claims):
+            group = claims[rva]
+            names = sorted({str(hit["name"]) for hit in group})
+            if len(names) > 1:
+                for name in names:
+                    skipped.append((name, f"{len(names)} signatures claim +{rva:#x}"))
+                continue
+            name = names[0]
+            if len(by_name[name]) > 1:
+                skipped.append((name, f"matched {len(by_name[name])} addresses"))
+                continue
+            hit = max(group, key=lambda item: float(item.get("score") or 0.0))
+            conflict = taken(rva, name)
+            if conflict is not None:
+                skipped.append((name, conflict))
+                continue
+            current = current_name(rva)
+            if current == name:
+                skipped.append((name, "already named"))
+                continue
+            replaces_user_name = user_named(rva)
+            if replaces_user_name and not overwrite_user:
+                skipped.append((name, f"+{rva:#x} already has user name {current!r}"))
+                continue
+            owner = name_owner(name)
+            if owner is not None and owner != rva:
+                skipped.append((name, f"name already used at +{owner:#x}"))
+                continue
+            out.append(
+                Proposal(
+                    rva=rva,
+                    name=name,
+                    score=float(hit.get("score") or 0.0),
+                    evidence=str(hit.get("evidence")),
+                    current=current,
+                    signature_id=str(hit.get("signature_id") or ""),
+                    replaces_user_name=replaces_user_name,
+                    withheld=str(hit.get("answer_withheld") or ""),
+                    matched=_matched_count(hit),
+                )
             )
-        )
+        return out
+
+    proposals = resolve(claims, lambda _rva, _name: None)
+    claimed_names = {str(hit["name"]): rva for rva, group in claims.items() for hit in group}
+
+    def against_identified(rva: int, name: str) -> str | None:
+        if rva in claims:
+            return f"unsure match at +{rva:#x}, which an identified match claims"
+        if name in claimed_names:
+            other = claimed_names[name]
+            return f"unsure match at +{rva:#x}; an identified match is at +{other:#x}"
+        return None
+
+    proposals += resolve(unsure, against_identified)
     return proposals, sorted(skipped)
 
 
 def default_selection(proposals: list[Proposal], include_user_names: bool = False) -> list[int]:
-    """Rows the rename chooser starts with selected: all but user-name replacements.
+    """Rows the rename chooser starts with selected: identified proposals but
+    user-name replacements.
 
     Replacing an analyst's name is shown, so it is one click away, but never
-    applied by just confirming the dialog, unless the setting says so.
+    applied by just confirming the dialog, unless the setting says so. A
+    ``candidate`` or ``shape-only`` row is never preselected.
     """
     return [
         index
         for index, item in enumerate(proposals)
-        if include_user_names or not item.replaces_user_name
+        if item.trusted and (include_user_names or not item.replaces_user_name)
     ]
 
 
@@ -1601,6 +1665,8 @@ class RenameChooser(ida_kernwin.Choose):
                 ["New name", 32],
                 ["Score", 8],
                 ["Evidence", 10],
+                ["Withheld", 12],
+                ["Matched", 8],
             ],
             flags=ida_kernwin.Choose.CH_MULTI,
             deflt=default_selection(proposals, _setting(SET_PRESELECT_USER_NAMES)),
@@ -1612,6 +1678,8 @@ class RenameChooser(ida_kernwin.Choose):
                 item.name,
                 f"{item.score:.3f}",
                 item.evidence,
+                item.withheld,
+                "" if item.matched is None else str(item.matched),
             ]
             for item in proposals
         ]
@@ -1702,9 +1770,18 @@ class ApplyNamesHandler(_Handler):
             name_owner=name_owner,
             # Listed but not preselected (see `default_selection`).
             overwrite_user=True,
+            # Unsure matches are only worth listing where someone reviews them.
+            review=(
+                REVIEW_EVIDENCE + (SHAPE_ONLY_EVIDENCE if _setting(SET_REVIEW_SHAPE_ONLY) else ())
+            )
+            if _setting(SET_CONFIRM_RENAMES)
+            else (),
         )
         for name, reason in skipped:
             ida_kernwin.msg(f"sigtool: not renaming {name}: {reason}\n")
+        unsure = sum(1 for item in proposals if not item.trusted)
+        if unsure:
+            ida_kernwin.msg(f"sigtool: {unsure} unsure matches listed for review, unselected\n")
         if not proposals:
             note = f"\n\n{truncation}" if truncation else ""
             ida_kernwin.warning(
@@ -1757,7 +1834,7 @@ class ApplyNamesHandler(_Handler):
                     ),
                 )
             )
-        ida_kernwin.msg(f"sigtool: renamed {len(rows)} of {len(proposals)} proposed functions\n")
+        ida_kernwin.msg(f"sigtool: renamed {len(rows)} of {len(chosen)} selected functions\n")
         ida_kernwin.refresh_idaview_anyway()
         if rows:
             show_results(
