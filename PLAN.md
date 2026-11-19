@@ -635,5 +635,28 @@ As of 2026-11-18, `strong-fp-floor` branch, spec v5.
   unchanged. Dropped past tolerance: one hinted found-anywhere cell,
   merged->arm64 clang-O0 -> gcc-O2 0.562 -> 0.500 (a second-ranked true
   match at 0.193). Held-out strong FP was 0.113 at v4; not yet re-run.
+- RW8 workflows (2026-11-19, `rw/batch-scan` branch, spec v5, output only:
+  no feature, matcher, signature or DB byte changes):
+  - `scan --path DIR [--recursive] --jsonl OUT`: one signature load, one
+    JSON line per regular file sorted by relative path, status `ok`,
+    `unsupported`, `error` or `budget-exhausted` (from the `truncated`
+    budget report, never wall time); exit 0 once every file has a line.
+    Measured on the stripped real corpus (120 files, all four arches) with
+    a DB of 24 zlib clang-O2 x64 functions, auto (hint-free) discovery: 120
+    `ok`; the 24 zlib images all have identified hits (148 in total), the 96
+    other-library images have none (260 hits of other verdicts). Output
+    byte-identical across two runs and with `SIGTOOL_THREADS=1`. Wall time
+    not recorded: the shared server was at load 30+ on 4 cores.
+  - Reports (`gen --json-report`, `merge --json-report`, `db build
+    --report`) record the input's SHA-256 (in-tree, NIST vectors), size,
+    and ELF GNU build-id or PE CodeView GUID and age (`native/src/identity.rs`,
+    raw bounded reads, outside `elf.rs`); `db build --report` also hashes
+    the `--functions` list. Checked against `llvm-readelf -n` and
+    `llvm-readobj --coff-debug-directory` on clang + lld output.
+  - `db info` and `db list [--json]`; a spec-version refusal of a DB or
+    signature now names `db build --file IMAGE --functions F.json` or
+    regeneration (exit 2 as before).
+  - Not done from RW8: `--explain` / `--expect`, generation warnings, the
+    workflow pages, and the plugin smoke rerun (no plugin change).
 - Next: M8 exit (weekly workflow green), strong FP on the held-out corpus
   (milestone exit), and pointer-width-dependent constants (M10).
