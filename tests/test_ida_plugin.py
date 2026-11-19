@@ -12,6 +12,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def _load_plugin():
@@ -407,6 +408,40 @@ class MenuHelperTests(unittest.TestCase):
             plugin.output_path(idb, "deflate<int>::run", ".yaml"),
             str(Path("work") / "sigtool" / "deflate_int_run.yaml"),
         )
+
+    def test_long_names_are_cut_and_keep_a_hash(self):
+        idb = str(Path("work") / "libz.so.i64")
+        first = plugin.output_path(idb, "_ZN" + "a" * 300 + "Ev", ".merged.yaml")
+        second = plugin.output_path(idb, "_ZN" + "a" * 300 + "Ei", ".merged.yaml")
+        stem = Path(first).name[: -len(".merged.yaml")]
+        self.assertLessEqual(len(stem), plugin.MAX_FILE_STEM + 9)
+        self.assertTrue(stem.startswith("ZNaaaa"))
+        self.assertRegex(stem, r"_[0-9a-f]{8}$")
+        self.assertNotEqual(first, second)
+        short = "inflate" + "x" * (plugin.MAX_FILE_STEM - 7)
+        self.assertEqual(plugin.safe_file_name(short), short)
+
+    def test_a_failed_save_keeps_the_report_and_says_so(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        # A file where the sigtool folder would go makes the save fail.
+        (Path(temp.name) / "sigtool").write_text("")
+        log, asked = [], []
+        settings = plugin.SET_SAVE_BESIDE_IDB | plugin.SET_SHOW_REPORT
+        kernwin = plugin.ida_kernwin
+        with (
+            mock.patch.object(plugin, "_settings", lambda: settings),
+            mock.patch.object(plugin, "_idb_path", lambda: str(Path(temp.name) / "a.i64")),
+            mock.patch.object(plugin, "_ask_path", lambda *args: asked.append(args)),
+            mock.patch.object(kernwin, "msg", log.append, create=True),
+            mock.patch.object(kernwin, "info", log.append, create=True),
+        ):
+            plugin._deliver_signature("spec_version: '7'\n", "REPORT", "inflate", ".yaml")
+        self.assertIn("REPORT", log[0])
+        self.assertEqual(len(asked), 1)
+        self.assertIn("not saved to", log[-2])
+        self.assertIn("REPORT", log[-1])
+        self.assertIn("not saved to", log[-1])
 
     def test_settings_are_distinct_bits_in_form_order(self):
         flags = [flag for flag, _label in plugin.SETTINGS]

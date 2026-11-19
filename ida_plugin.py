@@ -339,9 +339,20 @@ def is_signature_text(text: str | None) -> bool:
     )
 
 
+# A mangled C++ name can run to hundreds of characters; file systems refuse a
+# component past 255 bytes, and Windows a path past 260 characters.
+MAX_FILE_STEM = 96
+
+
 def safe_file_name(name: str) -> str:
-    """``name`` usable as a file name (mangled names hold characters file systems refuse)."""
-    return re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+    """``name`` usable as a file name (mangled names hold characters file systems
+    refuse); a long one is cut and keeps a hash of the whole, so two long names
+    sharing a prefix stay apart."""
+    safe = re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+    if len(safe) <= MAX_FILE_STEM:
+        return safe
+    digest = hashlib.blake2b(name.encode("utf-8", "replace"), digest_size=4).hexdigest()
+    return f"{safe[:MAX_FILE_STEM].rstrip('._')}_{digest}"
 
 
 def output_path(idb_path: str, name: str, suffix: str) -> str:
@@ -1137,6 +1148,8 @@ def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
     """Hand a new signature over as the settings say: clipboard, a file beside
     the IDB, or a save dialog when neither is on; the report goes to the
     Output window, and to a dialog only if asked for."""
+    # The report first: a failed save must not lose it.
+    ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
     done = []
     if _setting(SET_COPY_TO_CLIPBOARD) and _set_clipboard(text):
         done.append("copied to the clipboard")
@@ -1145,12 +1158,25 @@ def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
         path = output_path(_idb_path(), label, suffix)
     elif not done:
         path = _ask_path("yaml", True, f"{safe_file_name(label)}{suffix}", f"Save {label} as")
-    if path:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(text, encoding="utf-8")
+    while path:
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(text, encoding="utf-8")
+        except OSError as error:
+            failed = f"not saved to {path} ({error})"
+            ida_kernwin.msg(f"sigtool: {label} {failed}\n")
+            path = _ask_path(
+                "yaml",
+                True,
+                f"{safe_file_name(label)}{suffix}",
+                f"Could not save {label}; save it as",
+            )
+            if not path:
+                done.append(failed)
+            continue
         _last_paths["yaml"] = path
         done.append(f"saved to {path}")
-    ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
+        break
     ida_kernwin.msg(f"sigtool: signature of {label} {' and '.join(done) or 'discarded'}\n")
     if _setting(SET_SHOW_REPORT):
         ida_kernwin.info(f"{report}\n\n{label}: {', '.join(done) or 'not saved'}")
