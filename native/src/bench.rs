@@ -1368,7 +1368,11 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
                 failures.push(format!("missing {label} cell {}", cell.arch));
                 continue;
             };
-            if current.targets == 0 {
+            // A cell the baseline measured must be measured again: a zero
+            // rate from a run that scanned nothing is not a measurement. A
+            // cell both runs left empty (the real corpus has no negative
+            // set) has nothing to compare and is not gated.
+            if current.targets == 0 && cell.targets > 0 {
                 failures.push(format!(
                     "{label} {}: scanned 0 targets; an empty cell cannot pass",
                     cell.arch
@@ -1921,10 +1925,21 @@ mod tests {
 
     #[test]
     fn baselines_without_target_counts_load() {
-        let mut baseline: BenchReport =
-            serde_json::from_str(include_str!("../../tests/baseline/native-real-bench.json"))
-                .expect("baseline loads");
-        assert!(fp_cells(&mut baseline).all(|cell| cell.targets == 0));
+        // A cell as baselines saved before `targets` was recorded wrote it.
+        let cell: FalsePositiveCell = serde_json::from_str(
+            r#"{"arch": "x64", "signatures": 3, "signatures_with_hits": 0, "hits": 0}"#,
+        )
+        .expect("old cell loads");
+        assert_eq!((cell.targets, cell.target_bytes), (0, 0));
+    }
+
+    #[test]
+    fn cells_empty_in_both_runs_are_not_gated() {
+        let mut baseline = old_baseline();
+        baseline.negative_false_positives[0].targets = 0;
+        let mut current = baseline.clone();
+        current.negative_false_positives[0].targets = 0;
+        assert!(compare(&baseline, &current, DEFAULT_TOLERANCE).is_empty());
     }
 
     #[test]
