@@ -44,7 +44,7 @@ use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
 use sigtool_native::matcher::{
-    evidence, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
+    evidence, hinted_floors, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
@@ -608,16 +608,19 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
         "sigtool-native: {} discovery",
         if hints { "hinted" } else { "hint-free" }
     );
-    // Hinted locate builds no image index, so only hint-free has budgets
-    // to report; `[]` from hinted locate means no budgeted pass ran.
+    // A file is scanned the way the bench measures it, with the image's
+    // indexes and every trust floor, in both modes. A live process builds
+    // no whole-process index (hundreds of modules); its hinted scan starts
+    // from anchor hits and gets the same hinted floors.
     let mut coverage = Coverage::new();
-    let matches = if hints {
-        scan(source, &signature, None, 256, true, None)
+    let matches = if hints && args.pid.is_some() {
+        let found = scan(source, &signature, None, 256, true, None);
+        hinted_floors(source, &signature, found)
     } else {
         let context = ScanContext::build(source);
         coverage.add_context(&context);
-        coverage.add_source(source, false);
-        scan_in(source, &signature, &context, false)
+        coverage.add_source(source, hints);
+        scan_in(source, &signature, &context, hints)
     };
     warn_coverage(&coverage);
 
@@ -745,7 +748,12 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     };
 
     let mut coverage = Coverage::new();
-    let hits = if use_hints(source, &args.discovery) {
+    let hints = use_hints(source, &args.discovery);
+    let hits = if hints && args.file.is_some() {
+        // Files get the bench's path (see `run_locate`); only a live process
+        // uses the incremental scanner.
+        indexed_hits(source, &signatures, &mut coverage, true)?
+    } else if hints {
         let mut scanner = SignatureScanner::new(source, signatures, None, None)
             .map_err(|error| CliError::input(error.to_string()))?;
         let report = scanner.scan_pass();
@@ -754,7 +762,7 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
         coverage.add_scan_report(&report, DEFAULT_MAX_RECOVERIES);
         report.hits
     } else {
-        hint_free_hits(source, &signatures, &mut coverage)?
+        indexed_hits(source, &signatures, &mut coverage, false)?
     };
     warn_coverage(&coverage);
 
@@ -798,23 +806,27 @@ fn use_hints(source: &dyn ByteSource, discovery: &str) -> bool {
 /// Every signature against one shared hint-free context, best match first
 /// per signature, in signature order. Signatures from one module are then
 /// resolved jointly through their call-graph links.
-fn hint_free_hits(
+fn indexed_hits(
     source: &dyn ByteSource,
     signatures: &[Signature],
     coverage: &mut Coverage,
+    hints: bool,
 ) -> Result<Vec<ScanHit>, CliError> {
     let context = ScanContext::build(source);
     coverage.add_context(&context);
-    coverage.add_source(source, false);
+    coverage.add_source(source, hints);
     // Signatures share only the context's caches, so they scan in parallel;
     // results keep signature order.
     if signatures.len() > 1 {
-        context.prepare_frequencies(source, false);
+        context.prepare_frequencies(source, hints);
     }
     let mut all: Vec<Vec<Match>> = sigtool_native::parallel::map(signatures.len(), |index| {
-        scan_in(source, &signatures[index], &context, false)
+        scan_in(source, &signatures[index], &context, hints)
     });
-    sigtool_native::joint::resolve(source, &context, signatures, &mut all, false);
+    // Joint resolution is measured hint-free only (`bench --joint`).
+    if !hints {
+        sigtool_native::joint::resolve(source, &context, signatures, &mut all, false);
+    }
     let mut hits = Vec::new();
     for (signature, matches) in signatures.iter().zip(all) {
         let signature_id = signature
