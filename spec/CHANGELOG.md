@@ -11,6 +11,18 @@ documents and DBs are refused (rule 16) and must be regenerated or rebuilt.
   ELF signature and a PE target never shared an import callee (0 of 24 pairs
   per arch on the mixed tier). The module is dropped in every format; labels
   and provenance keep `dll!name`.
+* Label rule, no version change (labels are not part of the document): a
+  first match whose function's sole direct caller calls nothing else is a
+  `candidate` (SPEC.md §8, *wrapped*). Simulated first on the `--world`
+  tier's recall log (`--fp-report`, which now records the first match's
+  callers): 104 wrong identified answers had that shape and no correct one
+  (`lua_next` answered at `luaH_next`, signed from builds that inlined it).
+  Built: `--world` identified precision hint-free 0.972 -> 0.988, hinted
+  0.976 -> 0.997, correct answers unchanged (6212 / 5022), top-1 and FP
+  unchanged; real corpus identical. Lost in simulation: a size cut on the
+  wrapper (at most 96 bytes, at most 2 callees) removes 19 wrong and 48
+  correct answers; `LZ4_loadDict` -> `LZ4_loadDict_internal` (35) is a tail
+  call the caller index does not record and stays.
 * Mixed ELF/PE tier (`corpus/real.py --pe`, `corpus/build-pe-mixed`,
   `--max-functions 4 --joint`), hint-free top-1: same arch other compiler
   (ELF clang <-> PE clang, same level) 0.633 -> 0.667, merged other compiler

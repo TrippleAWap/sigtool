@@ -577,7 +577,8 @@ hint-free match already has: a distinctive-looking constant such as
 **Evidence labels.** Each match in a ranked list carries one label:
 
 * `identified`: the first match, not tied with the second, not a waived
-  match and without a close rival (both unless joint resolution placed it
+  match, not *wrapped*, and without a close rival (all three unless joint
+  resolution placed it
   with `joint:N`, `N ≥ 1`), with an identifying key, and with similarity at least 0.42 when no `str` matched
   but a direct neighbour key (`near:in:`, `near:out:`) or a `joint:N` key
   with `N ≥ 1` did, or at least 0.7 when only callees, constants, or two-hop neighbour
@@ -596,6 +597,11 @@ frequency estimates. A rival whose similarity to the signature is at least
 the match's minus 0.1 makes the match a `candidate`: the evidence cannot
 tell the two apart, only shape does (source twins such as a function and its
 case-sensitive variant).
+
+A first match is *wrapped* when its function has exactly one direct caller
+and that caller calls nothing else. A wrapper signed from a build that
+inlined this callee carries the callee's evidence, so the evidence names
+both functions (`lua_next` and `luaH_next`): such a match is a `candidate`.
 
 The candidate's neighbour keys are computed the same way as at generation, on
 the target. Shared keys are reported in `matched` as `near:HOP:KIND:VALUE` and
