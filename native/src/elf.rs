@@ -52,6 +52,13 @@ const R_AARCH64_RELATIVE: u64 = 1027;
 
 const PE_SECTION_HEADER_SIZE: usize = 40;
 
+/// Largest raw blob [`FileSource::from_raw`] maps. The blob is copied into
+/// one region and swept for starts, so an unbounded file would be an
+/// unbounded allocation; firmware images and single-region dumps are far
+/// smaller, and the start sweep stops at `starts::MAX_START_SWEEP_BYTES`
+/// (128 MiB) anyway.
+pub const MAX_RAW_BYTES: usize = 1 << 30;
+
 /// Zero fill (ELF `SHT_NOBITS`, PE virtual size past the raw data) one image
 /// file may materialize: a floor that covers the `.bss` of any real program,
 /// plus a multiple of the file length so large images get more. Header sizes
@@ -234,6 +241,72 @@ impl FileSource {
 
     fn from_pe(data: &[u8], name: &str, arch: Arch) -> Result<FileSource, SourceFormatError> {
         let parsed = parse_pe(data, name, arch)?;
+        Ok(FileSource::build(arch, parsed))
+    }
+
+    /// A raw code blob (`--raw`): a firmware image or a dump of one code
+    /// region, mapped as one executable region at `base`. It has no
+    /// container, so nothing names a function, gives bounds, or says which
+    /// words are relocated: discovery is hint-free, every in-range value is
+    /// an address (the module-range test of SPEC.md §2.2 for images without
+    /// a relocation table), and function starts are synthesized from the
+    /// code alone (`starts`), as for a stripped image without unwind tables.
+    /// ARM32 mode comes from the code (`arm_mode`); x86-64 has no code-only
+    /// start sweep, so its starts are the direct call targets reachable from
+    /// `base`.
+    pub fn from_raw(
+        data: &[u8],
+        name: &str,
+        arch: Arch,
+        base: u64,
+    ) -> Result<FileSource, SourceFormatError> {
+        if data.is_empty() {
+            return Err(SourceFormatError("raw blob is empty".into()));
+        }
+        if data.len() > MAX_RAW_BYTES {
+            return Err(SourceFormatError(format!(
+                "raw blob of {} bytes exceeds the {MAX_RAW_BYTES}-byte limit",
+                data.len()
+            )));
+        }
+        // The region's end must be representable: addresses past it are
+        // compared against it everywhere.
+        // ARM32 and Thumb address 32 bits, so their code ends at 4 GiB. An
+        // ELF32 image cannot place a region higher; a raw base could, and
+        // the ARM start sweep's realigning steps would wrap past 2^64 there.
+        let limit = if arch.is_arm() { 1u64 << 32 } else { u64::MAX };
+        if base
+            .checked_add(data.len() as u64)
+            .is_none_or(|end| end > limit)
+        {
+            return Err(SourceFormatError(format!(
+                "raw blob of {} bytes does not fit at base 0x{base:x} in the {arch} address space",
+                data.len()
+            )));
+        }
+        let region = Region::new("raw", base, data.to_vec(), true, false);
+        let module = Module {
+            name: name.to_string(),
+            base,
+            image_base: base,
+            size: data.len() as u64,
+            path: None,
+            relocations: None,
+            ..Module::default()
+        };
+        let parsed = ParsedImage {
+            regions: vec![region],
+            module,
+            bounds: Vec::new(),
+            local_symbols: false,
+            thumb_starts: Vec::new(),
+            code_pointers: (arch == Arch::Arm32).then(Vec::new),
+            unwind: Vec::new(),
+            unwind_exact_ends: false,
+            start_pointers: (arch != Arch::X64).then(Vec::new),
+            pointer_slots: Vec::new(),
+            pe_roots: (arch == Arch::X64).then(|| vec![base]),
+        };
         Ok(FileSource::build(arch, parsed))
     }
 

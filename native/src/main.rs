@@ -42,6 +42,7 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::Value;
 
+use sigtool_native::arch::Arch;
 use sigtool_native::coverage::Coverage;
 use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
@@ -49,7 +50,8 @@ use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
 use sigtool_native::identity::{container, identify, Container, ImageIdentity};
 use sigtool_native::matcher::{
-    evidence, hinted_floors, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
+    evidence, explain, hinted_floors, scan, scan_in, Explanation, Match, ScanContext,
+    DEFAULT_MAX_RECOVERIES,
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
@@ -90,19 +92,41 @@ enum Command {
     Bench(BenchArgs),
 }
 
+/// `--raw FILE --arch A --base ADDR`: a code blob without a container.
+#[derive(Args)]
+struct RawArgs {
+    /// Raw code blob (firmware, a dump of one code region): one executable
+    /// region at --base, no symbols or relocations; hint-free only
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["arch", "base"],
+        conflicts_with_all = ["file", "pid"]
+    )]
+    raw: Option<PathBuf>,
+    /// With --raw, the blob's architecture
+    #[arg(long, requires = "raw", value_parser = ["x64", "arm64", "arm32", "thumb"])]
+    arch: Option<String>,
+    /// With --raw, the address the blob's first byte is mapped at
+    #[arg(long, value_name = "ADDR", requires = "raw")]
+    base: Option<String>,
+}
+
 #[derive(Args)]
 struct GenArgs {
     /// ELF or PE image
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
+        required_unless_present_any = ["pid", "raw"],
         conflicts_with = "pid"
     )]
     file: Option<PathBuf>,
     /// Live Windows process to read (read-only)
     #[arg(long, value_name = "PID")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Absolute address, e.g. 0x1000
     #[arg(long, value_name = "ADDR", conflicts_with = "rva")]
     addr: Option<String>,
@@ -138,13 +162,15 @@ struct LocateArgs {
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
+        required_unless_present_any = ["pid", "raw"],
         conflicts_with = "pid"
     )]
     file: Option<PathBuf>,
     /// Live Windows process to scan (read-only)
     #[arg(long, value_name = "PID")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Write the match list as JSON
     #[arg(long, value_name = "FILE")]
     json: Option<PathBuf>,
@@ -157,6 +183,14 @@ struct LocateArgs {
     /// without `.symtab` function symbols (stripped ELF, PE)
     #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
     discovery: String,
+    /// Explain the verdict on the best match (or on --expect): matched and
+    /// missed features, neighbour keys, and the gate that decided
+    #[arg(long, conflicts_with = "pid")]
+    explain: bool,
+    /// With --explain, explain the function at this module-relative address
+    /// instead of the best match
+    #[arg(long, value_name = "RVA", requires = "explain")]
+    expect: Option<String>,
 }
 
 #[derive(Args)]
@@ -165,15 +199,22 @@ struct ScanArgs {
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present_any = ["pid", "path"],
+        required_unless_present_any = ["pid", "path", "raw"],
         conflicts_with_all = ["pid", "path"]
     )]
     file: Option<PathBuf>,
     /// Live Windows process to scan (read-only)
     #[arg(long, value_name = "PID", conflicts_with = "path")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Scan every regular file in this directory (batch mode; needs --jsonl)
-    #[arg(long, value_name = "DIR", requires = "jsonl", conflicts_with = "json")]
+    #[arg(
+        long,
+        value_name = "DIR",
+        requires = "jsonl",
+        conflicts_with_all = ["json", "raw"]
+    )]
     path: Option<PathBuf>,
     /// With --path, also scan subdirectories (symlinks are never followed)
     #[arg(long, requires = "path")]
@@ -302,6 +343,11 @@ struct BenchArgs {
     /// lines to this file (offline simulation of assignment rules)
     #[arg(long = "joint-report", requires = "joint")]
     joint_report: Option<PathBuf>,
+    /// Also scan every stripped target the way `scan --pid` scans a live
+    /// process (no symbol starts, unwind bounds as hints, the incremental
+    /// scanner) and report it as discovery `process`
+    #[arg(long = "process-like")]
+    process_like: bool,
     /// Allowed recall drop / false-positive increase
     #[arg(long, default_value_t = sigtool_native::bench::DEFAULT_TOLERANCE)]
     tolerance: f64,
@@ -374,12 +420,13 @@ fn main() -> ExitCode {
 
 fn run_gen(args: GenArgs) -> Result<u8, CliError> {
     // A live process has no input file to hash, so its report says `null`.
-    let (target, input): (Box<dyn ByteSource>, Value) = match &args.file {
-        Some(path) => {
+    let (target, input): (Box<dyn ByteSource>, Value) = match (&args.file, load_raw(&args.raw)?) {
+        (_, Some((source, identity))) => (Box::new(source), identity_value(&identity)),
+        (Some(path), None) => {
             let (source, identity) = load_file_with_identity(path)?;
             (Box::new(source), identity_value(&identity))
         }
-        None => (load_target(None, args.pid)?, Value::Null),
+        (None, None) => (load_target(None, args.pid, &args.raw)?, Value::Null),
     };
     let source = target.as_ref();
     let addr = resolve_address(
@@ -391,7 +438,7 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
     // The image's call graph gives the signature its neighbour keys. A live
     // process is not indexed: the code index would decode every loaded DLL,
     // so `gen --pid` runs no budgeted pass and always reports `[]`.
-    let context = args.file.is_some().then(|| ScanContext::build(source));
+    let context = args.pid.is_none().then(|| ScanContext::build(source));
     let result = generate_in(
         source,
         addr,
@@ -647,7 +694,8 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
 
 fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     let signature = load_signature(&args.signature)?;
-    let target = load_target(args.file.as_deref(), args.pid)?;
+    check_raw_discovery(&args.raw, &args.discovery)?;
+    let target = load_target(args.file.as_deref(), args.pid, &args.raw)?;
     let source = target.as_ref();
     let hints = use_hints(source, &args.discovery);
     eprintln!(
@@ -659,28 +707,58 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     // no whole-process index (hundreds of modules); its hinted scan starts
     // from anchor hits and gets the same hinted floors.
     let mut coverage = Coverage::new();
+    let mut context = None;
     let matches = if hints && args.pid.is_some() {
         let found = scan(source, &signature, None, 256, true, None);
         hinted_floors(source, &signature, found)
     } else {
-        let context = ScanContext::build(source);
-        coverage.add_context(&context);
+        let built = context.insert(ScanContext::build(source));
+        coverage.add_context(built);
         coverage.add_source(source, hints);
-        scan_in(source, &signature, &context, hints)
+        scan_in(source, &signature, built, hints)
     };
     warn_coverage(&coverage);
+
+    // clap keeps --explain off --pid, so a context exists here.
+    let explanation = match (&context, args.explain) {
+        (Some(context), true) => {
+            let address = match &args.expect {
+                Some(rva) => Some(resolve_address(source, None, Some(rva), None)?),
+                None => matches.first().map(|matched| matched.address),
+            };
+            address.map(|address| explain(source, &signature, context, hints, address))
+        }
+        _ => None,
+    };
 
     if let Some(path) = &args.json {
         let mut document = match_document(source, &signature, &matches);
         document.insert("truncated".to_string(), coverage_value(&coverage));
+        if args.explain {
+            document.insert(
+                "explain".to_string(),
+                explanation.as_ref().map_or(Value::Null, |explanation| {
+                    explain_value(source, &signature, explanation)
+                }),
+            );
+        }
         write_json(path, &document)?;
     }
+    let print_explanation = || {
+        if args.explain {
+            match &explanation {
+                Some(explanation) => print!("{}", explain_text(source, &signature, explanation)),
+                None => println!("explain: no match to explain (pass --expect RVA)"),
+            }
+        }
+    };
 
     if matches.is_empty() {
         eprintln!(
             "sigtool-native: no match for signature {:?} in the target",
             signature.name
         );
+        print_explanation();
         return Ok(EXIT_NOT_FOUND);
     }
     println!(
@@ -702,6 +780,7 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
             where_
         );
     }
+    print_explanation();
     if !args.yes && std::io::stdin().is_terminal() {
         let label = source
             .label_for_address(matches[0].address)
@@ -776,6 +855,243 @@ fn match_document(
     document
 }
 
+fn hex_value(address: Option<u64>) -> Value {
+    address.map_or(Value::Null, |address| {
+        Value::String(format!("0x{address:x}"))
+    })
+}
+
+fn number_value(number: Option<f64>) -> Value {
+    number.map_or(Value::Null, json_number)
+}
+
+fn strings_value(keys: &[String]) -> Value {
+    Value::Array(keys.iter().cloned().map(Value::String).collect())
+}
+
+/// The `explain` object of `locate --json`: what [`explain`] found, keyed
+/// like the match entries.
+fn explain_value(
+    source: &dyn ByteSource,
+    signature: &Signature,
+    explanation: &Explanation,
+) -> Value {
+    let mut object: BTreeMap<String, Value> = BTreeMap::new();
+    object.insert("address".to_string(), hex_value(Some(explanation.address)));
+    if let Some(module) = source.module_for(explanation.address) {
+        object.insert("module".to_string(), Value::String(module.name.clone()));
+        object.insert(
+            "rva".to_string(),
+            hex_value(Some(module.rva(explanation.address))),
+        );
+    }
+    object.insert(
+        "label".to_string(),
+        source
+            .label_for_address(explanation.address)
+            .map_or(Value::Null, Value::String),
+    );
+    object.insert("start".to_string(), hex_value(explanation.start));
+    object.insert("end".to_string(), hex_value(explanation.end));
+    object.insert("candidate".to_string(), Value::Bool(explanation.candidate));
+    object.insert("score".to_string(), json_number(explanation.score));
+    object.insert(
+        "similarity".to_string(),
+        json_number(explanation.similarity),
+    );
+    object.insert(
+        "threshold".to_string(),
+        json_number(signature.match_threshold),
+    );
+    object.insert(
+        "min_distinct".to_string(),
+        Value::Number(signature.min_distinct.into()),
+    );
+    object.insert(
+        "matched_required".to_string(),
+        Value::Number(explanation.matched_required.into()),
+    );
+    object.insert(
+        "required".to_string(),
+        Value::Number(explanation.required.into()),
+    );
+    object.insert("matched".to_string(), strings_value(&explanation.matched));
+    object.insert(
+        "inherited".to_string(),
+        strings_value(&explanation.inherited),
+    );
+    object.insert(
+        "missed".to_string(),
+        Value::Array(
+            explanation
+                .missed
+                .iter()
+                .map(|(key, required)| serde_json::json!({ "key": key, "required": required }))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "optional_callees".to_string(),
+        strings_value(&explanation.optional_callees),
+    );
+    object.insert(
+        "neighbours".to_string(),
+        serde_json::json!({
+            "shared": explanation.neighbours_shared,
+            "missed": explanation.neighbours_missed,
+        }),
+    );
+    object.insert("cross_isa".to_string(), Value::Bool(explanation.cross_isa));
+    object.insert(
+        "gates".to_string(),
+        Value::Array(
+            explanation
+                .gates
+                .iter()
+                .map(|gate| {
+                    serde_json::json!({
+                        "gate": gate.gate,
+                        "passed": gate.passed,
+                        "value": number_value(gate.value),
+                        "needed": number_value(gate.needed),
+                    })
+                })
+                .collect(),
+        ),
+    );
+    object.insert(
+        "decided".to_string(),
+        Value::String(explanation.decided.clone()),
+    );
+    object.insert(
+        "rank".to_string(),
+        explanation
+            .rank
+            .map_or(Value::Null, |rank| Value::Number((rank + 1).into())),
+    );
+    object.insert(
+        "matches".to_string(),
+        Value::Number(explanation.matches.into()),
+    );
+    object.insert(
+        "evidence".to_string(),
+        explanation
+            .evidence
+            .map_or(Value::Null, |label| Value::String(label.to_string())),
+    );
+    object.insert(
+        "answer_withheld".to_string(),
+        explanation
+            .answer_withheld
+            .map_or(Value::Null, |reason| Value::String(reason.to_string())),
+    );
+    object.insert(
+        "answer_floor".to_string(),
+        number_value(explanation.answer_floor),
+    );
+    object.insert("rival".to_string(), number_value(explanation.rival));
+    object.insert("chance".to_string(), number_value(explanation.chance));
+    object.insert(
+        "carriers".to_string(),
+        explanation
+            .carriers
+            .map_or(Value::Null, |count| Value::Number(count.into())),
+    );
+    Value::Object(object.into_iter().collect())
+}
+
+/// `locate --explain` as text, after the match list.
+fn explain_text(
+    source: &dyn ByteSource,
+    signature: &Signature,
+    explanation: &Explanation,
+) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    let label = source
+        .label_for_address(explanation.address)
+        .unwrap_or_else(|| "unlabelled".to_string());
+    let _ = writeln!(
+        text,
+        "explain 0x{:x} {label}: {}",
+        explanation.address, explanation.decided
+    );
+    let rank = match explanation.rank {
+        Some(rank) => format!(
+            "rank {} of {}, {}",
+            rank + 1,
+            explanation.matches,
+            explanation.evidence.unwrap_or("")
+        ),
+        None => format!("not in the {} matches", explanation.matches),
+    };
+    let _ = writeln!(
+        text,
+        "  {rank}; score {:.3} (threshold {}), similarity {:.3}, required {}/{} (min_distinct {})",
+        explanation.score,
+        signature.match_threshold,
+        explanation.similarity,
+        explanation.matched_required,
+        explanation.required,
+        signature.min_distinct
+    );
+    if let Some(reason) = explanation.answer_withheld {
+        let _ = writeln!(
+            text,
+            "  not identified: {reason} (answer floor {:.2}, rival {})",
+            explanation.answer_floor.unwrap_or(0.0),
+            explanation
+                .rival
+                .map_or("none".to_string(), |rival| format!("{rival:.3}"))
+        );
+    }
+    let _ = writeln!(text, "  matched: {}", explanation.matched.join(" "));
+    if !explanation.inherited.is_empty() {
+        let _ = writeln!(text, "  inherited: {}", explanation.inherited.join(" "));
+    }
+    let missed: Vec<String> = explanation
+        .missed
+        .iter()
+        .map(|(key, required)| format!("{}{key}", if *required { "!" } else { "" }))
+        .collect();
+    let _ = writeln!(text, "  missed (! required): {}", missed.join(" "));
+    if !explanation.optional_callees.is_empty() {
+        let _ = writeln!(
+            text,
+            "  optional here (target names no function): {}",
+            explanation.optional_callees.join(" ")
+        );
+    }
+    if !explanation.neighbours_shared.is_empty() || !explanation.neighbours_missed.is_empty() {
+        let _ = writeln!(
+            text,
+            "  neighbour keys shared {} / missed {}",
+            explanation.neighbours_shared.join(" "),
+            explanation.neighbours_missed.join(" ")
+        );
+    }
+    if let (Some(chance), Some(carriers)) = (explanation.chance, explanation.carriers) {
+        let _ = writeln!(
+            text,
+            "  chance carriers {chance:.3} expected, {carriers} exact"
+        );
+    }
+    for gate in &explanation.gates {
+        let value = match (gate.value, gate.needed) {
+            (Some(value), Some(needed)) => format!(" {value:.3} vs {needed:.3}"),
+            (Some(value), None) => format!(" {value:.3}"),
+            _ => String::new(),
+        };
+        let _ = writeln!(
+            text,
+            "  gate {}: {}{value}",
+            gate.gate,
+            if gate.passed { "pass" } else { "FAIL" }
+        );
+    }
+    text
+}
+
 // -- scan --------------------------------------------------------------------
 
 fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
@@ -793,7 +1109,8 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     if let (Some(dir), Some(out)) = (&args.path, &args.jsonl) {
         return run_batch_scan(dir, args.recursive, out, &signatures, &args.discovery);
     }
-    let target = load_target(args.file.as_deref(), args.pid)?;
+    check_raw_discovery(&args.raw, &args.discovery)?;
+    let target = load_target(args.file.as_deref(), args.pid, &args.raw)?;
     let source = target.as_ref();
 
     let hints = use_hints(source, &args.discovery);
@@ -1631,8 +1948,60 @@ fn identity_value(identity: &ImageIdentity) -> Value {
     Value::Object(object.into_iter().collect())
 }
 
-/// Open the `--file` image or the `--pid` process (clap enforces exactly one).
-fn load_target(file: Option<&Path>, pid: Option<u32>) -> Result<Box<dyn ByteSource>, CliError> {
+/// Open the `--raw` blob and identify it from the same bytes, or `None`
+/// without `--raw`.
+fn load_raw(raw: &RawArgs) -> Result<Option<(FileSource, ImageIdentity)>, CliError> {
+    let (Some(path), Some(arch), Some(base)) = (&raw.raw, &raw.arch, &raw.base) else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Err(CliError::input(format!(
+            "no such raw file: {}",
+            path.display()
+        )));
+    }
+    let arch = Arch::parse(arch).ok_or_else(|| CliError::input(format!("unknown arch {arch}")))?;
+    let base = parse_address(base, "--base")?;
+    let size = std::fs::metadata(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?
+        .len();
+    // Refused before reading, so a huge file is never loaded.
+    if size > sigtool_native::elf::MAX_RAW_BYTES as u64 {
+        return Err(CliError::input(format!(
+            "{}: {size} bytes exceeds the raw blob limit of {} bytes",
+            path.display(),
+            sigtool_native::elf::MAX_RAW_BYTES
+        )));
+    }
+    let data = std::fs::read(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?;
+    let source = FileSource::from_raw(&data, &file_name(path), arch, base)
+        .map_err(|error| CliError::input(format!("{}: {error}", path.display())))?;
+    Ok(Some((source, identify(&data))))
+}
+
+/// A raw blob has no symbols or bounds: only hint-free discovery can find
+/// anything in it, so asking for hints is refused rather than answered with
+/// an empty scan.
+fn check_raw_discovery(raw: &RawArgs, discovery: &str) -> Result<(), CliError> {
+    if raw.raw.is_some() && discovery == "hinted" {
+        return Err(CliError::input(
+            "--raw blobs have no symbols: use --discovery hint-free or auto",
+        ));
+    }
+    Ok(())
+}
+
+/// Open the `--file` image, the `--raw` blob, or the `--pid` process (clap
+/// enforces exactly one).
+fn load_target(
+    file: Option<&Path>,
+    pid: Option<u32>,
+    raw: &RawArgs,
+) -> Result<Box<dyn ByteSource>, CliError> {
+    if let Some((source, _)) = load_raw(raw)? {
+        return Ok(Box::new(source));
+    }
     match (file, pid) {
         (Some(path), _) => Ok(Box::new(load_file(path)?)),
         (None, Some(pid)) => ProcessSource::open(pid)
@@ -1835,6 +2204,7 @@ fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
         fp_report: args.fp_report.clone(),
         joint: args.joint,
         joint_report: args.joint_report.clone(),
+        process: args.process_like,
     };
     let report = bench::run_with(&args.corpus, &options).map_err(CliError::input)?;
     print!("{}", bench::render(&report));

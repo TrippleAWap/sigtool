@@ -58,6 +58,35 @@ pub fn image(data: &[u8]) {
     let Ok(source) = FileSource::from_bytes(data, "hostile.bin") else {
         return;
     };
+    exercise(&source);
+}
+
+/// Bytes [`raw`] reads before the blob: an architecture selector (as for
+/// [`code`]) and the little-endian base address.
+pub const RAW_HEADER: usize = 9;
+
+/// A raw blob, opened the way `--raw FILE --arch A --base ADDR` opens it
+/// (`FileSource::from_raw`): byte 0 selects the architecture as for
+/// [`code`], bytes 1-8 are the base, the rest is the blob. Then the
+/// whole-image indexes a hint-free scan builds, and the same recovery as
+/// [`image`].
+pub fn raw(data: &[u8]) {
+    if data.len() < RAW_HEADER {
+        return;
+    }
+    let arch = code_arch(data[0]);
+    let base = u64::from_le_bytes(data[1..RAW_HEADER].try_into().expect("8 bytes"));
+    let blob = &data[RAW_HEADER..data.len().min(RAW_HEADER + MAX_CODE_BYTES)];
+    let Ok(source) = FileSource::from_raw(blob, "hostile.bin", arch, base) else {
+        return;
+    };
+    let _ = sigtool_native::matcher::ScanContext::build(&source);
+    exercise(&source);
+}
+
+/// Bounded recovery and feature extraction from each source of function
+/// starts `source` offers.
+fn exercise(source: &FileSource) {
     let mut addresses: Vec<u64> = Vec::new();
     addresses.extend(
         source
@@ -92,8 +121,8 @@ pub fn image(data: &[u8]) {
     addresses.truncate(MAX_IMAGE_FUNCTIONS);
     for address in addresses {
         for hints in [true, false] {
-            if let Ok(function) = recover(&source, address, None, hints) {
-                let _ = features::extract(&source, &function);
+            if let Ok(function) = recover(source, address, None, hints) {
+                let _ = features::extract(source, &function);
             }
         }
     }

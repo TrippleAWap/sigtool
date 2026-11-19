@@ -57,3 +57,67 @@ fn bench_report_is_deterministic() {
     second.cost = None;
     assert_eq!(first, second, "parallel bench must be deterministic");
 }
+
+/// `bench --process-like` measures the live-process scan path as its own
+/// discovery mode, recall and false positives, deterministically, and
+/// leaves the file modes' cells as a run without it reports them.
+#[test]
+fn process_like_cells_are_measured_and_deterministic() {
+    let corpus = bench::default_corpus(&repo_root());
+    if !corpus.join("ground_truth.json").is_file() {
+        return;
+    }
+    // x64: the process path finds functions only from anchor bytes in code
+    // (the scanner hands the matcher no reference index, so string anchors
+    // seed nothing), and on the toy corpus only x64 immediates land as
+    // bytes.
+    let options = bench::BenchOptions {
+        arches: vec!["x64".to_string()],
+        process: true,
+        ..bench::BenchOptions::default()
+    };
+    let mut first = bench::run_with(&corpus, &options).expect("first run");
+    let mut second = bench::run_with(&corpus, &options).expect("second run");
+    first.cost = None;
+    second.cost = None;
+    assert_eq!(first, second, "process cells must be deterministic");
+
+    let process: Vec<_> = first
+        .recall
+        .iter()
+        .filter(|cell| cell.discovery == bench::PROCESS)
+        .collect();
+    assert!(!process.is_empty(), "no process recall cells");
+    assert!(
+        process.iter().any(|cell| cell.top_hits > 0),
+        "the process path found nothing"
+    );
+    assert!(first
+        .identified
+        .iter()
+        .any(|cell| cell.discovery == bench::PROCESS && cell.unrelated_scans > 0));
+    assert!(
+        first
+            .process_any_false_positives
+            .iter()
+            .all(|cell| cell.targets > 0),
+        "a process FP cell scanned nothing"
+    );
+
+    let mut plain = bench::run_with(
+        &corpus,
+        &bench::BenchOptions {
+            process: false,
+            ..options
+        },
+    )
+    .expect("plain run");
+    plain.cost = None;
+    first.recall.retain(|cell| cell.discovery != bench::PROCESS);
+    first
+        .identified
+        .retain(|cell| cell.discovery != bench::PROCESS);
+    first.process_false_positives.clear();
+    first.process_any_false_positives.clear();
+    assert_eq!(first, plain, "--process-like moved a file-mode cell");
+}

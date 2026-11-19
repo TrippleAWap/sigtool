@@ -20,9 +20,11 @@ use serde_json::Value;
 
 use crate::elf::FileSource;
 use crate::generate::generate_in;
-use crate::matcher::{identified_answer, rank_key, scan_in, Match, ScanContext};
+use crate::matcher::{identified_answer, rank_key, scan_in, Match, ReferenceIndex, ScanContext};
 use crate::merge::{merge_in, MergeSample};
+use crate::scanner::SignatureScanner;
 use crate::sigfile::Signature;
+use crate::source::{ByteSource, ProcessView};
 use crate::spec::SPEC_VERSION;
 
 /// Recall drop / FP increase tolerated by [`compare`]. Rebuilding the corpus
@@ -30,6 +32,10 @@ use crate::spec::SPEC_VERSION;
 pub const DEFAULT_TOLERANCE: f64 = 0.05;
 pub const HINTED: &str = "hinted";
 pub const HINT_FREE: &str = "hint-free";
+/// `bench --process-like`: hinted scans of each stripped target seen the way
+/// a live process sees a module ([`ProcessView`]), through the incremental
+/// scanner `scan --pid` uses.
+pub const PROCESS: &str = "process";
 pub const MERGED: &str = "merged";
 /// Architectures merged into one cross-arch signature per function and opt.
 const MERGE_ARCHES: [&str; 2] = ["x64", "arm64"];
@@ -282,6 +288,14 @@ pub struct BenchReport {
     /// Top-1 recall per `(library, discovery, G1 row)`.
     #[serde(default)]
     pub library_recall: Vec<LibraryRecallCell>,
+    /// `bench --process-like`: strong and any-verdict false positives of the
+    /// process path ([`PROCESS`]), unrelated sources plus the negative
+    /// corpus. Left out of runs without the flag, so their baselines do not
+    /// change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_false_positives: Vec<FalsePositiveCell>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_any_false_positives: Vec<FalsePositiveCell>,
     /// Wall time and peak memory per phase; informational, never compared.
     #[serde(default)]
     pub cost: Option<Cost>,
@@ -313,6 +327,9 @@ struct Target {
     /// File size of the image and of its stripped copy, for FP cell sizes.
     bytes: u64,
     stripped_bytes: Option<u64>,
+    /// The unwind-table entries [`Target::process_view`] keeps, built on
+    /// first use.
+    process_unwind: OnceLock<Vec<(u64, u64)>>,
 }
 
 impl Target {
@@ -330,6 +347,49 @@ impl Target {
             (Some(bytes), false) => bytes,
             _ => self.bytes,
         }
+    }
+
+    /// The stripped copy (else the image) as a live process sees a module:
+    /// no symbol starts, hinted, bounds from the unwind table only. Starts
+    /// the file source synthesized from code are dropped, because a process
+    /// source reads `.pdata` and synthesizes none. Where a table has no exact
+    /// ends (`.ARM.exidx`) an entry still ends at the next start the file
+    /// source knew, synthesized ones included: slightly tighter bounds than
+    /// a process would have.
+    fn process_view(&self) -> ProcessView<'_, FileSource> {
+        let source = self
+            .stripped
+            .as_ref()
+            .map_or(&self.source, |(source, _)| source);
+        let table = self.process_unwind.get_or_init(|| {
+            let synthesized: BTreeSet<u64> = source.synthesized_starts().iter().copied().collect();
+            source
+                .unwind_entries()
+                .iter()
+                .filter(|(start, _)| !synthesized.contains(start))
+                .copied()
+                .collect()
+        });
+        ProcessView::new(source, table.clone())
+    }
+
+    /// One signature through the path `scan --pid` takes: a fresh
+    /// [`SignatureScanner`] pass, with its recovery budget and the hinted
+    /// floors. The scanner gets an empty reference index it does not own,
+    /// so it builds none: it never hands its index to the matcher, and the
+    /// build would only add a decode of the image to every scan.
+    fn scan_process(&self, signature: &Signature) -> Vec<Match> {
+        let view = self.process_view();
+        let Ok(mut scanner) = SignatureScanner::new(
+            &view,
+            vec![signature.clone()],
+            None,
+            Some(ReferenceIndex::default()),
+        ) else {
+            return Vec::new();
+        };
+        scanner.scan_pass();
+        scanner.matches(0).to_vec()
     }
 
     fn scan_source(&self, hints: bool) -> (&FileSource, &ScanContext) {
@@ -460,6 +520,7 @@ fn load_targets(
             stripped,
             bytes,
             stripped_bytes,
+            process_unwind: OnceLock::new(),
         });
     }
     targets
@@ -542,6 +603,9 @@ pub struct BenchOptions {
     /// Write what joint resolution saw in each joint cell here, one JSON
     /// object per line (see [`crate::joint::report`]).
     pub joint_report: Option<PathBuf>,
+    /// Also measure the live-process path on every stripped target
+    /// ([`PROCESS`]).
+    pub process: bool,
 }
 
 /// [`run`] with explicit [`BenchOptions`].
@@ -842,6 +906,54 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             }
         }
     }
+    if options.process {
+        // The pairs the file modes scan, whatever `--discovery` kept.
+        let mut process_jobs: Vec<(usize, usize)> = Vec::new();
+        for (s, sample) in all.iter().enumerate() {
+            for (t, target) in targets.iter().enumerate() {
+                if target.source_file == sample.source_file
+                    && target.functions.contains_key(&sample.name)
+                {
+                    process_jobs.push((s, t));
+                }
+            }
+        }
+        let process_hits = parallel(process_jobs.len(), |job| {
+            let (s, t) = process_jobs[job];
+            let target = &targets[t];
+            let expected = target.functions[&all[s].name];
+            let matches = target.scan_process(&all[s].signature);
+            (
+                matches.iter().any(|m| m.address == expected),
+                top_is(&matches, expected),
+                identified_answer(&matches),
+            )
+        });
+        for ((s, t), (found, top, answered)) in process_jobs.iter().zip(process_hits) {
+            let (sample, target) = (all[*s], &targets[*t]);
+            let arch = if sample.arch == target.arch {
+                sample.arch.clone()
+            } else {
+                format!("{}->{}", sample.arch, target.arch)
+            };
+            let cell = cells
+                .entry((
+                    arch,
+                    sample.opt.clone(),
+                    target.opt.clone(),
+                    PROCESS.to_string(),
+                ))
+                .or_default();
+            cell.0 += usize::from(found);
+            cell.1 += usize::from(top);
+            cell.2 += 1;
+            let answer = identified_cell(&mut answers, PROCESS);
+            if answered {
+                answer.answers += 1;
+                answer.correct += usize::from(top);
+            }
+        }
+    }
     let recall = cells
         .into_iter()
         .map(
@@ -932,6 +1044,32 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         Vec::new()
     };
     let is_strong: Vec<bool> = all.iter().map(|s| s.verdict == "strong").collect();
+    // The process path against the same unrelated images as hint-free, on
+    // the same stripped copies.
+    let (process_false_positives, process_any_false_positives) =
+        if options.process && !options.skip_false_positives {
+            let hits = false_positive_hits_with(
+                &all,
+                |sample| {
+                    let mut chosen = corpus_targets(sample);
+                    chosen.extend(negative_targets(sample));
+                    chosen
+                },
+                &|target, signature| target.scan_process(signature),
+            );
+            let cell = identified_cell(&mut answers, PROCESS);
+            cell.unrelated_scans += hits.len();
+            cell.unrelated_answers += hits
+                .iter()
+                .filter(|(_, _, matches)| identified_answer(matches))
+                .count();
+            (
+                false_positive_cells(&all, &hits, false, Some(&is_strong)),
+                false_positive_cells(&all, &hits, false, None),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
     let false_positives = false_positive_cells(&all, &corpus_hits, true, Some(&is_strong));
     let negative_false_positives =
         false_positive_cells(&all, &negative_hits, true, Some(&is_strong));
@@ -976,6 +1114,8 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 },
             )
             .collect(),
+        process_false_positives,
+        process_any_false_positives,
         cost: Some(phases.finish()),
     })
 }
@@ -1163,6 +1303,20 @@ fn false_positive_hits<'t, F>(
 where
     F: Fn(&Sample) -> Vec<&'t Target> + Sync,
 {
+    false_positive_hits_with(samples, targets_for, &|target, signature| {
+        target.scan(signature, hints)
+    })
+}
+
+/// [`false_positive_hits`] through any scan path.
+fn false_positive_hits_with<'t, F>(
+    samples: &[&Sample],
+    targets_for: F,
+    scan: &(dyn Fn(&Target, &Signature) -> Vec<Match> + Sync),
+) -> Vec<(usize, &'t Target, Vec<Match>)>
+where
+    F: Fn(&Sample) -> Vec<&'t Target> + Sync,
+{
     let jobs: Vec<(usize, &'t Target)> = samples
         .iter()
         .enumerate()
@@ -1170,7 +1324,7 @@ where
         .collect();
     let matches = parallel(jobs.len(), |job| {
         let (index, target) = jobs[job];
-        target.scan(&samples[index].signature, hints)
+        scan(target, &samples[index].signature)
     });
     jobs.into_iter()
         .zip(matches)
@@ -1364,6 +1518,17 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
             "hint-free false positives",
             &baseline.hint_free_false_positives,
             &current.hint_free_false_positives,
+        ),
+        // Empty unless the baseline was saved with `--process-like`.
+        (
+            "process false positives",
+            &baseline.process_false_positives,
+            &current.process_false_positives,
+        ),
+        (
+            "process any-verdict false positives",
+            &baseline.process_any_false_positives,
+            &current.process_any_false_positives,
         ),
     ] {
         for cell in base {
@@ -1650,15 +1815,23 @@ pub fn render(report: &BenchReport) -> String {
         let line: Vec<String> = counts.iter().map(|(v, n)| format!("{v}={n}")).collect();
         let _ = writeln!(text, "  {arch}: {}", line.join(" "));
     }
-    for discovery in [HINTED, HINT_FREE] {
+    let process = report.recall.iter().any(|c| c.discovery == PROCESS);
+    for discovery in [HINTED, HINT_FREE, PROCESS] {
+        if discovery == PROCESS && !process {
+            continue;
+        }
         let note = match (discovery, report.hint_free_stripped) {
             (HINT_FREE, true) => " on strip --strip-all targets",
             (HINT_FREE, false) => " (WARNING: targets not stripped; .symtab names leak)",
+            (PROCESS, _) => ": stripped targets seen as a live process, scan --pid path",
             _ => "",
         };
         let _ = writeln!(text, "\nrecall ({discovery}{note})");
         let (mut same, mut cross) = ((0, 0), (0, 0));
+        let (mut top, mut attempts) = (0, 0);
         for cell in report.recall.iter().filter(|c| c.discovery == discovery) {
+            top += cell.top_hits;
+            attempts += cell.attempts;
             let same_build = cell.source_opt == cell.target_opt;
             let _ = writeln!(
                 text,
@@ -1676,9 +1849,10 @@ pub fn render(report: &BenchReport) -> String {
         }
         let _ = writeln!(
             text,
-            "  total same build: {}\n  total cross build: {}",
+            "  total same build: {}\n  total cross build: {}\n  total top-1: {}",
             rate_text(same.0, same.1),
-            rate_text(cross.0, cross.1)
+            rate_text(cross.0, cross.1),
+            rate_text(top, attempts)
         );
     }
     for (label, cells) in [
@@ -1702,8 +1876,23 @@ pub fn render(report: &BenchReport) -> String {
             "false positives (hint-free, any verdict, unrelated + negative)",
             &report.hint_free_false_positives,
         ),
+        (
+            "false positives (process, strong, unrelated + negative)",
+            &report.process_false_positives,
+        ),
+        (
+            "false positives (process, any verdict, unrelated + negative)",
+            &report.process_any_false_positives,
+        ),
     ] {
+        if cells.is_empty() && label.contains("(process") {
+            continue;
+        }
         let _ = writeln!(text, "\n{label}");
+        let (with, total) = cells.iter().fold((0, 0), |(with, total), cell| {
+            (with + cell.signatures_with_hits, total + cell.signatures)
+        });
+        let _ = writeln!(text, "  pooled: {}", rate_text(with, total));
         for cell in cells {
             let _ = writeln!(
                 text,

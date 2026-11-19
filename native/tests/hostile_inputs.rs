@@ -1607,6 +1607,83 @@ fn raw_code_never_panics() {
     cases.finish("raw code");
 }
 
+/// `--raw` input: golden-vector code and noise as blobs of every
+/// architecture, at bases from 0 to where the blob's end would overflow,
+/// and odd bases that misalign every instruction.
+#[test]
+fn raw_blobs_never_panic() {
+    let vectors = vector_code();
+    let mut rng = Rng(0x7a3b_1c0d_5e6f_8091);
+    let mut cases = Cases::new();
+    let input = |selector: u8, base: u64, blob: &[u8]| {
+        let mut bytes = vec![selector];
+        bytes.extend(base.to_le_bytes());
+        bytes.extend_from_slice(blob);
+        bytes
+    };
+    for (label, code) in &vectors {
+        let blob = &code[1..];
+        let length = blob.len() as u64;
+        let bases = [
+            0,
+            1,
+            0x1000,
+            0x40_0001,
+            // The top of the 32-bit space ARM32 and Thumb blobs must fit in.
+            (1u64 << 32).saturating_sub(length),
+            (1u64 << 32).saturating_sub(length) + 1,
+            0x8000_0000_0000_0000,
+            u64::MAX - length,
+            (u64::MAX - length).wrapping_add(1),
+            u64::MAX,
+        ];
+        for selector in 0..4u8 {
+            for base in bases {
+                cases.run(
+                    &|| format!("{label} selector {selector} base 0x{base:x}"),
+                    hostile::raw,
+                    &input(selector, base, blob),
+                );
+            }
+        }
+        for round in 0..4 {
+            let mut corrupted = blob.to_vec();
+            if corrupted.is_empty() {
+                break;
+            }
+            for _ in 0..1 + rng.below(16) {
+                let at = rng.below(corrupted.len());
+                corrupted[at] = rng.next_u64() as u8;
+            }
+            let cut = rng.below(corrupted.len() + 1);
+            cases.run(
+                &|| format!("{label} random round {round}"),
+                hostile::raw,
+                &input(code[0], 0x10_0000, &corrupted[..cut]),
+            );
+        }
+    }
+    for selector in 0..4u8 {
+        for length in [0usize, 1, 2, 3, 4, 7, 64, 4096] {
+            let blob = rng.bytes(length);
+            cases.run(
+                &|| format!("noise selector {selector} length {length}"),
+                hostile::raw,
+                &input(selector, 0x8000, &blob),
+            );
+        }
+    }
+    // Shorter than the header: no blob at all.
+    for length in 0..hostile::RAW_HEADER {
+        cases.run(
+            &|| format!("header only, {length} bytes"),
+            hostile::raw,
+            &vec![1u8; length],
+        );
+    }
+    cases.finish("raw blobs");
+}
+
 // -- fuzz seeds ------------------------------------------------------------------
 
 /// With `SIGTOOL_FUZZ_SEEDS=DIR`, write the unmutated inputs above as

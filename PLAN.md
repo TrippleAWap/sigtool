@@ -785,6 +785,47 @@ As of 2026-11-19, `real-world` branch, spec v6.
   whose direct caller is a thin wrapper around it is a `candidate` (labels
   only; needs the call graph in the recall log to simulate, and costs every
   correctly found function that has such a wrapper).
+- Real-world plan, second round (2026-11-19):
+  - 2026-11-19, `rw/trust-tools`:
+    - RW3 process-path cell: `bench --process-like` scans each stripped
+      target as a live process sees a module (no symbol starts, unwind-table
+      bounds as hints with synthesized starts dropped, the incremental
+      `SignatureScanner` of `scan --pid`), discovery `process`; not in the
+      gated baseline (absent without the flag). Real corpus, spec v6,
+      `--max-functions 4`: top-1 140/14088 = 0.010 (file hinted 0.353,
+      hint-free 0.358); same arch same build x64 18/120 = 0.150 and 0 on
+      arm64, arm32 and Thumb (file hinted 0.658-0.717, hint-free
+      0.825-0.850); every hit in an x64 target. Identified precision 36/107
+      = 0.336 (hinted 0.995, hint-free 0.993); strong FP 0/121, any-verdict
+      FP 1/587 (hinted 49/587, hint-free 66/587): it abstains because it
+      finds nothing. `examples/diagnose_process` (x64 + arm64, every
+      same-arch build pair): the true function has unwind bounds but is
+      never a candidate. Without symbol starts and a reference index (the
+      scanner builds one and never hands it to the matcher) candidates come
+      only from anchor bytes found in code, which AArch64 and ARM constants
+      never are; passing a reference index lifts top-1 from 0 to 72 of 720
+      on arm64 and 44 to 116 on x64, against 332 / 320 file hinted, so the
+      missing piece is the candidate list, not a gate. Same-arch x64
+      identified answers were 18 of 19 right; the wrong ones are in
+      cross-arch and merged cells, where the scanner path computes no rival
+      (not diagnosed one by one). This is the measured case for RW3's "route
+      `scan` and `locate` through `scan_in` with a per-module context".
+      No matcher rule changed.
+    - RW8 `locate --explain` / `--expect RVA`: matched, inherited and missed
+      keys, shared neighbour keys, chance estimate, and each gate in scan
+      order to the first failure, with `scan_in`'s rank, evidence label,
+      rival and why the answer is not identified; `explain` under `--json`.
+      The gates were split into named functions that the scan and explain
+      share (`acceptance_gates`, `hinted_floor`, `hint_free_floors`,
+      `answer_gate`); the real corpus bench is identical to the committed
+      baseline apart from cost.
+    - RW7 raw blobs: `--raw FILE --arch A --base ADDR` on `gen`, `locate`,
+      `scan` (`FileSource::from_raw`): hint-free, module-range pointer test,
+      starts from code. The `.text` of clang-built arm64, Thumb and x64
+      executables: 40/40 functions signed from the ELF found first in each
+      blob. ARM32/Thumb blobs must end below 4 GiB: at the top of the
+      address space the ARM start sweep's realigning steps wrapped and hung
+      (found by the new hostile cases; no ELF32 can place code there).
 - Next: the open real-world items (RW4 distro packages and C++, RW5, RW6),
   identified precision on the real-world tier (0.972, below 0.98), and
   pointer-width-dependent constants (M10).
