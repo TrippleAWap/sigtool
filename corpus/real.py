@@ -4,6 +4,7 @@
     python corpus/real.py --max-functions 0  # keep every common function
     python corpus/real.py --heldout        # held-out libraries into corpus/build-heldout/
     python corpus/real.py --world          # real-world build profiles into corpus/build-world/
+    python corpus/real.py --host           # all tuning libraries in one binary: corpus/build-host/
 
 Outputs, never committed:
 
@@ -41,6 +42,17 @@ release. Build names keep the `<profile>-<level>` form the bench reads, so
 the bench's "other compiler" row there means "other profile, same level".
 It is a separate tier, outside the weekly gate (docs/real-world-plan.md RW4).
 
+--host links all five tuning libraries (gcc 12, from static archives, with
+--gc-sections and a main that takes every exported function's address) into
+one static executable per arch, plus an LTO host and one host per library
+that leaves that library out, and the plain gcc -O2 shared objects to sign
+from. Ground truth lists each library's functions against the host once per
+library (with `members`, which the bench reads to pair builds by library and
+to skip images holding the signature's own library in FP cells); the
+leave-one-out hosts are the negative set, a host-sized true negative for the
+library they lack. An x64 -O0 host under scale/ is the scale harness's
+largest target (docs/real-world-plan.md RW6).
+
 The purpose-written corpus in corpus/build/ stays for golden-scale checks;
 this one is what the cross-architecture numbers should be read from.
 """
@@ -69,6 +81,7 @@ THIRD_PARTY = CORPUS / "third_party"
 BUILD = CORPUS / "build-real"
 HELDOUT_BUILD = CORPUS / "build-heldout"
 WORLD_BUILD = CORPUS / "build-world"
+HOST_BUILD = CORPUS / "build-host"
 SHIM = CORPUS / "shim" / "include"
 
 TARGETS = {
@@ -548,6 +561,327 @@ def main_world(args: argparse.Namespace, readelf: str) -> int:
     return 0
 
 
+@dataclass(frozen=True)
+class Host:
+    """One --host executable: the tuning libraries linked into one static binary."""
+
+    opt: str
+    lto: bool = False
+    # A library left out, so its signatures have a host-sized true negative.
+    without: str | None = None
+
+    @property
+    def build_name(self) -> str:
+        name = "gcc+host" + ("+lto" if self.lto else "")
+        name += f"+no{self.without}" if self.without else ""
+        return f"{name}-{self.opt.strip('-')}"
+
+    @property
+    def variant(self) -> str:
+        """The archive set this host links."""
+        return self.opt.strip("-") + ("-lto" if self.lto else "")
+
+    def path(self, arch: str) -> Path:
+        if self.opt == HOST_SCALE_OPT:
+            group = HOST_BUILD / "scale"
+        elif self.without:
+            group = HOST_BUILD / "negative"
+        else:
+            group = HOST_BUILD
+        return group / arch / self.build_name / "host.elf"
+
+
+# The -O0 host is the largest image these sources make; only the scale
+# harness (examples/profile_scale.rs) reads it, so it stays out of ground
+# truth and is built for x64 only.
+HOST_SCALE_OPT = "-O0"
+HOST_SCALE_ARCHES = ("x64",)
+
+
+def host_profiles(arch: str) -> list[Host]:
+    hosts = [Host("-O2"), Host("-O2", lto=True)]
+    hosts += [Host("-O2", without=library.name) for library in LIBRARIES]
+    if arch in HOST_SCALE_ARCHES:
+        hosts.append(Host(HOST_SCALE_OPT))
+    return hosts
+
+
+def host_container(rel: Path) -> str:
+    return "/work/" + rel.relative_to(CORPUS).as_posix()
+
+
+def run_jobs(jobs: list[str], parallel: int) -> None:
+    """Run independent shell `jobs` in one container, `parallel` at a time.
+
+    The corpus machine is shared, so the jobs run at the lowest priority and
+    a fixed width instead of one process per job.
+    """
+    if not jobs:
+        return
+    script = (
+        "set -u\ncat > /tmp/jobs <<'SIGTOOL_JOBS'\n"
+        + "\n".join(jobs)
+        + f"\nSIGTOOL_JOBS\nxargs -d '\\n' -n 1 -P {parallel} nice -n 19 sh -c < /tmp/jobs\n"
+    )
+    command = ["docker", "run", "--rm", "-i", "-v", f"{CORPUS}:/work", DOCKER_IMAGE, "sh", "-s"]
+    result = subprocess.run(command, input=script.encode(), capture_output=True)
+    stdout = result.stdout.decode(errors="replace")
+    if result.returncode != 0 or "FAIL" in stdout:
+        print(stdout[-3000:], result.stderr.decode(errors="replace")[-3000:])
+
+
+def fresh(path: Path) -> bool:
+    """Built after the last change to this script."""
+    return path.exists() and path.stat().st_mtime >= Path(__file__).stat().st_mtime
+
+
+def host_shared_jobs(roots: dict[str, Path]) -> list[str]:
+    """The plain gcc -O2 shared objects, built exactly as the --world `gcc-O2`
+    profile builds them: the signatures the host cells search with."""
+    jobs = []
+    for arch, (driver, extra) in GCC.items():
+        for library in LIBRARIES:
+            root = roots[library.name]
+            output = HOST_BUILD / arch / "gcc-O2" / f"{library.name}.elf"
+            stripped = HOST_BUILD / "stripped" / output.relative_to(HOST_BUILD)
+            if fresh(stripped):
+                continue
+            stripped.parent.mkdir(parents=True, exist_ok=True)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            croot = host_container(root)
+            flags = ["-O2", *extra, "-w", "-Wl,--build-id=none", "-fPIC", "-shared"]
+            flags += [f"-I{croot}/{include}" for include in library.includes]
+            flags += [f"-D{define}" for define in library.defines]
+            files = " ".join(
+                f"{croot}/{path.relative_to(root).as_posix()}" for path in sources(library, root)
+            )
+            quoted = " ".join(shlex.quote(flag) for flag in flags)
+            jobs.append(
+                f"( {driver} {quoted} {files} -o {host_container(output)} -lm "
+                f"&& {STRIP[arch]} --strip-all {host_container(output)} "
+                f"-o {host_container(stripped)} || echo FAIL shared {library.name} {arch} )"
+            )
+    return jobs
+
+
+def host_archive(arch: str, variant: str, library: Library) -> Path:
+    return HOST_BUILD / "obj" / arch / variant / f"lib{library.name}.a"
+
+
+def host_archive_jobs(roots: dict[str, Path]) -> list[str]:
+    """One static archive per library, arch and host variant. Each function
+    gets its own section, so --gc-sections keeps only what the host reaches,
+    as a release build linking the libraries' archives would."""
+    jobs = []
+    for arch, (driver, extra) in GCC.items():
+        prefix = driver[: -len("gcc")]
+        variants = sorted({host.variant for host in host_profiles(arch)})
+        for variant in variants:
+            opt, _, lto = variant.partition("-")
+            for library in LIBRARIES:
+                archive = host_archive(arch, variant, library)
+                if fresh(archive):
+                    continue
+                objects = archive.parent / library.name
+                objects.mkdir(parents=True, exist_ok=True)
+                root = roots[library.name]
+                croot = host_container(root)
+                flags = [f"-{opt}", *extra, "-w", "-ffunction-sections", "-fdata-sections"]
+                flags += ["-flto"] if lto else []
+                flags += [f"-I{croot}/{include}" for include in library.includes]
+                flags += [f"-D{define}" for define in library.defines]
+                quoted = " ".join(shlex.quote(flag) for flag in flags)
+                cobjects = host_container(objects)
+                steps = [f"rm -f {cobjects}/*.o"]
+                for index, path in enumerate(sources(library, root)):
+                    source = f"{croot}/{path.relative_to(root).as_posix()}"
+                    steps.append(f"{driver} {quoted} -c {source} -o {cobjects}/{index}.o")
+                # LTO members hold GIMPLE, which only the plugin-aware
+                # wrapper can index.
+                tool = f"{prefix}gcc-ar" if lto else f"{prefix}ar"
+                carchive = host_container(archive)
+                steps.append(f"rm -f {carchive} && {tool} rcs {carchive} {cobjects}/*.o")
+                jobs.append(
+                    "( " + " && ".join(steps) + f" || echo FAIL archive {library.name} "
+                    f"{arch} {variant} )"
+                )
+    return jobs
+
+
+def exported_functions(readelf: str, binary: Path) -> set[str]:
+    """Defined global functions in `.dynsym`: the library's public API."""
+    text = subprocess.run(
+        [readelf, "--dyn-syms", "-W", str(binary)], capture_output=True, text=True, check=True
+    ).stdout
+    names = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 8 or parts[3] != "FUNC" or parts[6] == "UND":
+            continue
+        if parts[4] not in ("GLOBAL", "WEAK"):
+            continue
+        name = parts[7].split("@")[0]
+        # The shared object's own init and fini entries, not library code.
+        if name not in ("_init", "_fini"):
+            names.add(name)
+    return names
+
+
+def host_main(exports: dict[str, set[str]], members: list[str]) -> str:
+    """A `main` that keeps every public function of `members` reachable.
+
+    A stub `main` would let --gc-sections and LTO drop every library
+    function. Taking each export's address through a volatile table keeps
+    the public API and what it calls, and nothing else, as an application
+    using the whole API would.
+    """
+    names = sorted(name for member in members for name in exports[member])
+    lines = ["typedef void (*sigtool_fn)(void);"]
+    lines += [f"extern void {name}(void);" for name in names]
+    lines.append("static sigtool_fn volatile sigtool_keep[] = {")
+    lines += [f"    {name}," for name in names]
+    lines.append("};")
+    lines.append(
+        "int main(int argc, char **argv) { (void)argv; "
+        f"return sigtool_keep[(unsigned)argc % {len(names)}u] == 0; }}"
+    )
+    for member in members:
+        if member in EXECUTABLE_STUBS:
+            lines.append(EXECUTABLE_STUBS[member])
+    return "\n".join(lines) + "\n"
+
+
+def host_link_jobs(mains: dict[str, Path]) -> list[str]:
+    jobs = []
+    for arch, (driver, extra) in GCC.items():
+        for host in host_profiles(arch):
+            output = host.path(arch)
+            stripped = HOST_BUILD / "stripped" / output.relative_to(HOST_BUILD)
+            if fresh(stripped):
+                continue
+            output.parent.mkdir(parents=True, exist_ok=True)
+            stripped.parent.mkdir(parents=True, exist_ok=True)
+            members = [lib for lib in LIBRARIES if lib.name != host.without]
+            archives = " ".join(
+                host_container(host_archive(arch, host.variant, lib)) for lib in members
+            )
+            flags = [host.opt, *extra, "-w", "-static", "-Wl,--gc-sections"]
+            flags += ["-Wl,--build-id=none"]
+            if host.lto:
+                flags += ["-flto=auto", "-ffunction-sections", "-fdata-sections"]
+            quoted = " ".join(shlex.quote(flag) for flag in flags)
+            main = host_container(mains[host.without or ""])
+            jobs.append(
+                f"( {driver} {quoted} {main} -Wl,--start-group {archives} -Wl,--end-group "
+                f"-lm -o {host_container(output)} "
+                f"&& {STRIP[arch]} --strip-all {host_container(output)} "
+                f"-o {host_container(stripped)} || echo FAIL host {arch} {host.build_name} )"
+            )
+    return jobs
+
+
+def main_host(args: argparse.Namespace, readelf: str) -> int:
+    """Build the needle-in-a-host tier (see the module docstring)."""
+    roots = {library.name: fetch(library) for library in LIBRARIES}
+    run_jobs(host_shared_jobs(roots) + host_archive_jobs(roots), args.jobs)
+    shared = {
+        (arch, library.name): HOST_BUILD / arch / "gcc-O2" / f"{library.name}.elf"
+        for arch in GCC
+        for library in LIBRARIES
+    }
+    missing = [path for path in shared.values() if not path.exists()]
+    if missing:
+        raise SystemExit(f"{len(missing)} shared objects failed, e.g. {missing[0]}")
+    # The API every arch exports, so one main links on all of them.
+    exports = {
+        library.name: set.intersection(
+            *(exported_functions(readelf, shared[(arch, library.name)]) for arch in GCC)
+        )
+        for library in LIBRARIES
+    }
+    mains: dict[str, Path] = {}
+    (HOST_BUILD / "src").mkdir(parents=True, exist_ok=True)
+    for without in ["", *(library.name for library in LIBRARIES)]:
+        members = [library.name for library in LIBRARIES if library.name != without]
+        path = HOST_BUILD / "src" / f"main-{'no' + without if without else 'all'}.c"
+        text = host_main(exports, members)
+        if not path.exists() or path.read_text(encoding="utf-8") != text:
+            path.write_text(text, encoding="utf-8")
+        mains[without] = path
+    run_jobs(host_link_jobs(mains), args.jobs)
+
+    so_symbols = {key: function_symbols(readelf, path, key[0]) for key, path in shared.items()}
+    host_symbols = {}
+    for arch in GCC:
+        for host in host_profiles(arch):
+            path = host.path(arch)
+            if not path.exists():
+                raise SystemExit(f"{path}: host build failed")
+            host_symbols[(arch, host)] = function_symbols(readelf, path, arch)
+
+    def own(arch: str, name: str) -> set[str]:
+        # A name two libraries define is not attributable to either.
+        others = set().union(
+            *(set(so_symbols[(arch, lib.name)]) for lib in LIBRARIES if lib.name != name)
+        )
+        return set(so_symbols[(arch, name)]) - others
+
+    full, lto = Host("-O2"), Host("-O2", lto=True)
+    members = sorted(library.name for library in LIBRARIES)
+    binaries: list[dict[str, object]] = []
+    for library in LIBRARIES:
+        # In the shared object and the plain host on every arch; the LTO host
+        # lists the subset it kept under the same names (LTO renames the
+        # clones it makes and drops what it inlines everywhere).
+        common = set.intersection(
+            *(own(arch, library.name) & set(host_symbols[(arch, full)]) for arch in GCC)
+        )
+        chosen = select(common, args.max_functions)
+        print(f"{library.name}: {len(common)} functions in every host, {len(chosen)} selected")
+        for arch in GCC:
+            builds = [(shared[(arch, library.name)], so_symbols[(arch, library.name)], False)]
+            builds += [(host.path(arch), host_symbols[(arch, host)], True) for host in (full, lto)]
+            for path, symbols, in_host in builds:
+                entry: dict[str, object] = {
+                    "path": path.relative_to(HOST_BUILD).as_posix(),
+                    "stripped": ("stripped" / path.relative_to(HOST_BUILD)).as_posix(),
+                    "arch": arch,
+                    "library": library.name,
+                    "functions": [
+                        {"name": name, "start": symbols[name][0], "size": symbols[name][1]}
+                        for name in chosen
+                        if name in symbols
+                    ],
+                    "total_symbols": len(symbols),
+                }
+                if in_host:
+                    # The bench reads `library` instead of the file name for
+                    # an image listing its members, and never counts a hit in
+                    # an image that links the signature's own library as false.
+                    entry["members"] = members
+                binaries.append(entry)
+    negative: list[dict[str, object]] = []
+    for arch in GCC:
+        for library in LIBRARIES:
+            path = Host("-O2", without=library.name).path(arch)
+            negative.append(
+                {
+                    "path": path.relative_to(HOST_BUILD).as_posix(),
+                    "stripped": ("stripped" / path.relative_to(HOST_BUILD)).as_posix(),
+                    "arch": arch,
+                    "library": "host",
+                    "members": [name for name in members if name != library.name],
+                    "functions": [],
+                    "total_symbols": len(host_symbols[(arch, Host("-O2", without=library.name))]),
+                }
+            )
+    document = {"binaries": binaries, "negative": negative}
+    (HOST_BUILD / "ground_truth.json").write_text(
+        json.dumps(document, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return 0
+
+
 def function_symbols(readelf: str, binary: Path, arch: str) -> dict[str, tuple[int, int]]:
     """Defined FUNC symbols with a size, minus names that occur twice."""
     text = subprocess.run(
@@ -612,6 +946,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=f"build the real-world profiles into {WORLD_BUILD.relative_to(ROOT).as_posix()}/",
     )
+    parser.add_argument(
+        "--host",
+        action="store_true",
+        help=f"build the needle-in-a-host tier into {HOST_BUILD.relative_to(ROOT).as_posix()}/",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=os.cpu_count() or 4,
+        help="concurrent compiler jobs for --host (default: every core)",
+    )
     args = parser.parse_args(argv)
     args.compiler = tuple(args.compiler or COMPILERS)
     catalog, build = (HELDOUT, HELDOUT_BUILD) if args.heldout else (LIBRARIES, BUILD)
@@ -623,6 +968,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("clang, llvm-readelf, and llvm-strip must be on PATH")
     if args.world:
         return main_world(args, readelf)
+    if args.host:
+        return main_host(args, readelf)
 
     libraries = [lib for lib in catalog if not args.library or lib.name in args.library]
     roots = {library.name: fetch(library) for library in libraries}
