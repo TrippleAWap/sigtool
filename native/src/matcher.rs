@@ -1149,8 +1149,8 @@ impl ScanContext {
     }
 }
 
-/// `signature` with every required callee the target cannot name made
-/// optional, or `None` when the target can name them all.
+/// `signature` without the required callees a target that names no function
+/// cannot hold, or `None` when nothing is dropped.
 ///
 /// A callee key without `!` names a function of the signed image itself,
 /// resolved through that image's dynamic exports. A shared object exports
@@ -1198,15 +1198,13 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
     if !names.is_empty() {
         return None;
     }
+    // Dropped, not made optional: a key the target can never hold would
+    // still weigh in the score of a signature left with no required
+    // feature (the all-features fallback), so the true function could not
+    // reach the threshold.
     let mut adapted = signature.clone();
-    let mut changed = false;
-    for feature in &mut adapted.features {
-        if unnamed(feature) {
-            feature.required = false;
-            changed = true;
-        }
-    }
-    changed.then_some(adapted)
+    adapted.features.retain(|feature| !unnamed(feature));
+    Some(adapted)
 }
 
 /// [`scan`] with the image's shared indexes: string anchors seed candidates

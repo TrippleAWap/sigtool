@@ -8,9 +8,9 @@ and must be regenerated or rebuilt (`db build --file IMAGE --functions F`).
 
 ### Callees in targets that name no function
 
-* A required `callee` without `!` is optional when the target's modules name
-  no defined function (SPEC.md §8, "Targets that name no function"), and stays
-  identifying for the anchoring floor.
+* A required `callee` without `!` leaves the comparison when the target's
+  modules name no defined function (SPEC.md §8, "Targets that name no
+  function"), and stays identifying for the anchoring floor.
 * Measured on the new real-world tier (`corpus/real.py --world`: the tuning
   libraries built with gcc 12 as plain, `-O3`, hardened, LTO, PIE and static
   executable, and the previous release; `bench --corpus ../corpus/build-world
