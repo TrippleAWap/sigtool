@@ -79,6 +79,7 @@ another" workflow: sign the analysed IDB, then apply the DB in the other one.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import hashlib
 import json
@@ -538,6 +539,27 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
     return bytes(out)
 
 
+def file_extents(segments: list[Segment], file_size: int) -> list[int]:
+    """How many of the file's bytes each of ``segments`` holds, in order.
+
+    A PE section's virtual size can exceed its raw data (`.data` with
+    uninitialized space), and IDA maps the whole virtual size; the bytes past
+    the raw data are not in the file, and an offset past them is the next
+    section's. So a segment holds the file only up to the next file-backed
+    segment's offset and the end of the file. Zero-fill segments hold none.
+    """
+    offsets = sorted({item.file_offset for item in segments if item.file_offset is not None})
+    extents = []
+    for segment in segments:
+        if segment.file_offset is None:
+            extents.append(0)
+            continue
+        following = offsets[bisect.bisect_right(offsets, segment.file_offset) :]
+        limit = min(following[0] if following else file_size, file_size)
+        extents.append(max(0, min(segment.end - segment.start, limit - segment.file_offset)))
+    return extents
+
+
 # IDA keeps the PE headers it parsed (`peutils_t().header()`) in its own
 # `peheader_t`: the PE32 layout of signature, COFF header, and optional header,
 # with a PE32+ image base widened in place, then 16 data directories.
@@ -564,12 +586,14 @@ def rebuild_pe(
     is64 = machine in _PE64_MACHINES
 
     sections = []
-    for segment in sorted(segments, key=lambda item: item.start):
+    ordered = sorted(segments, key=lambda item: item.start)
+    extents = file_extents(ordered, len(image))
+    for index, segment in enumerate(ordered):
+        raw_size = extents[index]
         size = segment.end - segment.start
         if size <= 0 or segment.start < image_base:
             continue
         raw_ptr = segment.file_offset or 0
-        raw_size = min(size, max(0, len(image) - raw_ptr)) if segment.file_offset is not None else 0
         flags = 0x4000_0000  # IMAGE_SCN_MEM_READ
         if segment.executable:
             flags |= 0x2000_0000 | 0x20  # MEM_EXECUTE, CNT_CODE
@@ -945,12 +969,13 @@ def _image_from_idb(root: str) -> str | None:
     # Page by page: a segment's bytes are contiguous in the file only as far
     # as IDA's file-region map says, so each page is placed by its own offset.
     page = 0x1000
-    for segment in segments:
+    extents = file_extents(segments, size)
+    for index, segment in enumerate(segments):
         if segment.file_offset is None:
             continue
-        ea = segment.start
-        while ea < segment.end:
-            take = min(page - (ea % page), segment.end - ea)
+        ea, end = segment.start, segment.start + extents[index]
+        while ea < end:
+            take = min(page - (ea % page), end - ea)
             offset = int(ida_loader.get_fileregion_offset(ea))
             data = ida_bytes.get_bytes(ea, take) if offset >= 0 else None
             if data and offset + len(data) <= size:

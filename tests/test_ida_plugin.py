@@ -370,6 +370,29 @@ class RebuildTests(unittest.TestCase):
         )
         self.assertIsNone(plugin.rebuild_pe(image, segments, b"", base))
 
+    def test_pe_raw_size_stops_at_the_next_section(self):
+        # `.data`'s virtual size runs past its raw data, into `.rdata`'s bytes.
+        header = bytearray(248)
+        header[:4] = b"PE\0\0"
+        struct.pack_into("<HH", header, 4, 0x8664, 3)
+        base = 0x180000000
+        segments = [
+            plugin.Segment(".text", base + 0x1000, base + 0x1100, 0x400, True, False),
+            plugin.Segment(".data", base + 0x2000, base + 0x2800, 0x600, False, True),
+            plugin.Segment(".rdata", base + 0x3000, base + 0x3100, 0x800, False, False),
+            plugin.Segment(".bss", base + 0x4000, base + 0x4100, None, False, True),
+        ]
+        image = bytes(0x880)
+        self.assertEqual(plugin.file_extents(segments, len(image)), [0x100, 0x200, 0x80, 0])
+        out = plugin.rebuild_pe(image, segments, bytes(header), base)
+        lfanew = struct.unpack_from("<I", out, 0x3C)[0]
+        table = lfanew + 24 + 240
+        rows = [struct.unpack_from("<8sIIII", out, table + 40 * i) for i in range(4)]
+        self.assertEqual(
+            [(vsize, raw_size, raw_ptr) for _name, vsize, _rva, raw_size, raw_ptr in rows],
+            [(0x100, 0x100, 0x400), (0x800, 0x200, 0x600), (0x100, 0x80, 0x800), (0x100, 0, 0)],
+        )
+
 
 class MenuHelperTests(unittest.TestCase):
     def test_clipboard_signature_detection(self):
