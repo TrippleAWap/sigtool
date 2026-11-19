@@ -18,11 +18,12 @@ use std::sync::{Arc, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::coverage::Coverage;
 use crate::elf::FileSource;
 use crate::generate::generate_in;
-use crate::matcher::{identified_answer, rank_key, scan_in, Match, ReferenceIndex, ScanContext};
+use crate::matcher::{identified_answer, rank_key, scan_in, Match, ScanContext};
 use crate::merge::{merge_in, MergeSample};
-use crate::scanner::SignatureScanner;
+use crate::scanner::scan_modules;
 use crate::sigfile::Signature;
 use crate::source::{ByteSource, ProcessView};
 use crate::spec::SPEC_VERSION;
@@ -32,9 +33,9 @@ use crate::spec::SPEC_VERSION;
 pub const DEFAULT_TOLERANCE: f64 = 0.05;
 pub const HINTED: &str = "hinted";
 pub const HINT_FREE: &str = "hint-free";
-/// `bench --process-like`: hinted scans of each stripped target seen the way
-/// a live process sees a module ([`ProcessView`]), through the incremental
-/// scanner `scan --pid` uses.
+/// `bench --process-like`: each stripped target seen the way a live process
+/// sees a module ([`ProcessView`]), scanned through the path `scan --pid`
+/// and `locate --pid` take ([`scan_modules`]).
 pub const PROCESS: &str = "process";
 pub const MERGED: &str = "merged";
 /// Architectures merged into one cross-arch signature per function and opt.
@@ -324,6 +325,9 @@ struct Image {
     /// The unwind-table entries [`Image::process_view`] keeps, built on
     /// first use.
     process_unwind: OnceLock<Vec<(u64, u64)>>,
+    /// Per module of [`Image::process_view`], its scan context, built on
+    /// first use and shared by every process scan of the image.
+    process_contexts: OnceLock<Vec<OnceLock<ScanContext>>>,
 }
 
 /// One ground-truth entry: an image and one library's function starts in it.
@@ -375,7 +379,7 @@ impl Image {
     }
 
     /// The stripped copy (else the image) as a live process sees a module:
-    /// no symbol starts, hinted, bounds from the unwind table only. Starts
+    /// no symbol starts, function bounds from the unwind table only. Starts
     /// the file source synthesized from code are dropped, because a process
     /// source reads `.pdata` and synthesizes none. Where a table has no exact
     /// ends (`.ARM.exidx`) an entry still ends at the next start the file
@@ -398,23 +402,20 @@ impl Image {
         ProcessView::new(source, table.clone())
     }
 
-    /// One signature through the path `scan --pid` takes: a fresh
-    /// [`SignatureScanner`] pass, with its recovery budget and the hinted
-    /// floors. The scanner gets an empty reference index it does not own,
-    /// so it builds none: it never hands its index to the matcher, and the
-    /// build would only add a decode of the image to every scan.
+    /// One signature through the path `scan --pid` and `locate --pid` take
+    /// ([`scan_modules`]), with each module's context kept for the image's
+    /// other scans. Budget reports are the CLI's only; nothing is ranked by
+    /// them.
     fn scan_process(&self, signature: &Signature) -> Vec<Match> {
         let view = self.process_view();
-        let Ok(mut scanner) = SignatureScanner::new(
-            &view,
-            vec![signature.clone()],
-            None,
-            Some(ReferenceIndex::default()),
-        ) else {
-            return Vec::new();
-        };
-        scanner.scan_pass();
-        scanner.matches(0).to_vec()
+        let contexts = self
+            .process_contexts
+            .get_or_init(|| view.modules().iter().map(|_| OnceLock::new()).collect());
+        let signatures = std::slice::from_ref(signature);
+        let mut coverage = Coverage::new();
+        scan_modules(&view, signatures, None, Some(contexts), &mut coverage)
+            .pop()
+            .unwrap_or_default()
     }
 
     fn scan_source(&self, hints: bool) -> (&FileSource, &ScanContext) {
@@ -519,6 +520,7 @@ fn load_image(
         bytes,
         stripped_bytes,
         process_unwind: OnceLock::new(),
+        process_contexts: OnceLock::new(),
     });
     images.insert(path.to_string(), image.clone());
     Ok(image)
