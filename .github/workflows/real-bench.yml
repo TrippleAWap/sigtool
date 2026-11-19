@@ -80,4 +80,4 @@ jobs:
         working-directory: native
         run: >
           cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4
-          --joint --baseline ../tests/baseline/native-real-bench.json
+          --joint --process-like --baseline ../tests/baseline/native-real-bench.json
