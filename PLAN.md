@@ -1023,6 +1023,18 @@ As of 2026-11-19, `real-world` branch, spec v6.
       objects mapped as two modules of one source. Determinism: the real
       bench twice on 2 threads and once on 1 gives identical reports apart
       from cost; `tests/ida_cli_smoke.py` passes.
+- Branch review (2026-11-19, `rw/review-fixes`): four area reviewers plus a
+  refuting verifier per finding over `native-first...real-world`; 9 of 13
+  findings confirmed and fixed. The rule for targets that name no function
+  read `.symtab` names in hint-free mode (rule 10) and counted data exports
+  (a PIE's copy-relocated `stderr`) as names; it now counts code exports,
+  plus function symbols when hinted (`--world`: 19 top-1 cells up, 2 down,
+  FP and precision unchanged, 8 more correct answers). PE ordinal imports
+  keep their DLL; PT_DYNAMIC relocation tables are read when the symbol table
+  cannot be sized (rule 4); batch scans check the magic before reading a file
+  and hash non-images in chunks (rule 11); `bench` refuses a baseline drawn
+  with another `--sample-seed`; SPEC §3 no longer says frame-pointer
+  immediates are dropped. Real corpus and mixed PE tier identical.
 - Next: ARM32/Thumb process targets (no inferred starts: 925 of 1274 missed
   pairs have no unwind entry; out of reach of the Windows process source
   anyway), the remaining PE findings (hinted PE has no function list, import
