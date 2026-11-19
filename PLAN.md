@@ -873,6 +873,79 @@ As of 2026-11-19, `real-world` branch, spec v6.
       blob. ARM32/Thumb blobs must end below 4 GiB: at the top of the
       address space the ARM start sweep's realigning steps wrapped and hung
       (found by the new hostile cases; no ELF32 can place code there).
-- Next: the open real-world items (RW4 distro packages and C++, RW5, RW6),
-  identified precision on the real-world tier (0.972, below 0.98), and
+  - RW5a PE tier (2026-11-19, `rw/pe-tier`): `corpus/real.py --pe` builds
+    the tuning libraries as DLLs with the pinned clang for x64 and arm64
+    `windows-msvc`, linked by lld-link with no Windows SDK (shim plus
+    `corpus/shim/include-win`, generated `ucrtbase`/`kernel32` import
+    libraries, so CRT calls go through `jmp [__imp_X]` thunks and Win32
+    calls through the IAT), exporting only the public API by each library's
+    own Windows mechanism; builds `-O0/-O2/-Os` plus `-O2` with `/GS` and
+    with `/guard:cf` (50 DLLs, 48 MB; two clean rebuilds byte-identical).
+    Ground truth from the lld-link map; a PE has no `.symtab`, so the bench
+    scans the same file in both modes. `corpus/build-pe-mixed` pairs them
+    with the `build-real` clang ELF builds (x64, arm64) under one ground
+    truth, so ELF<->PE needs no bench change. Spec v6, `--max-functions 4`,
+    tuning libraries only; nothing in the tool changed, so the toy and real
+    baselines are untouched.
+    - PE tier (`bench --corpus ../corpus/build-pe`, 288 signatures, 0
+      refused): hint-free top-1 same arch same build 0.725 (145/200), other
+      profile (`/GS`, `/guard:cf` vs plain, same level) 0.658 (158/240),
+      cross opt 0.266, other arch same build 0.415, other arch other
+      profile 0.450, other arch cross opt 0.163, merged same build 0.699.
+      `/GS` and `/guard:cf` move a plain `-O2` signature by at most 1 of 20
+      per cell. Strong FP 0.000 (x64 0/29, arm64 0/15, merged 0/15; 25 or 50
+      images, 7.2-15 MiB); hint-free any-verdict FP x64 0.080, arm64 0.080,
+      merged 0.068; identified precision hint-free 0.948 (843/889), hinted
+      0.669 (113/169). Hinted top-1 same build 0.070: see the first finding.
+      Cost 50.5 s, peak 800 MiB (4 threads, shared machine).
+    - Same function sample, same cells, plain levels only (x64, arm64,
+      hint-free top-1, ELF clang baseline vs PE): x64 same build 0.817 vs
+      0.817, arm64 same build 0.850 vs 0.683, x64 cross opt 0.350 vs 0.283,
+      x64->arm64 same build 0.467 vs 0.367 (60 or 120 attempts each, samples
+      differ by corpus).
+    - Mixed (`bench --corpus ../corpus/build-pe-mixed --joint`, same level,
+      hint-free top-1, 120 attempts): ELF->ELF 0.833, PE->PE 0.767,
+      ELF->PE 0.533 (x64 0.567, arm64 0.500), PE->ELF 0.733 (x64 0.700,
+      arm64 0.767); other arch same level ELF->PE 0.333, PE->ELF 0.425;
+      cross level ELF->PE 0.225, PE->ELF 0.292 (240 each). Joint, whole x64
+      clang-O2 ELF module resolved in PE x64 clang+pe-O2: 0.731 -> 0.871
+      (643); in PE arm64 at O2: 0.403 -> 0.667. Identified precision
+      hint-free 0.929 (1143/1230), hinted 0.864; strong FP 0.000.
+    - `.pdata` start recall (`examples/start_recall`, now with a PE path):
+      x64 0.954 (13633/14292, precision 0.949), arm64 0.815 (11643/14288,
+      precision 0.998); at `-O2` x64 0.937, arm64 0.748.
+    - Findings (diagnosed, not fixed here: each is a discovery, feature, or
+      acceptance change for its own package):
+      1. Hinted discovery on a PE file has no function list:
+         `FileSource::function_starts` is empty for PE (exports carry no
+         bounds) and hinted mode ignores unwind entries (`matcher.rs`
+         `use_hints`), so it sees only landmark sweeps. `--discovery auto`
+         picks hint-free for PE files (`symbols_stripped`), so CLI users
+         are not affected unless they force `hinted`; the hinted PE cells
+         measure only this.
+      2. ARM64 PE exports are not function starts: the export roots and
+         the call-target sweep are x64-only (`elf.rs`, `pe_roots`), so
+         leaf functions without `.pdata` (arm64 omits it for frameless
+         leaves) are missed, exported API included (`adler32`,
+         `crc32`, `compressBound` in zlib `-O2`). Probably most of the
+         arm64 same-build gap (inferred, not measured).
+      3. ELF and PE never share an import callee: ELF writes
+         `callee:*!memcpy` and PE `callee:ucrtbase!memcpy` (SPEC.md §2.1),
+         so of 24 ELF->PE pairs per arch whose signature requires an
+         external callee, none matches it. 12 of 34 same-level ELF->PE
+         rejections lack a required callee (that one, or a function the
+         ELF build exports and the DLL keeps static, such as
+         `LZ4_loadDict_internal`); 20 lack a required constant, mostly
+         struct offsets that LLP64's 32-bit `long` moves (zlib
+         `inflate_state`: 0x558 on ELF, 0x550 on PE).
+      4. 696 of the 728 x64 false starts are lld-link's import thunks,
+         which the call-target sweep finds after the last function.
+    - Not done: MinGW gcc builds, real MSVC (RW5b), PDB ground truth (no
+      `llvm-pdbutil` in the pinned toolchain on the home server; the map
+      gives the same addresses), `.reloc` and delay-load imports.
+- Next: the live-process scan path (RW3: candidates from a per-module
+  indexed context; it finds 0.010 top-1 today), the PE findings (hinted PE
+  has no function list, arm64 PE export starts, `*!` vs `ucrtbase!` import
+  callees), identified precision on the real-world tier (0.972) and in hosts
+  (0.0025 per signature per MB), RW4 distro packages and C++, and
   pointer-width-dependent constants (M10).

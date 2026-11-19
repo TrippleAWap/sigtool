@@ -20,7 +20,9 @@ packaging/     ida-plugin.json (HCLI / Plugin Manager manifest) and package.py, 
                builds the per-platform plugin zip and CLI archive for a release
 spec/          signature spec and changelog
 corpus/        build scripts (build.py: toy corpus; real.py: pinned real libraries
-               with clang and gcc), ground truth; binaries are never committed
+               with clang and gcc, and as PE DLLs with clang + lld-link), the libc
+               shim (shim/include, shim/include-win), ground truth; binaries are
+               never committed
 tests/         vectors/ (golden, generated), baseline/ (bench baselines)
 ```
 
@@ -121,6 +123,9 @@ python corpus/real.py --world       # real-world profiles (hardened, -O3, LTO, P
 python corpus/real.py --host --jobs 2   # all five tuning libraries in one static executable per arch
                                     # (plain, LTO, one leave-one-out negative per library; x64 -O0 under
                                     # scale/) into corpus/build-host; bench it with --corpus ../corpus/build-host
+python corpus/real.py --pe          # PE DLLs (clang + lld-link, x64/arm64, /GS, /guard:cf) into
+                                    # corpus/build-pe, plus corpus/build-pe-mixed (ELF clang + PE, needs build-real)
+cargo run --release --example start_recall -- ../corpus/build-pe   # .pdata start recall (also ELF corpora)
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld), then bless
 SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the extractor
 ```

@@ -208,6 +208,14 @@ answers in unrelated images come to 0.0025 per signature per MB (goal
 0.001). A hint-free scan of 1000 signatures over the x64 `-O0` host
 (2.4 MB of code) takes 10.9 s on 2 threads at 167 MB peak memory, and no
 budget runs out at these sizes (`examples/profile_scale.rs`).
+PE DLLs (`python corpus/real.py --pe`: the tuning libraries built by clang
+and lld-link for x64 and arm64 Windows, `-O0/-O2/-Os` plus `/GS` and
+`/guard:cf`, exporting only the public API), hint-free top-1: same arch same
+build 0.725 (200 attempts), other arch same build 0.415; strong FP 0.000.
+Signing a clang ELF build and searching the PE build of the same level
+(`corpus/build-pe-mixed`): 0.533 on the same arch, against 0.833 ELF to
+ELF and 0.733 PE to ELF (120 attempts each). `PLAN.md` §8 lists what
+causes the gap.
 
 Hinted scans may use the target's symbols. Hint-free scans of stripped
 targets compare every unwind entry, while hinted scans start from anchor

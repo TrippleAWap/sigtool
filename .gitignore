@@ -21,3 +21,5 @@ corpus/build-real/
 corpus/build-heldout/
 corpus/build-world/
 corpus/build-host/
+corpus/build-pe/
+corpus/build-pe-mixed/

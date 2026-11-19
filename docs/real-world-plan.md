@@ -33,6 +33,12 @@ RW6 measurement, on `rw/scale` (numbers in `PLAN.md` §8):
   at 8% of 65,536, joint pairs at 8% of 2^26), so none of the six fixes
   was started: the plan's 10-150 MB targets need sources larger than the
   tuning libraries.
+image identity and `db info`/`list`; RW5a's clang + lld-link PE tier
+(`--pe`, x64 and arm64, `/GS` and `/guard:cf` variants, an ELF+PE mixed
+corpus, `.pdata` start recall; four matcher findings recorded, none fixed).
+Open: RW4 distro packages, C++, joint drift; RW5a MinGW builds and PDB
+ground truth; RW5 `.reloc`, delay-load imports, RW5b; RW6; RW7 raw blobs;
+RW8 `--explain` and generation warnings.
 
 ## 1. Diagnosis
 
