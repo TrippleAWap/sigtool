@@ -713,6 +713,9 @@ pub struct ScanContext {
     pub features: FeatureCache,
     /// Per-image feature frequencies, `[hint-free, hinted]`, built on first use.
     frequencies: [OnceLock<Option<Frequencies>>; 2],
+    /// Every function name the image can give a callee, built on first use
+    /// ([`unnamed_callees_optional`]).
+    callee_names: OnceLock<HashSet<String>>,
 }
 
 /// How many of an image's functions carry each feature key.
@@ -1141,8 +1144,61 @@ impl ScanContext {
             code: code.finish(),
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
+            callee_names: OnceLock::new(),
         }
     }
+}
+
+/// `signature` with every required callee the target cannot name made
+/// optional, or `None` when the target can name them all.
+///
+/// A callee key without `!` names a function of the signed image itself,
+/// resolved through that image's dynamic exports. A shared object exports
+/// its functions, but the same code linked into an executable (PIE or
+/// static) or built with hidden visibility exports none of them: the call
+/// is there, its name is not. Demanding the key then rejects the true
+/// function on evidence the target can never show. On the `--world` tier,
+/// same arch hint-free, every acceptance failure of a shared-object
+/// signature in PIE and static targets that lacked a required feature
+/// lacked such a callee (11 of 40 PIE and 13 of 40 static pairs,
+/// `examples/diagnose_cross`). The key still counts when present.
+fn unnamed_callees_optional<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    context: &ScanContext,
+) -> Option<Signature> {
+    let unnamed = |feature: &crate::sigfile::SignatureFeature| {
+        feature.required
+            && feature.kind == FeatureKind::Callee
+            && !low_information_callee(&feature.value)
+    };
+    if !signature.features.iter().any(unnamed) {
+        return None;
+    }
+    let names = context.callee_names.get_or_init(|| {
+        source
+            .modules()
+            .iter()
+            .flat_map(|module| {
+                module
+                    .exports
+                    .iter()
+                    .map(|(name, _)| name)
+                    .chain(module.functions.values())
+            })
+            .filter_map(|name| crate::features::canonical_callee(name))
+            .map(str::to_string)
+            .collect()
+    });
+    let mut adapted = signature.clone();
+    let mut changed = false;
+    for feature in &mut adapted.features {
+        if unnamed(feature) && !names.contains(&feature.value) {
+            feature.required = false;
+            changed = true;
+        }
+    }
+    changed.then_some(adapted)
 }
 
 /// [`scan`] with the image's shared indexes: string anchors seed candidates
@@ -1154,6 +1210,8 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
+    let adapted = unnamed_callees_optional(source, signature, context);
+    let signature = adapted.as_ref().unwrap_or(signature);
     let mut matches = scan_in_ranked(source, signature, context, hints);
     // Only the first match can be an answer, so only it needs a rival.
     if let Some(first) = matches.first() {
