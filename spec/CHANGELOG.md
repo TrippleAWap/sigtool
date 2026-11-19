@@ -8,9 +8,9 @@ and must be regenerated or rebuilt (`db build --file IMAGE --functions F`).
 
 ### Callees in targets that name no function
 
-* A required `callee` without `!` leaves the comparison when the target's
-  modules name no defined function (SPEC.md §8, "Targets that name no
-  function"), and stays identifying for the anchoring floor.
+* A required `callee` without `!` is optional when the target's modules name
+  no defined function (SPEC.md §8, "Targets that name no function"), and stays
+  identifying for the anchoring floor.
 * Measured on the new real-world tier (`corpus/real.py --world`: the tuning
   libraries built with gcc 12 as plain, `-O3`, hardened, LTO, PIE and static
   executable, and the previous release; `bench --corpus ../corpus/build-world
@@ -27,7 +27,11 @@ and must be regenerated or rebuilt (`db build --file IMAGE --functions F`).
   libraries lack it too, so on the real corpus any-verdict FP rose arm32 0.117
   -> 0.217, arm64 0.083 -> 0.158, merged 0.019 -> 0.087, failing the gate.
   Waived callees also left signatures with no identifying key, which the
-  anchoring floor then let through; they now stay identifying.
+  anchoring floor then let through; they now stay identifying. Dropping the
+  keys from the comparison instead of making them optional: PIE / static
+  0.713 / 0.625 but hint-free any-verdict FP 0.167, past the tolerance;
+  dropping them only when other identifying keys remain: 0.625 / 0.537 at
+  0.134.
 
 ## v5 — in-module constants, matcher and trust rules
 

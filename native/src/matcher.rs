@@ -1149,8 +1149,8 @@ impl ScanContext {
     }
 }
 
-/// `signature` without the required callees a target that names no function
-/// cannot hold, or `None` when nothing is dropped.
+/// `signature` with the required callees a target that names no function
+/// cannot hold made optional, or `None` when nothing changes.
 ///
 /// A callee key without `!` names a function of the signed image itself,
 /// resolved through that image's dynamic exports. A shared object exports
@@ -1198,19 +1198,19 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
     if !names.is_empty() {
         return None;
     }
-    // Dropped, not made optional: a key the target can never hold would
-    // still weigh in the score of a signature left with no required
-    // feature (the all-features fallback), so the true function could not
-    // reach the threshold.
+    // Optional, not dropped: measured on the `--world` tier against the
+    // gcc-O2 shared object, hint-free. Optional gave PIE / static same-arch
+    // top-1 0.700 / 0.613 (from 0.613 / 0.525) with the hint-free
+    // any-verdict FP rate 0.105 -> 0.132. Dropping the keys gave 0.713 /
+    // 0.625 but 0.167, past the tolerance: a signature whose only
+    // identifying keys were these names is left with shape alone, and
+    // lookalikes in unrelated executables match it. Dropping them only when
+    // other identifying keys remain gave 0.625 / 0.537 at 0.134.
     let mut adapted = signature.clone();
-    adapted.features.retain(|feature| !unnamed(feature));
-    // A signature whose only identifying evidence was those names would be
-    // left with shape alone, and lookalikes in every unrelated executable
-    // match it: on the `--world` tier, dropping them there too raised the
-    // hint-free any-verdict false-positive rate 0.105 -> 0.167 for 103 more
-    // top-1 hits. Such a signature abstains instead.
-    if identifying_required(&adapted).is_empty() {
-        return None;
+    for feature in &mut adapted.features {
+        if unnamed(feature) {
+            feature.required = false;
+        }
     }
     Some(adapted)
 }

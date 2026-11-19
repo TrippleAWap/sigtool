@@ -486,14 +486,13 @@ generation and never decodes with its own tables.
   image built with hidden visibility exports none of its own functions, so a
   call to one has no name there (§2.1). When the target's modules name no
   defined function at all (no export, no function symbol the scan may use),
-  every required `callee` without `!` leaves the comparison for that scan (it
-  can never be present there, and would otherwise still weigh in the score of
-  a signature left with no required feature). It stays an identifying key for
-  the anchoring floor, so a
+  every required `callee` without `!` is optional for that scan: it still
+  earns its weight when present, but no longer counts in the required weight
+  or `min_distinct`. It stays an identifying key for the anchoring floor, so a
   match holding none of the signature's other identifying keys still needs
-  `MIN_UNANCHORED_SIMILARITY`. A signature whose only identifying required
-  features are such callees keeps them, and so abstains in such a target:
-  shape alone matches lookalikes in every unrelated executable. A target
+  `MIN_UNANCHORED_SIMILARITY`. A signature with no required feature left
+  scores against all its weights, these callees included, so one identified
+  by callee names alone stays out of reach there. A target
   that names some functions but not
   this one keeps the requirement: there, the missing name is evidence the
   function is absent.
