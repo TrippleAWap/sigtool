@@ -150,6 +150,17 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
         &self.index
     }
 
+    /// The ranked matches the last pass left for the `index`-th signature
+    /// (in the order given to [`SignatureScanner::new`]), with the
+    /// similarity and matched keys a [`ScanHit`] drops; empty before the
+    /// first pass or past the end.
+    pub fn matches(&self, index: usize) -> &[Match] {
+        self.signatures
+            .get(index)
+            .and_then(|(_, id)| self.states.get(id))
+            .map_or(&[], |state| state.matches.as_slice())
+    }
+
     /// Run one incremental pass; unchanged regions carry matches over.
     pub fn scan_pass(&mut self) -> ScanReport {
         self.pass += 1;

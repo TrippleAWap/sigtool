@@ -302,6 +302,11 @@ struct BenchArgs {
     /// lines to this file (offline simulation of assignment rules)
     #[arg(long = "joint-report", requires = "joint")]
     joint_report: Option<PathBuf>,
+    /// Also scan every stripped target the way `scan --pid` scans a live
+    /// process (no symbol starts, unwind bounds as hints, the incremental
+    /// scanner) and report it as discovery `process`
+    #[arg(long = "process-like")]
+    process_like: bool,
     /// Allowed recall drop / false-positive increase
     #[arg(long, default_value_t = sigtool_native::bench::DEFAULT_TOLERANCE)]
     tolerance: f64,
@@ -1835,6 +1840,7 @@ fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
         fp_report: args.fp_report.clone(),
         joint: args.joint,
         joint_report: args.joint_report.clone(),
+        process: args.process_like,
     };
     let report = bench::run_with(&args.corpus, &options).map_err(CliError::input)?;
     print!("{}", bench::render(&report));

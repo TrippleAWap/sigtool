@@ -401,3 +401,59 @@ pub fn read_regions(regions: &[Region], addr: u64, size: usize) -> Result<Vec<u8
     }
     Ok(out)
 }
+
+/// An image file seen the way [`crate::proc_win::ProcessSource`] sees a
+/// loaded module, so the bench can measure the live-process scan path on
+/// files with ground truth (`bench --process-like`). A process names no
+/// symbol starts and answers `symbols_stripped() == false`, so `scan` and
+/// `locate` treat it as hinted, with unwind-table bounds standing in for
+/// symbol bounds; exports, imports, and relocations stay as the module
+/// gives them.
+pub struct ProcessView<'a, S: ByteSource + ?Sized> {
+    inner: &'a S,
+    unwind: Vec<(u64, u64)>,
+}
+
+impl<'a, S: ByteSource + ?Sized> ProcessView<'a, S> {
+    /// View `inner` with `unwind` as its only function table: what the
+    /// image's own tables list, without starts a file source synthesized
+    /// from code, because a process source reads `.pdata` and synthesizes
+    /// nothing.
+    pub fn new(inner: &'a S, mut unwind: Vec<(u64, u64)>) -> ProcessView<'a, S> {
+        unwind.sort_unstable();
+        unwind.dedup_by_key(|(start, _)| *start);
+        ProcessView { inner, unwind }
+    }
+}
+
+impl<S: ByteSource + ?Sized> ByteSource for ProcessView<'_, S> {
+    fn arch(&self) -> Arch {
+        self.inner.arch()
+    }
+
+    fn read(&self, addr: u64, size: usize) -> Result<Vec<u8>, ReadError> {
+        self.inner.read(addr, size)
+    }
+
+    fn regions(&self) -> &[Region] {
+        self.inner.regions()
+    }
+
+    fn modules(&self) -> &[Module] {
+        self.inner.modules()
+    }
+
+    fn unwind_entries(&self) -> &[(u64, u64)] {
+        &self.unwind
+    }
+
+    /// As `ProcessSource::hint_function`: an entry without a known end gives
+    /// no hint.
+    fn hint_function(&self, addr: u64) -> Option<(u64, u64)> {
+        self.unwind_function(addr).filter(|(_, end)| *end != 0)
+    }
+
+    fn is_thumb(&self, addr: u64) -> bool {
+        self.inner.is_thumb(addr)
+    }
+}
