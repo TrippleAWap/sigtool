@@ -880,3 +880,86 @@ fn joint_resolution_reports_a_group_past_the_pair_cap() {
         "{coverage:?}"
     );
 }
+
+/// `gen`, `merge`, and `db build --output` replace an existing file with the
+/// complete output and leave no temporary file next to it; a write that
+/// fails (the target is a directory) leaves none either.
+#[test]
+fn outputs_replace_the_old_file_whole() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("atomic-output");
+    let x64 = build_shared(&dir, "x86_64-linux-gnu", "libx64");
+    let arm64 = build_shared(&dir, "aarch64-linux-gnu", "libarm64");
+    let x64_rva = symbol_rva(&x64, "top");
+    let arm_rva = symbol_rva(&arm64, "top");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let (gen_yaml, merge_yaml, db) = (
+        out.join("gen.yaml"),
+        out.join("merge.yaml"),
+        out.join("s.db"),
+    );
+    for path in [&gen_yaml, &merge_yaml, &db] {
+        std::fs::write(path, b"stale").unwrap();
+    }
+    let gen_stdout = run(&["gen", "--file", x64.to_str().unwrap(), "--rva", &x64_rva]);
+    run(&[
+        "gen",
+        "--file",
+        x64.to_str().unwrap(),
+        "--rva",
+        &x64_rva,
+        "--output",
+        gen_yaml.to_str().unwrap(),
+    ]);
+    let x64_sample = format!("{}:+{x64_rva}", x64.to_str().unwrap());
+    let arm_sample = format!("{}:+{arm_rva}", arm64.to_str().unwrap());
+    let merge_stdout = run(&["merge", "--sample", &x64_sample, "--sample", &arm_sample]);
+    run(&[
+        "merge",
+        "--sample",
+        &x64_sample,
+        "--sample",
+        &arm_sample,
+        "--output",
+        merge_yaml.to_str().unwrap(),
+    ]);
+    let functions = function_list(&dir, &x64);
+    build_db(&x64, &functions, &db, None);
+    let rebuilt = dir.join("rebuilt.db");
+    build_db(&x64, &functions, &rebuilt, None);
+    let refused = sigtool(
+        &[
+            "db",
+            "build",
+            "--file",
+            x64.to_str().unwrap(),
+            "--functions",
+            functions.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ],
+        &[],
+    );
+    let gen_text = std::fs::read_to_string(&gen_yaml).unwrap();
+    let merge_text = std::fs::read_to_string(&merge_yaml).unwrap();
+    let same_db = std::fs::read(&db).unwrap() == std::fs::read(&rebuilt).unwrap();
+    let mut left: Vec<String> = std::fs::read_dir(&out)
+        .unwrap()
+        .chain(std::fs::read_dir(&dir).unwrap())
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(gen_text, gen_stdout, "gen --output");
+    assert_eq!(merge_text, merge_stdout, "merge --output");
+    assert!(same_db, "db build --output over a stale file");
+    assert_eq!(refused.status.code(), Some(2), "a directory as --output");
+    assert!(
+        left.iter().all(|name| !name.contains(".tmp-")),
+        "temporary files left behind: {left:?}"
+    );
+}

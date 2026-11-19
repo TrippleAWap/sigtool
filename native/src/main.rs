@@ -518,9 +518,7 @@ fn write_outputs(
             "stdout".to_string()
         }
         Some(path) => {
-            std::fs::write(path, text.as_bytes()).map_err(|error| {
-                CliError::input(format!("cannot write {}: {error}", path.display()))
-            })?;
+            write_atomic(path, text.as_bytes())?;
             path.display().to_string()
         }
     };
@@ -1888,9 +1886,7 @@ fn run_db_build(args: DbBuildArgs) -> Result<u8, CliError> {
         }
     }
     let bytes = db.encode();
-    std::fs::write(&args.output, &bytes).map_err(|error| {
-        CliError::input(format!("cannot write {}: {error}", args.output.display()))
-    })?;
+    write_atomic(&args.output, &bytes)?;
     eprintln!(
         "wrote {} signatures to {} ({} bytes, spec {})",
         db.len(),
@@ -2379,6 +2375,35 @@ fn write_json(path: &Path, document: &BTreeMap<String, Value>) -> Result<(), Cli
         .map_err(|error| CliError::input(format!("cannot encode JSON: {error}")))?;
     std::fs::write(path, format!("{text}\n"))
         .map_err(|error| CliError::input(format!("cannot write {}: {error}", path.display())))
+}
+
+/// Write `bytes` to `path` through `NAME.tmp-PID` in the same directory,
+/// renamed over `path` once complete, so a crash, a full disk, or a cancel
+/// mid-write leaves the previous file whole: a DB a front-end rebuilds in
+/// place is otherwise truncated, and every later scan of it refused.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    use std::io::Write;
+    let fail = |error: std::io::Error| {
+        CliError::input(format!("cannot write {}: {error}", path.display()))
+    };
+    let Some(name) = path.file_name() else {
+        return Err(CliError::input(format!(
+            "cannot write {}: not a file name",
+            path.display()
+        )));
+    };
+    let mut temporary_name = name.to_os_string();
+    temporary_name.push(format!(".tmp-{}", std::process::id()));
+    let temporary = path.with_file_name(temporary_name);
+    let written = std::fs::File::create(&temporary).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    if let Err(error) = written.and_then(|()| std::fs::rename(&temporary, path)) {
+        std::fs::remove_file(&temporary).ok();
+        return Err(fail(error));
+    }
+    Ok(())
 }
 
 fn json_number(value: f64) -> Value {

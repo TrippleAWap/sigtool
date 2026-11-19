@@ -47,7 +47,10 @@ sigtool-native db list signatures.db --json  # name, signature id, arches, confi
 The YAML signature goes to stdout (or `--output`), the quality report to
 stderr (`--json-report` for JSON). Exit codes: `0` success, `1` locate found
 nothing, `2` usage or input error, `3` unsupported architecture or target
-(including 32-bit and WOW64 processes), `4` self-test failure.
+(including 32-bit and WOW64 processes), `4` self-test failure. `gen`,
+`merge`, and `db build` write `--output` to `NAME.tmp-PID` in the same
+directory and rename it over `NAME` once complete, so an interrupted or failed
+write leaves the previous file whole.
 
 Reports (`gen --json-report`, `merge --json-report`, `db build --report`)
 record each input image as `input` (`inputs`, one per sample, for merge): its
