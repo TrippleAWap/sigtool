@@ -242,6 +242,9 @@ Before tuning further, make sure the numbers can be trusted.
 - Per-library breakdown, so one library cannot hide another's regression.
 - A scheduled CI workflow that builds the real corpus (GCC image included)
   and runs the real bench weekly against the baseline.
+- Re-run the held-out corpus after the latest rules: it was last measured at
+  v4 (2026-11-16, strong FP 0.113), before in-module constants, FP
+  reduction, the integration label rules, and the strong FP floor.
 
 *Exit:* all G1-G5 measures appear in the baseline; held-out numbers are
 recorded; the weekly job is green.
@@ -260,6 +263,10 @@ Functions the tool cannot see cannot be found.
 *Exit:* each gap has a corpus or CLI case; function-start recall ≥ 0.99 on
 every arch (G4).
 
+*Non-goals for now (not in v1.0; revisit after M14):* Mach-O input
+(`FileSource` reads ELF and PE only, though a macOS binary is released) and
+32-bit x86 (32-bit and WOW64 processes stay rejected).
+
 ### M10. Cross-build robustness
 
 The largest gap is other-compiler and cross-optimization recall (0.18-0.30).
@@ -273,6 +280,8 @@ must survive them.
 - Coarser, layout-independent shape (loop nesting, call count buckets) where
   the corpus shows the current CFG buckets differ across compilers.
 - Each feature lands alone, measured, with a vector from real compiler output.
+- A C++ library in the real corpus (templates, vtables, duplicated template
+  instantiations); every corpus library is C today.
 
 *Exit:* the G1 other-compiler and cross-opt rows reach their v1.0 targets on
 the tuning corpus and within 0.05 on the held-out corpus.
