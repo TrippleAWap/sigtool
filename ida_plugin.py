@@ -82,6 +82,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import hashlib
+import importlib
 import json
 import os
 import queue
@@ -89,6 +90,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Callable, Iterable
@@ -1118,16 +1120,41 @@ def _remember(name: str, value: str) -> None:
         ida_registry.reg_write_string(name, value, REGISTRY_KEY)
 
 
+_QT_BINDINGS = ("PySide6.QtWidgets", "PyQt5.QtWidgets")
+
+
+def qt_binding_order(kernel_version: str, loaded: Iterable[str] = ()) -> list[str]:
+    """The Qt bindings to try for IDA's own ``QApplication``, most likely first.
+
+    IDA 9.2 moved from PyQt5 (Qt 5) to PySide6 (Qt 6). A binding IDA already
+    imported comes first; then the one this IDA version ships, so an older
+    IDA never loads a pip-installed PySide6 next to its own Qt.
+    """
+    match = re.match(r"(\d+)\.(\d+)", kernel_version or "")
+    modern = match is None or (int(match.group(1)), int(match.group(2))) >= (9, 2)
+    order = list(_QT_BINDINGS if modern else reversed(_QT_BINDINGS))
+    present = set(loaded)
+    return [name for name in order if name in present] + [
+        name for name in order if name not in present
+    ]
+
+
 def _qt_clipboard():
-    # IDA 9.2 ships PySide6 (Qt 6); older releases PyQt5. Without a GUI
-    # (idat), IDA 9.2's PyQt5 shim raises NotImplementedError, not ImportError.
-    for module in ("PySide6.QtWidgets", "PyQt5.QtWidgets"):
+    try:
+        version = str(ida_kernwin.get_kernel_version())
+    except Exception:
+        version = ""
+    for name in qt_binding_order(version, sys.modules):
         try:
-            widgets = __import__(module, fromlist=["QApplication"])
+            # Without a GUI (idat) IDA 9.2's PyQt5 shim raises ImportError; a
+            # binding built against another Qt may raise anything.
+            widgets = sys.modules.get(name) or importlib.import_module(name)
+            app = widgets.QApplication.instance()
         except Exception:
             continue
-        app = widgets.QApplication.instance()
-        return app.clipboard() if app is not None else None
+        # A binding with no application is not the one IDA runs on.
+        if app is not None:
+            return app.clipboard()
     return None
 
 

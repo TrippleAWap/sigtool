@@ -242,6 +242,31 @@ class CursorTests(unittest.TestCase):
         self.assertEqual(self.start(0x3000, code=True)[0], 0x3000)
 
 
+class QtBindingTests(unittest.TestCase):
+    def test_order_follows_the_ida_version_and_what_is_loaded(self):
+        pyside, pyqt = "PySide6.QtWidgets", "PyQt5.QtWidgets"
+        self.assertEqual(plugin.qt_binding_order("9.2"), [pyside, pyqt])
+        self.assertEqual(plugin.qt_binding_order("10.0"), [pyside, pyqt])
+        self.assertEqual(plugin.qt_binding_order("9.1"), [pyqt, pyside])
+        self.assertEqual(plugin.qt_binding_order("8.4"), [pyqt, pyside])
+        self.assertEqual(plugin.qt_binding_order(""), [pyside, pyqt])
+        self.assertEqual(plugin.qt_binding_order("9.2", {pyqt}), [pyqt, pyside])
+
+    def test_a_binding_without_an_application_is_passed_over(self):
+        def widgets(app):
+            module = types.ModuleType("QtWidgets")
+            module.QApplication = types.SimpleNamespace(instance=lambda: app)
+            return module
+
+        app = types.SimpleNamespace(clipboard=lambda: "pyqt5 clipboard")
+        stubs = {"PySide6.QtWidgets": widgets(None), "PyQt5.QtWidgets": widgets(app)}
+        with (
+            mock.patch.dict(sys.modules, stubs),
+            mock.patch.object(plugin.ida_kernwin, "get_kernel_version", lambda: "9.2", create=True),
+        ):
+            self.assertEqual(plugin._qt_clipboard(), "pyqt5 clipboard")
+
+
 class ProvenanceTests(unittest.TestCase):
     def proposal(self):
         return plugin.Proposal(0x200, "inflate", 0.91234, "identified", "sub_200", "abc123")
