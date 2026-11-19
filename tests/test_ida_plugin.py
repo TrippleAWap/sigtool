@@ -4,6 +4,7 @@ plain Python: ``python -m unittest tests/test_ida_plugin.py``."""
 
 from __future__ import annotations
 
+import ast
 import importlib
 import re
 import struct
@@ -563,6 +564,18 @@ class NativeDiscoveryTests(unittest.TestCase):
         self.assertIsNone(plugin.version_problem(f"sigtool-native 0.1.0 (spec {expected})\n"))
         self.assertIn("expects spec", plugin.version_problem("sigtool-native 0.1.0 (spec 99)"))
         self.assertIn("does not report", plugin.version_problem("sigtool-native 0.1.0"))
+
+    def test_plugin_parses_and_calls_like_python_3_8(self):
+        # IDA 8.4 can embed Python 3.8: no newer syntax, and no `strict=`
+        # (zip, 3.10), which parses everywhere but fails when called.
+        source = Path(plugin.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source, feature_version=(3, 8))
+        strict = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and any(k.arg == "strict" for k in node.keywords)
+        ]
+        self.assertEqual(strict, [])
 
     def test_expected_spec_matches_the_crate(self):
         spec = (Path(__file__).resolve().parent.parent / "native" / "src" / "spec.rs").read_text()

@@ -1815,9 +1815,11 @@ class SettingsForm(ida_kernwin.Form):
     def __init__(self) -> None:
         names = [f"s{index}" for index in range(len(SETTINGS))]
         rows = []
-        for index, (name, (_flag, label)) in enumerate(zip(names, SETTINGS, strict=True)):
+        # Not zip(..., strict=True): IDA 8.4 can run Python 3.8, where that
+        # raises TypeError and the form never opens.
+        for index, (_flag, label) in enumerate(SETTINGS):
             closing = "{cSettings}>" if index == len(SETTINGS) - 1 else ""
-            rows.append(f"<{label}:{{{name}}}>{closing}")
+            rows.append(f"<{label}:{{{names[index]}}}>{closing}")
         form = "\n".join(["sigtool settings", "", *rows, ""])
         super().__init__(form, {"cSettings": ida_kernwin.Form.ChkGroupControl(tuple(names))})
 

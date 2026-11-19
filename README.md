@@ -131,10 +131,10 @@ ld ARM32, Thumb, and AArch64 images (`examples/sectionless.rs`).
 
 ### In IDA
 
-`ida_plugin.py` (IDA 8.4+ / 9.x) is a thin wrapper over `sigtool-native`: copy
-the file into `%IDAUSR%/plugins` with the binary next to it (or put the binary
-on `PATH`, or set `SIGTOOL_NATIVE`; the copy next to the plugin wins over
-`PATH`). It adds **generate signature here** (report, save, merge
+`ida_plugin.py` (IDA 8.4+ / 9.x; a manual install needs IDAPython 3.10 or
+later) is a thin wrapper over `sigtool-native`: copy the file into
+`%IDAUSR%/plugins` with the binary next to it (or put the binary on `PATH`,
+or set `SIGTOOL_NATIVE`; the copy next to the plugin wins over `PATH`). It adds **generate signature here** (report, save, merge
 more samples) and **locate signature in this IDB** to Edit > Plugins and the
 disassembly and Functions context menus. Addresses cross the boundary as RVAs,
 so rebased databases work, and a signature made in IDA is byte-identical to
