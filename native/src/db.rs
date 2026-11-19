@@ -227,8 +227,13 @@ impl<'a> DbView<'a> {
         let spec_version = std::str::from_utf8(&data[spec_offset..spec_end])
             .map_err(|_| db_error("spec version is not UTF-8"))?;
         if spec_version != SPEC_VERSION {
+            // Features mean different things across spec versions, so the
+            // DB cannot be converted, only rebuilt; the message says how.
             return Err(db_error(format!(
-                "database spec version {spec_version:?} is not {SPEC_VERSION:?}"
+                "database spec version {spec_version:?} is not {SPEC_VERSION:?}; \
+                 rebuild it with this sigtool-native: `db build --file IMAGE --functions F.json \
+                 --output DB` re-signs the functions from their image, or `db build --signature` \
+                 takes regenerated signatures"
             )));
         }
 

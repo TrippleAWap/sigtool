@@ -97,8 +97,11 @@ impl Signature {
 
     pub fn validate(&self) -> Result<(), SignatureError> {
         if self.spec_version != SPEC_VERSION {
+            // Features mean different things across spec versions, so a
+            // signature cannot be converted, only regenerated.
             return Err(SignatureError(format!(
-                "signature spec version {:?} is not {:?}",
+                "signature spec version {:?} is not {:?}; regenerate it with this \
+                 sigtool-native (`gen --file IMAGE --rva RVA`, or `merge` for a merged signature)",
                 self.spec_version, SPEC_VERSION
             )));
         }

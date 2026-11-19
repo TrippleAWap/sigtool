@@ -483,3 +483,85 @@ fn batch_scan_writes_one_sorted_line_per_file() {
     );
     assert!(truncated["error"].is_string(), "{truncated}");
 }
+
+/// A copy of `db` whose header names another spec version of the same
+/// length; the record checksum does not cover the header.
+fn stale_copy(db: &Path, output: &Path) {
+    let mut bytes = std::fs::read(db).unwrap();
+    let spec_len = u16::from_le_bytes([bytes[16], bytes[17]]) as usize;
+    let spec_at = u64::from_le_bytes(bytes[24..32].try_into().unwrap()) as usize;
+    let last = spec_at + spec_len - 1;
+    bytes[last] = if bytes[last] == b'0' { b'1' } else { b'0' };
+    std::fs::write(output, &bytes).unwrap();
+}
+
+fn assert_names_db_rebuild(what: &str, output: &Output) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{what}: {stderr}");
+    assert!(stderr.contains("spec version"), "{what}: {stderr}");
+    assert!(
+        stderr.contains("db build --file IMAGE --functions F.json"),
+        "{what}: {stderr}"
+    );
+}
+
+/// A DB or signature from another spec version is refused (exit 2, as
+/// before) with the command that rebuilds it.
+#[test]
+fn spec_mismatch_names_the_rebuild() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("spec-mismatch");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let stale_db = dir.join("stale.db");
+    stale_copy(&db, &stale_db);
+    let stale_scan = sigtool(
+        &[
+            "scan",
+            "--file",
+            image.to_str().unwrap(),
+            "--db",
+            stale_db.to_str().unwrap(),
+        ],
+        &[],
+    );
+
+    let yaml = run(&[
+        "gen",
+        "--file",
+        image.to_str().unwrap(),
+        "--rva",
+        &symbol_rva(&image, "top"),
+    ]);
+    let spec = sigtool_native::spec::SPEC_VERSION;
+    let current = format!("spec_version: '{spec}'");
+    assert!(yaml.contains(&current), "{yaml}");
+    let stale_yaml = dir.join("stale.yaml");
+    std::fs::write(
+        &stale_yaml,
+        yaml.replace(&current, &format!("spec_version: '{spec}0'")),
+    )
+    .unwrap();
+    let stale_locate = sigtool(
+        &[
+            "locate",
+            "--signature",
+            stale_yaml.to_str().unwrap(),
+            "--file",
+            image.to_str().unwrap(),
+            "--yes",
+        ],
+        &[],
+    );
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_names_db_rebuild("scan --db", &stale_scan);
+    let stderr = String::from_utf8_lossy(&stale_locate.stderr);
+    assert_eq!(stale_locate.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("spec version"), "{stderr}");
+    assert!(stderr.contains("regenerate it"), "{stderr}");
+}
