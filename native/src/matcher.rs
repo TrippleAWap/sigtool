@@ -720,6 +720,8 @@ pub fn scan_candidates<S: ByteSource + ?Sized>(
         index,
         None,
         None,
+        None,
+        None,
         budget,
         None,
     )
@@ -740,6 +742,8 @@ pub struct ScanContext {
     /// Every function name the image can give a callee, `[hint-free,
     /// hinted]`, built on first use ([`unnamed_callees_optional`]).
     callee_names: [OnceLock<HashSet<String>>; 2],
+    /// Hint-free known starts ([`hint_free_starts`]), built on first use.
+    known_starts: OnceLock<HashSet<u64>>,
 }
 
 /// How many of an image's functions carry each feature key.
@@ -751,6 +755,10 @@ pub struct Frequencies {
     pub postings: HashMap<String, Vec<u32>>,
     /// Start address of each ordinal.
     pub starts: Vec<u64>,
+    /// The ordinal recovered from each start the table was built from (an
+    /// unwind entry hint-free), which [`FeatureCache`] maps to the same
+    /// candidate the scan loop compares.
+    ordinals: HashMap<u64, u32>,
 }
 
 /// Images with fewer known functions give no usable frequency estimate.
@@ -787,9 +795,14 @@ impl Frequencies {
         let mut postings: HashMap<String, Vec<u32>> = HashMap::new();
         let mut functions = 0usize;
         let mut ordinal_starts: Vec<u64> = Vec::new();
-        for candidate in recovered.into_iter().flatten() {
+        let mut ordinals: HashMap<u64, u32> = HashMap::new();
+        for (index, candidate) in recovered.into_iter().enumerate() {
+            let Some(candidate) = candidate else {
+                continue;
+            };
             let ordinal = functions as u32;
             functions += 1;
+            ordinals.entry(starts[index]).or_insert(ordinal);
             ordinal_starts.push(candidate.start);
             for key in &candidate.keys {
                 *document_frequency.entry(key.clone()).or_insert(0) += 1;
@@ -801,7 +814,43 @@ impl Frequencies {
             document_frequency,
             postings,
             starts: ordinal_starts,
+            ordinals,
         })
+    }
+
+    /// Per ordinal, the unrounded score [`ScanKeys::accept`] computes for
+    /// that function, from the postings instead of a set lookup per
+    /// signature key and function, or `None` when `accept` takes its
+    /// zero-weight path. The sums run in the same feature order with the
+    /// same operations, so each value is bit-identical to `accept`'s `raw`.
+    fn raw_scores(&self, signature: &Signature, keys: &ScanKeys) -> Option<Vec<f64>> {
+        if keys.required_weight <= 0.0 {
+            return None;
+        }
+        let mut own = vec![0.0f64; self.functions];
+        let mut inherited = vec![0.0f64; self.functions];
+        // The feature that last credited an ordinal its own key: `accept`
+        // credits the inherited key only when the function lacks the key.
+        let mut held = vec![usize::MAX; self.functions];
+        for (index, (feature, (key, inherited_key))) in
+            signature.features.iter().zip(&keys.keys).enumerate()
+        {
+            for ordinal in self.postings.get(key).into_iter().flatten() {
+                own[*ordinal as usize] += feature.weight;
+                held[*ordinal as usize] = index;
+            }
+            for ordinal in self.postings.get(inherited_key).into_iter().flatten() {
+                if held[*ordinal as usize] != index {
+                    inherited[*ordinal as usize] += feature.weight * INHERITED_CREDIT;
+                }
+            }
+        }
+        Some(
+            own.iter()
+                .zip(&inherited)
+                .map(|(own, inherited)| ((own + inherited) / keys.required_weight).min(1.0))
+                .collect(),
+        )
     }
 
     /// How many of the image's functions carry every one of the candidate's
@@ -1060,6 +1109,14 @@ impl ScanContext {
     /// accepted match. A multi-signature scan calls this before scanning in
     /// parallel, so the table is built across all cores once rather than by
     /// whichever worker gets there first while the others wait on it.
+    /// The image's hint-free known starts ([`hint_free_starts`]), the same
+    /// for every signature: [`candidate_starts`] rebuilt the set once per
+    /// signature scanned.
+    fn known_starts<S: ByteSource + ?Sized>(&self, source: &S) -> &HashSet<u64> {
+        self.known_starts
+            .get_or_init(|| hint_free_starts(source, &self.code))
+    }
+
     pub fn prepare_frequencies<S: ByteSource + ?Sized>(&self, source: &S, hints: bool) {
         self.frequencies[usize::from(hints)]
             .get_or_init(|| Frequencies::build(source, &self.features, hints));
@@ -1202,6 +1259,7 @@ impl ScanContext {
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
             callee_names: [OnceLock::new(), OnceLock::new()],
+            known_starts: OnceLock::new(),
         }
     }
 }
@@ -1360,6 +1418,13 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
             hints,
         )
     };
+    let frequencies = if hints {
+        None
+    } else {
+        context.frequencies[usize::from(hints)]
+            .get()
+            .and_then(Option::as_ref)
+    };
     let waiver: Option<&dyn Fn(u64, f64) -> bool> = (frequency_gated(source, context, hints)
         && !signature_neighbours.is_empty())
     .then_some(&shares_neighbour);
@@ -1372,7 +1437,9 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
         hints,
         Some(&context.references),
         Some(&context.code),
+        (!hints).then(|| context.known_starts(source)),
         Some(&context.features),
+        frequencies,
         None,
         waiver,
     );
@@ -1933,6 +2000,7 @@ pub fn explain_candidates<S: ByteSource + ?Sized>(
         hints,
         Some(&context.references),
         Some(&context.code),
+        (!hints).then(|| context.known_starts(source)),
     )
 }
 
@@ -2365,19 +2433,47 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
     hints: bool,
     index: Option<&ReferenceIndex>,
     code: Option<&CodeIndex>,
+    known_starts: Option<&HashSet<u64>>,
     cache: Option<&FeatureCache>,
+    frequencies: Option<&Frequencies>,
     budget: Option<&mut RecoveryBudget>,
     shape_waiver: Option<&dyn Fn(u64, f64) -> bool>,
 ) -> Vec<Match> {
     let mut matches: Vec<Match> = Vec::new();
     let mut budget = budget;
     let keys = ScanKeys::new(signature, cross_isa(signature, source.arch()));
-    for start in candidate_starts(source, signature, hits, max_candidates, hints, index, code) {
+    // A hint-free scan compares the signature with every unwind entry, and
+    // nearly all of them hold too little of its key weight to pass
+    // `accept`'s first test. The frequency table was built from the same
+    // cached candidates, so its postings give each entry's score up front
+    // and those entries skip the per-key set lookups. Only that exact test
+    // is applied, so the matches are unchanged; a start the table does not
+    // know, or other recovery limits, take the full path.
+    let prefilter = frequencies
+        .filter(|_| !hints && limits.is_none() && cache.is_some())
+        .and_then(|table| Some((table, table.raw_scores(signature, &keys)?)));
+    for start in candidate_starts(
+        source,
+        signature,
+        hits,
+        max_candidates,
+        hints,
+        index,
+        code,
+        known_starts,
+    ) {
         if let Some(remaining) = budget.as_mut() {
             if remaining.remaining == 0 {
                 break;
             }
             remaining.remaining -= 1;
+        }
+        if let Some((table, raw)) = &prefilter {
+            if let Some(ordinal) = table.ordinals.get(&start) {
+                if raw[*ordinal as usize] < signature.match_threshold - 1e-6 {
+                    continue;
+                }
+            }
         }
         let candidate = match cache {
             Some(cache) if limits.is_none() => cache.get_or_recover(source, start, hints),
@@ -2622,8 +2718,16 @@ pub fn self_test<S: ByteSource + ?Sized>(
     }
 
     let hits = anchor_hits(source, signature);
-    let mut candidates =
-        candidate_starts(source, signature, &hits, max_candidates, true, None, None);
+    let mut candidates = candidate_starts(
+        source,
+        signature,
+        &hits,
+        max_candidates,
+        true,
+        None,
+        None,
+        None,
+    );
     if !candidates.contains(&start) && hits.iter().any(|(_, key)| key.starts_with("str:")) {
         // String anchors only rank through the reference index; build it once
         // before declaring the function unreachable.
@@ -2640,6 +2744,7 @@ pub fn self_test<S: ByteSource + ?Sized>(
             max_candidates,
             true,
             Some(&index),
+            None,
             None,
         );
         if candidates.contains(&start) {
@@ -2715,7 +2820,9 @@ pub fn self_test_in<S: ByteSource + ?Sized>(
         true,
         references,
         code,
+        None,
         Some(&context.features),
+        None,
         None,
         None,
     );
@@ -2730,6 +2837,7 @@ pub fn self_test_in<S: ByteSource + ?Sized>(
         true,
         references,
         code,
+        None,
     );
     if candidates.contains(&start) {
         let detail = if matches.is_empty() {
@@ -3051,6 +3159,9 @@ fn utf16le(text: &str) -> Vec<u8> {
 /// prologue precedes the anchor while a mid-body start is a false prologue.
 /// When an `index` is supplied, string-anchor hits become landmarks through
 /// the instructions that reference them (the M6 data-reference index).
+/// `shared_starts` is [`hint_free_starts`] of `shared_code`, when the caller
+/// keeps it.
+#[allow(clippy::too_many_arguments)]
 fn candidate_starts<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
@@ -3059,6 +3170,7 @@ fn candidate_starts<S: ByteSource + ?Sized>(
     use_hints: bool,
     index: Option<&ReferenceIndex>,
     shared_code: Option<&CodeIndex>,
+    shared_starts: Option<&HashSet<u64>>,
 ) -> Vec<u64> {
     let code_hits: Vec<u64> = unique_sorted(
         hits.iter()
@@ -3118,6 +3230,8 @@ fn candidate_starts<S: ByteSource + ?Sized>(
     landmarks.sort_unstable();
     landmarks.dedup();
 
+    // Hinted, the symbol starts plus those covering a hit; hint-free, the
+    // fixed set of [`hint_free_starts`] (nothing below adds to it).
     let mut hint_starts: HashSet<u64> = HashSet::new();
     let mut swept_starts: HashSet<u64> = HashSet::new();
     if use_hints {
@@ -3127,19 +3241,6 @@ fn candidate_starts<S: ByteSource + ?Sized>(
                 .into_iter()
                 .filter(|start| source.is_executable(*start)),
         );
-    } else if let Some(code) = &code {
-        // Without symbols, a direct call target is still an exact function
-        // entry, while a backward sweep only guesses one from an interior
-        // landmark. The reference has no such source in hint-free mode, so its
-        // string-only signatures find nothing; this is a deliberate native
-        // improvement (measured in `docs/history/PLAN-v0.5.md` section 12).
-        hint_starts.extend(code.call_targets.iter().copied());
-    }
-    // Unwind entries are exact function starts that survive stripping. The
-    // entry enclosing a landmark is the function that holds it, so it is
-    // tried before anything a backward sweep can only guess.
-    if !use_hints {
-        hint_starts.extend(source.unwind_entries().iter().map(|(start, _)| *start));
     }
     let mut enclosing: HashSet<u64> = HashSet::new();
     // Only an entry with a known end proves it encloses the address. The
@@ -3219,6 +3320,18 @@ fn candidate_starts<S: ByteSource + ?Sized>(
             }
         }
     }
+    let built_starts;
+    let hint_starts: &HashSet<u64> = match (use_hints, code) {
+        (false, Some(code)) => match shared_starts {
+            Some(shared) if shared_code.is_some() => shared,
+            _ => {
+                built_starts = hint_free_starts(source, code);
+                &built_starts
+            }
+        },
+        // Hint-free always has a code index, so this is the hinted set.
+        _ => &hint_starts,
+    };
     if hint_starts.is_empty() && swept_starts.is_empty() && enclosing.is_empty() {
         return Vec::new();
     }
@@ -3437,10 +3550,27 @@ fn swept_starts_from<S: ByteSource + ?Sized>(source: &S, address: u64) -> Vec<u6
 /// closest to a landmark; swept starts follow, earliest address first, since the
 /// prologue precedes the anchor that found them. Distant candidates of both
 /// kinds rank last, by address.
-fn rank(hint_starts: HashSet<u64>, swept_starts: HashSet<u64>, landmarks: &[u64]) -> Vec<u64> {
+/// Hint-free exact starts: every direct call target in `code` and every
+/// unwind entry.
+///
+/// Without symbols, a direct call target is still an exact function entry,
+/// while a backward sweep only guesses one from an interior landmark. The
+/// reference has no such source in hint-free mode, so its string-only
+/// signatures find nothing; this is a deliberate native improvement
+/// (measured in `docs/history/PLAN-v0.5.md` section 12). Unwind entries are
+/// exact function starts that survive stripping; the entry enclosing a
+/// landmark is the function that holds it, so it is tried before anything a
+/// backward sweep can only guess.
+fn hint_free_starts<S: ByteSource + ?Sized>(source: &S, code: &CodeIndex) -> HashSet<u64> {
+    let mut starts: HashSet<u64> = code.call_targets.iter().copied().collect();
+    starts.extend(source.unwind_entries().iter().map(|(start, _)| *start));
+    starts
+}
+
+fn rank(hint_starts: &HashSet<u64>, swept_starts: HashSet<u64>, landmarks: &[u64]) -> Vec<u64> {
     // (near, kind, sort_key, start)
     let mut ranked: Vec<(u8, u8, u64, u64)> = Vec::new();
-    for start in hint_starts {
+    for &start in hint_starts {
         let distance = distance_to_landmark(start, landmarks);
         let near = distance.is_some_and(|distance| distance <= 0x1_0000);
         ranked.push((if near { 0 } else { 1 }, 0, distance.unwrap_or(0), start));
