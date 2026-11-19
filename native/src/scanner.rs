@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::errors::SignatureError;
 use crate::matcher::{
-    region_anchor_hits, scan_candidates, Match, RecoveryBudget, ReferenceIndex,
+    hinted_floors, region_anchor_hits, scan_candidates, Match, RecoveryBudget, ReferenceIndex,
     MAX_CANDIDATE_STARTS,
 };
 use crate::sigfile::Signature;
@@ -191,7 +191,10 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                 .values()
                 .flat_map(|per_region| per_region.iter().cloned())
                 .collect();
-            state.matches = scan_candidates(
+            // The floors `scan_in` applies to hinted file scans; without them
+            // a process scan accepted shape-only lookalikes the bench's
+            // precision numbers never saw.
+            let candidates = scan_candidates(
                 self.source,
                 signature,
                 &flat,
@@ -201,6 +204,7 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                 None,
                 Some(&mut budget),
             );
+            state.matches = hinted_floors(self.source, signature, candidates);
             for matched in &state.matches {
                 state.first_seen.entry(matched.address).or_insert(self.pass);
             }
