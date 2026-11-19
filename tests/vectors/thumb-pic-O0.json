@@ -769,6 +769,6 @@
    "name": ".got.plt"
   }
  ],
- "spec_version": "6",
+ "spec_version": "7",
  "target": "armv7-linux-gnueabihf"
 }

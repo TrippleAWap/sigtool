@@ -161,7 +161,7 @@ TIMEOUT_SECONDS = 300
 # The signature spec this plugin was released with (native/src/spec.rs
 # SPEC_VERSION; a unit test keeps them equal). A CLI writing another spec
 # still runs, but its signatures and DBs will not load in a matching build.
-EXPECTED_SPEC_VERSION = "6"
+EXPECTED_SPEC_VERSION = "7"
 
 # Stubs this small (`ret`, `xor eax, eax; ret`, one AArch64 instruction) carry
 # no evidence a signature could match on; a five-byte x64 body still can,

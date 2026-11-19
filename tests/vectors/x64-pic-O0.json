@@ -734,6 +734,6 @@
    "name": ".got.plt"
   }
  ],
- "spec_version": "6",
+ "spec_version": "7",
  "target": "x86_64-linux-gnu"
 }
