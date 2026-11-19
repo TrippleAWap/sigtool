@@ -1383,6 +1383,21 @@ fn batch_row(relative: &str) -> BTreeMap<String, Value> {
 /// 3), `error` (unreadable, malformed, or a scan failure), or
 /// `budget-exhausted` (scanned, but a work budget ran out, so `truncated` is
 /// non-empty and hits may be missing; never based on wall time).
+/// SHA-256 of the file at `path`, read 64 KiB at a time.
+fn stream_sha256(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = sigtool_native::identity::Sha256::new();
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        match file.read(&mut buffer).ok()? {
+            0 => break,
+            n => hasher.update(&buffer[..n]),
+        }
+    }
+    Some(sigtool_native::identity::hex(&hasher.finish()))
+}
+
 /// Largest file a batch scan reads: the raw-blob limit, far above any image
 /// the corpus or a real module set has, so one huge file costs a line, not
 /// the machine's memory.
@@ -1429,6 +1444,11 @@ fn batch_line(
     };
     if container(head) == Container::Other {
         row.insert("size".to_string(), Value::Number(size.into()));
+        // Hashed in bounded chunks, never held whole: the hash still names
+        // the file for whoever triages the batch.
+        if let Some(digest) = stream_sha256(path) {
+            row.insert("sha256".to_string(), Value::String(digest));
+        }
         fail(
             &mut row,
             "unsupported",

@@ -1244,10 +1244,9 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
     // reads only what survives stripping, hard rule 10).
     let names = context.callee_names[usize::from(hints)].get_or_init(|| {
         let in_code = |address: u64| {
-            source
-                .regions()
-                .iter()
-                .any(|region| region.executable && region.start <= address && address < region.end())
+            source.regions().iter().any(|region| {
+                region.executable && region.start <= address && address < region.end()
+            })
         };
         source
             .modules()

@@ -65,8 +65,9 @@ file, sorted by the `/`-separated relative path: `path`, `sha256`, `size`,
 unsupported architecture), `error` (unreadable or malformed; a subdirectory
 that cannot be listed also gets an `error` line), or `budget-exhausted` (a
 scan work budget ran out, listed in `truncated`; never a timeout). Only the
-first four bytes of a file that is not an image are read, so its `sha256` is
-`null`; an image larger than 1 GiB is `unsupported` the same way. A file's
+first four bytes of a file decide whether it is an image; a file that is not
+is hashed in bounded chunks for its `sha256` and never loaded whole, and an
+image larger than 1 GiB is `unsupported` with no `sha256`. A file's
 status does not change the exit code: the run exits `0` when every file got a
 line, hits or not, and `2` when `DIR`, the signatures, or `OUT` cannot be
 used. The output is byte-identical across runs and thread counts.
