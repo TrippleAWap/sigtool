@@ -1322,7 +1322,7 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
     let mut kept: Vec<Match> = matches
         .into_iter()
         .filter(|found| found.similarity >= MIN_SIMILARITY)
-        .filter(|found| anchored_enough(&identifying, found))
+        .filter(|found| anchored_enough(identifying, found))
         .filter_map(|mut found| {
             let own_evidence = identified(&found);
             let shared: Vec<String> = if signature_neighbours.is_empty() {
@@ -1407,7 +1407,7 @@ fn hinted_floors_with<S: ByteSource + ?Sized>(
     matches
         .into_iter()
         .filter(enough_evidence)
-        .filter(|found| anchored_enough(&identifying, found))
+        .filter(|found| anchored_enough(identifying, found))
         .filter(constants_enough)
         .collect()
 }

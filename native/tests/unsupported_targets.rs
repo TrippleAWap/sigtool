@@ -10,7 +10,8 @@ mod common;
 const SOURCE: &str = "int scramble(int x) { return (x ^ 0x55) * 0x9e3779b1; }\n";
 
 fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("sigtool-unsupported-{tag}-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("sigtool-unsupported-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("small.c"), SOURCE).unwrap();
     dir
