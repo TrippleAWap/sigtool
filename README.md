@@ -94,6 +94,17 @@ signatures has finished, ending at `M/M`, so a front-end gets about a hundred
 lines however large the DB. The hits and the JSON are the same with or without
 it, and without it stderr is unchanged.
 
+`scan --json` writes `hits` (per signature, best match first, with
+`signature_id`, `name`, `address`, `end`, `module` and `rva` when the address
+is in a module, `score`, `evidence`, `matched`, `region`, `label`, and
+`first_seen`), `truncated`, and `signatures`. `matched` is the number of the
+signature's required features the match holds itself. A signature's best hit
+that is not `identified` also carries `answer_withheld`, the rule that
+withholds the answer, as `locate --explain` names it (`not-identified`, `tie`,
+`waived`, `wrapped`, `rival`, `answer-similarity`). `signatures` maps every
+scanned signature's id to its `confidence` and sample `arches`. Batch
+(`--path`) lines carry the same hit fields but no `signatures` map.
+
 `locate --explain` prints, after the match list, why the matcher accepted or
 rejected the best match, or the function at `--expect RVA`: the signature
 features it matched, holds only through a small callee (`inl:`), or missed

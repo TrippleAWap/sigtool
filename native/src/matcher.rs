@@ -1792,6 +1792,17 @@ pub fn answer_floor(first: &Match) -> f64 {
     }
 }
 
+/// Required features of `signature` that `found` holds itself (not through
+/// a small callee's `inl:` copy): the count the `min_distinct` gate reads.
+pub fn matched_required(signature: &Signature, found: &Match) -> usize {
+    let held: HashSet<&str> = found.matched.iter().map(String::as_str).collect();
+    signature
+        .features
+        .iter()
+        .filter(|feature| feature.required && held.contains(feature.key().as_str()))
+        .count()
+}
+
 /// The [`Evidence`] of `matches[index]` in a list ranked best first.
 pub fn evidence(matches: &[Match], index: usize) -> Evidence {
     if index == 0 && identified_answer(matches) {

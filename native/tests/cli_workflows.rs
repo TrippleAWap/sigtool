@@ -711,6 +711,93 @@ fn scan_progress_reports_phases_without_changing_the_result() {
     assert_eq!(rest, plain.lines().collect::<Vec<_>>(), "{reported}");
 }
 
+/// `scan --json` hits carry how many required features they hold, and each
+/// signature's best hit the rule that withholds its answer exactly when it is
+/// not `identified`; `signatures` gives every scanned signature's confidence
+/// and arches by id. `bottom` scanned alone has forty lookalikes, so its best
+/// hit, if any, is withheld.
+#[test]
+fn scan_json_explains_withheld_answers_and_lists_signatures() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("scan-withheld");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let bottom = dir.join("bottom.yaml");
+    run(&[
+        "gen",
+        "--file",
+        image.to_str().unwrap(),
+        "--rva",
+        &symbol_rva(&image, "bottom"),
+        "--output",
+        bottom.to_str().unwrap(),
+    ]);
+    let scan = |inputs: &[&str], json: &Path| {
+        let mut args = vec![
+            "scan",
+            "--file",
+            image.to_str().unwrap(),
+            "--discovery",
+            "hint-free",
+            "--json",
+            json.to_str().unwrap(),
+        ];
+        args.extend_from_slice(inputs);
+        sigtool(&args, &[]);
+        read_json(json)
+    };
+    let together = scan(&["--db", db.to_str().unwrap()], &dir.join("db.json"));
+    let alone = scan(
+        &["--signature", bottom.to_str().unwrap()],
+        &dir.join("alone.json"),
+    );
+    let list: Value = serde_json::from_str(&run(&["db", "list", db.to_str().unwrap(), "--json"]))
+        .expect("db list JSON");
+    std::fs::remove_dir_all(&dir).ok();
+
+    for document in [&together, &alone] {
+        let hits = document["hits"].as_array().expect("hits");
+        let mut seen = std::collections::HashSet::new();
+        for hit in hits {
+            assert!(hit["matched"].is_u64(), "{hit}");
+            let first = seen.insert(hit["signature_id"].as_str().unwrap().to_string());
+            let identified = hit["evidence"] == "identified";
+            assert_eq!(
+                hit.get("answer_withheld").is_some(),
+                first && !identified,
+                "{hit}"
+            );
+            assert!(
+                document["signatures"][hit["signature_id"].as_str().unwrap()].is_object(),
+                "{document}"
+            );
+        }
+    }
+    let top = together["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hit| hit["name"] == "top")
+        .expect("top found");
+    assert!(top["matched"].as_u64().unwrap() >= 1, "{top}");
+    if let Some(best) = alone["hits"].as_array().unwrap().first() {
+        assert!(best["answer_withheld"].is_string(), "{alone}");
+    }
+    let rows = list["signatures"].as_array().unwrap();
+    let signatures = together["signatures"].as_object().expect("signatures map");
+    assert_eq!(signatures.len(), rows.len(), "{together}");
+    for row in rows {
+        let entry = &signatures[row["signature_id"].as_str().unwrap()];
+        assert_eq!(entry["confidence"], row["confidence"], "{entry}");
+        assert_eq!(entry["arches"], row["arches"], "{entry}");
+    }
+    assert_eq!(alone["signatures"].as_object().unwrap().len(), 1, "{alone}");
+}
+
 /// A module group above the pair cap is left as scanned and reported, not
 /// dropped silently: under a cap of one pair joint resolution changes no
 /// match of the chain and returns the group's pairs, which a coverage turns

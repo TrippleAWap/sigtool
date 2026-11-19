@@ -240,6 +240,21 @@ pub struct ScanHit {
     pub first_seen: usize,
     /// What the match can be trusted for ([`crate::matcher::evidence`]).
     pub evidence: crate::matcher::Evidence,
+    /// Required features the match holds ([`crate::matcher::matched_required`]).
+    pub matched: usize,
+    /// On a signature's best match only: the rule that withholds the
+    /// `identified` answer ([`crate::matcher::answer_gate`]), `None` when it
+    /// is the answer or the match is not the best.
+    pub answer_withheld: Option<&'static str>,
+}
+
+/// [`ScanHit::answer_withheld`] for `matches[index]`.
+pub fn withheld(matches: &[Match], index: usize) -> Option<&'static str> {
+    if index == 0 {
+        crate::matcher::answer_gate(matches).err()
+    } else {
+        None
+    }
 }
 
 /// Cached Tier 0 hits and matches for one signature.
@@ -443,6 +458,8 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                     region: region_name(matched.address, &regions),
                     first_seen,
                     evidence: crate::matcher::evidence(&state.matches, index),
+                    matched: crate::matcher::matched_required(signature, matched),
+                    answer_withheld: withheld(&state.matches, index),
                 });
             }
         }

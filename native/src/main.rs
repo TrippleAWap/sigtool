@@ -50,12 +50,14 @@ use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
 use sigtool_native::identity::{container, identify, Container, ImageIdentity};
 use sigtool_native::matcher::{
-    evidence, explain, hinted_floors, scan, scan_in, Explanation, Match, ScanContext,
-    DEFAULT_MAX_RECOVERIES,
+    evidence, explain, hinted_floors, matched_required, scan, scan_in, Explanation, Match,
+    ScanContext, DEFAULT_MAX_RECOVERIES,
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
-use sigtool_native::scanner::{scan_all_with, scan_modules, ScanHit, ScanPhase, SignatureScanner};
+use sigtool_native::scanner::{
+    scan_all_with, scan_modules, withheld, ScanHit, ScanPhase, SignatureScanner,
+};
 use sigtool_native::sigfile::Signature;
 use sigtool_native::source::{ByteSource, Module};
 
@@ -1149,6 +1151,7 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     if let Some(path) = &args.json {
         let mut document = scan_document(source, &hits);
         document.insert("truncated".to_string(), coverage_value(&coverage));
+        document.insert("signatures".to_string(), signatures_value(&signatures)?);
         write_json(path, &document)?;
     }
     for hit in &hits {
@@ -1625,6 +1628,8 @@ fn scan_hits(
                     .unwrap_or_default(),
                 first_seen: 0,
                 evidence: evidence(&matches, index),
+                matched: matched_required(signature, matched),
+                answer_withheld: withheld(&matches, index),
             });
         }
     }
@@ -1661,6 +1666,16 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
                 "evidence".to_string(),
                 Value::String(hit.evidence.label().to_string()),
             );
+            // Why a best match is not the answer, and how much of the
+            // signature it holds, so a front-end can rank and explain hits
+            // without a `locate --explain` per signature.
+            entry.insert("matched".to_string(), Value::Number(hit.matched.into()));
+            if let Some(reason) = hit.answer_withheld {
+                entry.insert(
+                    "answer_withheld".to_string(),
+                    Value::String(reason.to_string()),
+                );
+            }
             entry.insert("region".to_string(), Value::String(hit.region.clone()));
             entry.insert(
                 "label".to_string(),
@@ -1678,6 +1693,39 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
         .collect();
     document.insert("hits".to_string(), Value::Array(entries));
     document
+}
+
+/// `scan --json`'s `signatures`: each scanned signature's confidence and
+/// sample arches by signature id, so a front-end can weigh a hit without
+/// reading the DB itself.
+fn signatures_value(signatures: &[Signature]) -> Result<Value, CliError> {
+    let mut map = serde_json::Map::new();
+    for signature in signatures {
+        let id = signature
+            .signature_id()
+            .map_err(|error| CliError::input(error.to_string()))?;
+        let arches: BTreeSet<&str> = signature
+            .provenance
+            .iter()
+            .map(|sample| sample.arch.as_str())
+            .collect();
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "arches".to_string(),
+            Value::Array(
+                arches
+                    .into_iter()
+                    .map(|arch| Value::String(arch.to_string()))
+                    .collect(),
+            ),
+        );
+        entry.insert(
+            "confidence".to_string(),
+            Value::String(signature.confidence.clone()),
+        );
+        map.insert(id, Value::Object(entry));
+    }
+    Ok(Value::Object(map))
 }
 
 // -- db ----------------------------------------------------------------------
