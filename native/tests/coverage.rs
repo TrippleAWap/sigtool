@@ -202,7 +202,10 @@ fn pe_leaf_starts(target: &str) {
             .iter()
             .filter(|start| !truth.contains(start))
             .collect();
-        assert!(stray.is_empty(), "{target} {label}: false starts {stray:x?}");
+        assert!(
+            stray.is_empty(),
+            "{target} {label}: false starts {stray:x?}"
+        );
     }
 }
 

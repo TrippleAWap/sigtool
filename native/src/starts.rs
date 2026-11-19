@@ -473,7 +473,7 @@ pub fn arm64_call_targets_checked(
     while cursor < work.len() {
         let (start, end) = work[cursor];
         cursor += 1;
-        if start % 4 != 0 || !seen.insert(start) {
+        if !start.is_multiple_of(4) || !seen.insert(start) {
             continue;
         }
         let Some(region) = region_of(start) else {
@@ -505,7 +505,7 @@ pub fn arm64_call_targets_checked(
             let next = pc + 4;
             let target_of = |delta: i64| pc.checked_add_signed(delta);
             let push = |target: u64, found: &mut Vec<u64>, work: &mut Vec<(u64, u64)>| {
-                if target % 4 == 0
+                if target.is_multiple_of(4)
                     && region_of(target).is_some()
                     && !inside_table(target)
                     && found.len() < MAX_UNWIND_ENTRIES
