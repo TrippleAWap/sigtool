@@ -401,13 +401,38 @@ impl<S: ByteSource + ?Sized> Group<'_, S> {
 /// signature the trusted mapping places uniquely gets that function as its
 /// first match, marked `joint:N` with the links the mapping preserves;
 /// everything else is left as scanned.
+///
+/// Returns the largest group it skipped as too large ([`MAX_PAIRS`]), so a
+/// caller can report that the joint pass did not run for that module.
 pub fn resolve<S: ByteSource + ?Sized>(
     source: &S,
     context: &ScanContext,
     signatures: &[Signature],
     matches: &mut [Vec<Match>],
     hints: bool,
-) {
+) -> Option<SkippedGroup> {
+    resolve_bounded(source, context, signatures, matches, hints, MAX_PAIRS)
+}
+
+/// A module group [`resolve`] left as scanned: `pairs` (signatures times the
+/// target's functions) exceeded `limit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkippedGroup {
+    pub pairs: usize,
+    pub limit: usize,
+}
+
+/// [`resolve`] with another pair cap, for tests that cannot build a target
+/// large enough to reach [`MAX_PAIRS`].
+#[doc(hidden)]
+pub fn resolve_bounded<S: ByteSource + ?Sized>(
+    source: &S,
+    context: &ScanContext,
+    signatures: &[Signature],
+    matches: &mut [Vec<Match>],
+    hints: bool,
+    max_pairs: usize,
+) -> Option<SkippedGroup> {
     let edges = set_edges(signatures);
     let mut modules: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (index, signature) in signatures.iter().enumerate() {
@@ -420,12 +445,20 @@ pub fn resolve<S: ByteSource + ?Sized>(
         .filter(|group| group.iter().any(|index| !edges[*index].is_empty()))
         .collect();
     if groups.is_empty() {
-        return;
+        return None;
     }
     let functions = universe(source, context, hints);
     let (graph, degrees) = CallGraph::build(source, context, &functions, hints);
+    let mut skipped: Option<SkippedGroup> = None;
     for group in &groups {
-        if group.len().saturating_mul(functions.len()) > MAX_PAIRS {
+        let pairs = group.len().saturating_mul(functions.len());
+        if pairs > max_pairs {
+            if skipped.is_none_or(|largest| pairs > largest.pairs) {
+                skipped = Some(SkippedGroup {
+                    pairs,
+                    limit: max_pairs,
+                });
+            }
             continue;
         }
         resolve_group(
@@ -433,6 +466,7 @@ pub fn resolve<S: ByteSource + ?Sized>(
             &degrees,
         );
     }
+    skipped
 }
 
 #[allow(clippy::too_many_arguments)]

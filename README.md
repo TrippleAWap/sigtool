@@ -35,6 +35,7 @@ sigtool-native locate --signature fn.yaml --file stripped.so --discovery hint-fr
 sigtool-native locate --signature fn.yaml --file stripped.so --explain --expect 0x4f20  # why (not) here
 sigtool-native locate --signature fn.yaml --raw text.bin --arch thumb --base 0x8000  # raw code blob
 sigtool-native scan --file image.so --db signatures.db
+sigtool-native scan --file image.so --db signatures.db --json hits.json --progress  # phases on stderr
 sigtool-native scan --pid 1234 --db signatures.db --module foo  # live process, hint-free per module
 sigtool-native scan --path firmware/ --recursive --db signatures.db --jsonl hits.jsonl  # batch
 sigtool-native db build --signature fn.yaml --output signatures.db
@@ -46,7 +47,10 @@ sigtool-native db list signatures.db --json  # name, signature id, arches, confi
 The YAML signature goes to stdout (or `--output`), the quality report to
 stderr (`--json-report` for JSON). Exit codes: `0` success, `1` locate found
 nothing, `2` usage or input error, `3` unsupported architecture or target
-(including 32-bit and WOW64 processes), `4` self-test failure.
+(including 32-bit and WOW64 processes), `4` self-test failure. `gen`,
+`merge`, and `db build` write `--output` to `NAME.tmp-PID` in the same
+directory and rename it over `NAME` once complete, so an interrupted or failed
+write leaves the previous file whole.
 
 Reports (`gen --json-report`, `merge --json-report`, `db build --report`)
 record each input image as `input` (`inputs`, one per sample, for merge): its
@@ -84,6 +88,25 @@ candidates from anchor bytes only), which finds little: see `bench
 --process-like` below. When two modules both hold an identified-looking
 match (a library linked in and also loaded as a DLL), the weaker one is the
 first's rival, so the answer is `candidate` unless one copy is clearly closer.
+
+`scan --progress` (files and `--raw` blobs) prints `phase NAME` to stderr as
+each phase starts (`context`, `frequencies`, `match`, `joint`; `frequencies`
+only for more than one signature, `joint` only hint-free) and, while
+signatures are matched, `progress N/M` each time another percent of the `M`
+signatures has finished, ending at `M/M`, so a front-end gets about a hundred
+lines however large the DB. The hits and the JSON are the same with or without
+it, and without it stderr is unchanged.
+
+`scan --json` writes `hits` (per signature, best match first, with
+`signature_id`, `name`, `address`, `end`, `module` and `rva` when the address
+is in a module, `score`, `evidence`, `matched`, `region`, `label`, and
+`first_seen`), `truncated`, and `signatures`. `matched` is the number of the
+signature's required features the match holds itself. A signature's best hit
+that is not `identified` also carries `answer_withheld`, the rule that
+withholds the answer, as `locate --explain` names it (`not-identified`, `tie`,
+`waived`, `wrapped`, `rival`, `answer-similarity`). `signatures` maps every
+scanned signature's id to its `confidence` and sample `arches`. Batch
+(`--path`) lines carry the same hit fields but no `signatures` map.
 
 `locate --explain` prints, after the match list, why the matcher accepted or
 rejected the best match, or the function at `--expect RVA`: the signature
@@ -270,10 +293,12 @@ milestones toward them.
   about 1.3 MB; held-out zstd at `-O0` reaches about 2.1 MB. Scans have
   fixed budgets: 4M indexed instructions (and 4M decoded for hint-free
   discovery), 65,536 unwind candidates, and a 128 MiB start-sweep byte
-  budget. Larger images can run out of one; when that happens the CLI prints
-  a warning on stderr and lists the budget in the `truncated` field of its
-  JSON output (`locate --json`, `scan --json`, `gen`/`merge --json-report`,
-  `db build --report`).
+  budget; hint-free joint resolution weighs at most 2^26 (signature,
+  function) pairs per module and leaves a larger module's signatures as
+  scanned alone (`joint_pairs`). Larger images can run out of one; when
+  that happens the CLI prints a warning on stderr and lists the budget in
+  the `truncated` field of its JSON output (`locate --json`, `scan --json`,
+  `gen`/`merge --json-report`, `db build --report`).
 - **Held-out false positives** were last measured at spec v4 (2026-11-16:
   strong FP 0.113) and predate the later rule changes.
 - **IDA plugin:** tested only against stubbed IDA modules

@@ -635,3 +635,331 @@ fn db_info_and_list_describe_a_db() {
     assert_names_db_rebuild("db info", &stale_info);
     assert_names_db_rebuild("db list", &stale_list);
 }
+
+/// `scan --progress` prints its phases and about one `progress N/M` line per
+/// percent of signatures matched, ending at `M/M`; without the flag stderr
+/// has none of them, and the JSON is the same either way.
+#[test]
+fn scan_progress_reports_phases_without_changing_the_result() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("scan-progress");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let scan = |json: &Path, progress: bool| {
+        let mut args = vec![
+            "scan",
+            "--file",
+            image.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--discovery",
+            "hint-free",
+            "--json",
+            json.to_str().unwrap(),
+        ];
+        if progress {
+            args.push("--progress");
+        }
+        let output = sigtool(&args, &[]);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stderr).expect("utf-8")
+    };
+    let plain_json = dir.join("plain.json");
+    let progress_json = dir.join("progress.json");
+    let plain = scan(&plain_json, false);
+    let reported = scan(&progress_json, true);
+    let plain_document = std::fs::read(&plain_json).unwrap();
+    let progress_document = std::fs::read(&progress_json).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(
+        plain_document, progress_document,
+        "--progress changed the JSON"
+    );
+    assert!(
+        !plain.contains("phase ") && !plain.contains("progress "),
+        "{plain}"
+    );
+    let phases: Vec<&str> = reported
+        .lines()
+        .filter_map(|line| line.strip_prefix("phase "))
+        .collect();
+    assert_eq!(
+        phases,
+        ["context", "frequencies", "match", "joint"],
+        "{reported}"
+    );
+    let counts: Vec<&str> = reported
+        .lines()
+        .filter_map(|line| line.strip_prefix("progress "))
+        .collect();
+    // Four signatures: each one is another percent, so each is printed, and
+    // the lines stay in order although signatures finish on several threads.
+    assert_eq!(counts, ["1/4", "2/4", "3/4", "4/4"], "{reported}");
+    let rest: Vec<&str> = reported
+        .lines()
+        .filter(|line| !line.starts_with("phase ") && !line.starts_with("progress "))
+        .collect();
+    assert_eq!(rest, plain.lines().collect::<Vec<_>>(), "{reported}");
+}
+
+/// `scan --json` hits carry how many required features they hold, and each
+/// signature's best hit the rule that withholds its answer exactly when it is
+/// not `identified`; `signatures` gives every scanned signature's confidence
+/// and arches by id. `bottom` scanned alone has forty lookalikes, so its best
+/// hit, if any, is withheld.
+#[test]
+fn scan_json_explains_withheld_answers_and_lists_signatures() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("scan-withheld");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let bottom = dir.join("bottom.yaml");
+    run(&[
+        "gen",
+        "--file",
+        image.to_str().unwrap(),
+        "--rva",
+        &symbol_rva(&image, "bottom"),
+        "--output",
+        bottom.to_str().unwrap(),
+    ]);
+    let scan = |inputs: &[&str], json: &Path| {
+        let mut args = vec![
+            "scan",
+            "--file",
+            image.to_str().unwrap(),
+            "--discovery",
+            "hint-free",
+            "--json",
+            json.to_str().unwrap(),
+        ];
+        args.extend_from_slice(inputs);
+        sigtool(&args, &[]);
+        read_json(json)
+    };
+    let together = scan(&["--db", db.to_str().unwrap()], &dir.join("db.json"));
+    let alone = scan(
+        &["--signature", bottom.to_str().unwrap()],
+        &dir.join("alone.json"),
+    );
+    let list: Value = serde_json::from_str(&run(&["db", "list", db.to_str().unwrap(), "--json"]))
+        .expect("db list JSON");
+    std::fs::remove_dir_all(&dir).ok();
+
+    for document in [&together, &alone] {
+        let hits = document["hits"].as_array().expect("hits");
+        let mut seen = std::collections::HashSet::new();
+        for hit in hits {
+            assert!(hit["matched"].is_u64(), "{hit}");
+            let first = seen.insert(hit["signature_id"].as_str().unwrap().to_string());
+            let identified = hit["evidence"] == "identified";
+            assert_eq!(
+                hit.get("answer_withheld").is_some(),
+                first && !identified,
+                "{hit}"
+            );
+            assert!(
+                document["signatures"][hit["signature_id"].as_str().unwrap()].is_object(),
+                "{document}"
+            );
+        }
+    }
+    let top = together["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hit| hit["name"] == "top")
+        .expect("top found");
+    assert!(top["matched"].as_u64().unwrap() >= 1, "{top}");
+    if let Some(best) = alone["hits"].as_array().unwrap().first() {
+        assert!(best["answer_withheld"].is_string(), "{alone}");
+    }
+    let rows = list["signatures"].as_array().unwrap();
+    let signatures = together["signatures"].as_object().expect("signatures map");
+    assert_eq!(signatures.len(), rows.len(), "{together}");
+    for row in rows {
+        let entry = &signatures[row["signature_id"].as_str().unwrap()];
+        assert_eq!(entry["confidence"], row["confidence"], "{entry}");
+        assert_eq!(entry["arches"], row["arches"], "{entry}");
+    }
+    assert_eq!(alone["signatures"].as_object().unwrap().len(), 1, "{alone}");
+}
+
+/// A module group above the pair cap is left as scanned and reported, not
+/// dropped silently: under a cap of one pair joint resolution changes no
+/// match of the chain and returns the group's pairs, which a coverage turns
+/// into a `joint_pairs` entry; under the real cap it runs and reports
+/// nothing.
+#[test]
+fn joint_resolution_reports_a_group_past_the_pair_cap() {
+    use sigtool_native::coverage::{Budget, Coverage};
+    use sigtool_native::db::MappedDb;
+    use sigtool_native::elf::FileSource;
+    use sigtool_native::joint::{resolve_bounded, universe, SkippedGroup, MAX_PAIRS};
+    use sigtool_native::matcher::{scan_in, ScanContext};
+    use sigtool_native::scanner::scan_all_with;
+
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("joint-cap");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let mapped = MappedDb::open(&db).expect("open DB");
+    let view = mapped.view().expect("DB view");
+    let signatures: Vec<_> = (0..view.len())
+        .map(|index| view.signature(index).expect("signature"))
+        .collect();
+    let source = FileSource::from_path(&image).expect("load image");
+    std::fs::remove_dir_all(&dir).ok();
+    let context = ScanContext::build(&source);
+
+    let scanned: Vec<_> = signatures
+        .iter()
+        .map(|signature| scan_in(&source, signature, &context, false))
+        .collect();
+    let pairs = signatures.len() * universe(&source, &context, false).len();
+    let mut capped = scanned.clone();
+    let skipped = resolve_bounded(&source, &context, &signatures, &mut capped, false, 1);
+    assert_eq!(skipped, Some(SkippedGroup { pairs, limit: 1 }));
+    assert_eq!(
+        capped, scanned,
+        "a skipped group must keep its scanned matches"
+    );
+    let mut coverage = Coverage::new();
+    coverage.add_joint(skipped);
+    let entry = &coverage.exhausted()[0];
+    assert_eq!(entry.budget, Budget::JointPairs);
+    assert_eq!(entry.budget.key(), "joint_pairs");
+    assert_eq!((entry.limit, entry.count), (1, Some(pairs)));
+    assert!(entry.warning().contains("joint resolution skipped"));
+
+    let mut resolved = scanned.clone();
+    let skipped = resolve_bounded(
+        &source,
+        &context,
+        &signatures,
+        &mut resolved,
+        false,
+        MAX_PAIRS,
+    );
+    assert_eq!(skipped, None);
+    assert_ne!(
+        resolved, scanned,
+        "joint resolution placed nothing in the chain"
+    );
+    let mut coverage = Coverage::new();
+    scan_all_with(
+        &source,
+        &context,
+        &signatures,
+        false,
+        None,
+        Some(&mut coverage),
+    );
+    assert!(
+        coverage
+            .exhausted()
+            .iter()
+            .all(|entry| entry.budget != Budget::JointPairs),
+        "{coverage:?}"
+    );
+}
+
+/// `gen`, `merge`, and `db build --output` replace an existing file with the
+/// complete output and leave no temporary file next to it; a write that
+/// fails (the target is a directory) leaves none either.
+#[test]
+fn outputs_replace_the_old_file_whole() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("atomic-output");
+    let x64 = build_shared(&dir, "x86_64-linux-gnu", "libx64");
+    let arm64 = build_shared(&dir, "aarch64-linux-gnu", "libarm64");
+    let x64_rva = symbol_rva(&x64, "top");
+    let arm_rva = symbol_rva(&arm64, "top");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let (gen_yaml, merge_yaml, db) = (
+        out.join("gen.yaml"),
+        out.join("merge.yaml"),
+        out.join("s.db"),
+    );
+    for path in [&gen_yaml, &merge_yaml, &db] {
+        std::fs::write(path, b"stale").unwrap();
+    }
+    let gen_stdout = run(&["gen", "--file", x64.to_str().unwrap(), "--rva", &x64_rva]);
+    run(&[
+        "gen",
+        "--file",
+        x64.to_str().unwrap(),
+        "--rva",
+        &x64_rva,
+        "--output",
+        gen_yaml.to_str().unwrap(),
+    ]);
+    let x64_sample = format!("{}:+{x64_rva}", x64.to_str().unwrap());
+    let arm_sample = format!("{}:+{arm_rva}", arm64.to_str().unwrap());
+    let merge_stdout = run(&["merge", "--sample", &x64_sample, "--sample", &arm_sample]);
+    run(&[
+        "merge",
+        "--sample",
+        &x64_sample,
+        "--sample",
+        &arm_sample,
+        "--output",
+        merge_yaml.to_str().unwrap(),
+    ]);
+    let functions = function_list(&dir, &x64);
+    build_db(&x64, &functions, &db, None);
+    let rebuilt = dir.join("rebuilt.db");
+    build_db(&x64, &functions, &rebuilt, None);
+    let refused = sigtool(
+        &[
+            "db",
+            "build",
+            "--file",
+            x64.to_str().unwrap(),
+            "--functions",
+            functions.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ],
+        &[],
+    );
+    let gen_text = std::fs::read_to_string(&gen_yaml).unwrap();
+    let merge_text = std::fs::read_to_string(&merge_yaml).unwrap();
+    let same_db = std::fs::read(&db).unwrap() == std::fs::read(&rebuilt).unwrap();
+    let mut left: Vec<String> = std::fs::read_dir(&out)
+        .unwrap()
+        .chain(std::fs::read_dir(&dir).unwrap())
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(gen_text, gen_stdout, "gen --output");
+    assert_eq!(merge_text, merge_stdout, "merge --output");
+    assert!(same_db, "db build --output over a stale file");
+    assert_eq!(refused.status.code(), Some(2), "a directory as --output");
+    assert!(
+        left.iter().all(|name| !name.contains(".tmp-")),
+        "temporary files left behind: {left:?}"
+    );
+}

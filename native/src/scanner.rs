@@ -20,7 +20,7 @@
 //! persisted.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::coverage::Coverage;
 use crate::errors::SignatureError;
@@ -42,16 +42,85 @@ pub fn scan_all<S: ByteSource + ?Sized>(
     signatures: &[Signature],
     hints: bool,
 ) -> Vec<Vec<Match>> {
+    scan_all_with(source, context, signatures, hints, None, None)
+}
+
+/// One phase of a whole-image scan, as a progress hook sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanPhase {
+    /// Building the image's [`ScanContext`]; the caller builds it, so only
+    /// the caller reports it.
+    Context,
+    /// Feature frequencies shared by every signature.
+    Frequencies,
+    /// Matching each signature on its own.
+    Match,
+    /// Joint resolution of each module's signatures (hint-free only).
+    Joint,
+}
+
+impl ScanPhase {
+    /// Stable name for front-ends (`scan --progress` prints `phase NAME`).
+    pub fn name(self) -> &'static str {
+        match self {
+            ScanPhase::Context => "context",
+            ScanPhase::Frequencies => "frequencies",
+            ScanPhase::Match => "match",
+            ScanPhase::Joint => "joint",
+        }
+    }
+}
+
+/// Progress hook: `(phase, done, total)`, with `total` the signature count.
+/// A call with `done == 0` marks the start of `phase`; during
+/// [`ScanPhase::Match`] it is called again after each signature finishes,
+/// from whichever worker thread finished it, with `done` counting up by one
+/// (calls never overlap).
+pub type ScanProgress<'a> = &'a (dyn Fn(ScanPhase, usize, usize) + Sync);
+
+/// [`scan_all`] with an optional progress hook, and a [`Coverage`] that
+/// records a module group joint resolution skipped as too large. Neither
+/// changes the matches. The library never prints; a front-end decides what
+/// to show (`scan --progress`).
+pub fn scan_all_with<S: ByteSource + ?Sized>(
+    source: &S,
+    context: &ScanContext,
+    signatures: &[Signature],
+    hints: bool,
+    progress: Option<ScanProgress<'_>>,
+    coverage: Option<&mut Coverage>,
+) -> Vec<Vec<Match>> {
+    let total = signatures.len();
+    let report = |phase: ScanPhase, done: usize| {
+        if let Some(hook) = progress {
+            hook(phase, done, total);
+        }
+    };
     // Signatures share only the context's caches, so they scan in parallel;
     // results keep signature order.
     if signatures.len() > 1 {
+        report(ScanPhase::Frequencies, 0);
         context.prepare_frequencies(source, hints);
     }
+    report(ScanPhase::Match, 0);
+    // Counted and reported under one lock, so the hook sees 1, 2, ... M in
+    // order whichever worker finishes a signature.
+    let finished = Mutex::new(0usize);
     let mut all: Vec<Vec<Match>> = crate::parallel::map(signatures.len(), |index| {
-        scan_in(source, &signatures[index], context, hints)
+        let matches = scan_in(source, &signatures[index], context, hints);
+        if progress.is_some() {
+            let mut done = finished.lock().unwrap_or_else(|error| error.into_inner());
+            *done += 1;
+            report(ScanPhase::Match, *done);
+        }
+        matches
     });
     if !hints {
-        crate::joint::resolve(source, context, signatures, &mut all, false);
+        report(ScanPhase::Joint, 0);
+        let skipped = crate::joint::resolve(source, context, signatures, &mut all, false);
+        if let Some(coverage) = coverage {
+            coverage.add_joint(skipped);
+        }
     }
     all
 }
@@ -67,7 +136,7 @@ pub fn scan_all<S: ByteSource + ?Sized>(
 /// `source.modules()`, keeps each module's context for a caller that scans
 /// the same source again (the bench); without it each module's context is
 /// dropped before the next is built, so a process holds one at a time.
-/// Every module's budgets go to `coverage`.
+/// Every module's budgets go to `coverage`, joint resolution's among them.
 pub fn scan_modules<S: ByteSource + ?Sized>(
     source: &S,
     signatures: &[Signature],
@@ -96,7 +165,14 @@ pub fn scan_modules<S: ByteSource + ?Sized>(
         };
         coverage.add_context(context);
         coverage.add_source(&view, false);
-        per_module.push(scan_all(&view, context, signatures, false));
+        per_module.push(scan_all_with(
+            &view,
+            context,
+            signatures,
+            false,
+            None,
+            Some(&mut *coverage),
+        ));
     }
     let mut lists: Vec<Vec<Vec<Match>>> = signatures.iter().map(|_| Vec::new()).collect();
     for module in per_module {
@@ -164,6 +240,21 @@ pub struct ScanHit {
     pub first_seen: usize,
     /// What the match can be trusted for ([`crate::matcher::evidence`]).
     pub evidence: crate::matcher::Evidence,
+    /// Required features the match holds ([`crate::matcher::matched_required`]).
+    pub matched: usize,
+    /// On a signature's best match only: the rule that withholds the
+    /// `identified` answer ([`crate::matcher::answer_gate`]), `None` when it
+    /// is the answer or the match is not the best.
+    pub answer_withheld: Option<&'static str>,
+}
+
+/// [`ScanHit::answer_withheld`] for `matches[index]`.
+pub fn withheld(matches: &[Match], index: usize) -> Option<&'static str> {
+    if index == 0 {
+        crate::matcher::answer_gate(matches).err()
+    } else {
+        None
+    }
 }
 
 /// Cached Tier 0 hits and matches for one signature.
@@ -367,6 +458,8 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                     region: region_name(matched.address, &regions),
                     first_seen,
                     evidence: crate::matcher::evidence(&state.matches, index),
+                    matched: crate::matcher::matched_required(signature, matched),
+                    answer_withheld: withheld(&state.matches, index),
                 });
             }
         }

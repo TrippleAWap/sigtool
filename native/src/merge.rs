@@ -19,7 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::errors::MergeError;
 use crate::features::Feature;
 use crate::generate::{generate_in, GenerationResult};
-use crate::matcher::{self_test, ScanContext, MAX_CANDIDATE_STARTS, MAX_NEIGHBOUR_KEYS};
+use crate::matcher::{
+    self_test, self_test_in, ScanContext, MAX_CANDIDATE_STARTS, MAX_NEIGHBOUR_KEYS,
+};
 use crate::recover::RecoveryLimits;
 use crate::score::{
     choose_thresholds, confidence_for, score_features, select_anchors, signature_feature,
@@ -51,7 +53,8 @@ pub fn merge(
 
 /// [`merge`] with each sample's image [`ScanContext`] (by position; missing
 /// entries mean none). The contexts supply the call graph, so the merged
-/// signature carries the union of the samples' neighbour keys.
+/// signature carries the union of the samples' neighbour keys, and the
+/// indexes the merged signature's self-test runs on, as `gen`'s does.
 pub fn merge_in(
     samples: &[MergeSample<'_>],
     contexts: &[Option<&ScanContext>],
@@ -183,14 +186,27 @@ pub fn merge_in(
         .map_err(|error| MergeError(error.to_string()))?;
 
     let mut matched = None;
-    for (sample, result) in samples.iter().zip(results.iter()) {
-        match self_test(
-            &signature,
-            sample.source,
-            result.matched.address,
-            limits,
-            MAX_CANDIDATE_STARTS,
-        ) {
+    for (index, (sample, result)) in samples.iter().zip(results.iter()).enumerate() {
+        // A sample's context already holds its image's indexes; without one
+        // `self_test` rebuilds them, most of a merge's time on a large image.
+        let tested = match contexts.get(index).copied().flatten() {
+            Some(context) => self_test_in(
+                &signature,
+                sample.source,
+                result.matched.address,
+                limits,
+                MAX_CANDIDATE_STARTS,
+                context,
+            ),
+            None => self_test(
+                &signature,
+                sample.source,
+                result.matched.address,
+                limits,
+                MAX_CANDIDATE_STARTS,
+            ),
+        };
+        match tested {
             Ok(found) => matched = Some(found),
             Err(error) => {
                 return Err(MergeError(format!(
