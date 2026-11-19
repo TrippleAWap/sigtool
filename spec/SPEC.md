@@ -491,7 +491,10 @@ generation and never decodes with its own tables.
   a signature left with no required feature). It stays an identifying key for
   the anchoring floor, so a
   match holding none of the signature's other identifying keys still needs
-  `MIN_UNANCHORED_SIMILARITY`. A target that names some functions but not
+  `MIN_UNANCHORED_SIMILARITY`. A signature whose only identifying required
+  features are such callees keeps them, and so abstains in such a target:
+  shape alone matches lookalikes in every unrelated executable. A target
+  that names some functions but not
   this one keeps the requirement: there, the missing name is evidence the
   function is absent.
 * **Shape corroboration.** A signature is low-information when none of its

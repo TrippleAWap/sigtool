@@ -2,7 +2,9 @@
 //! linking the same code (SPEC.md §8, "Targets that name no function"). The
 //! shared object calls its exported helpers by name, so their names are the
 //! signature's identifying evidence; the executable exports nothing, so
-//! there the same calls have no name and must not be demanded.
+//! there the same calls have no name and must not be demanded. The
+//! multiplier keeps one identifying key the executable can show; without
+//! one the signature abstains there by design.
 
 use std::path::Path;
 use std::process::Command;
@@ -13,7 +15,7 @@ const SOURCE: &str = r#"
 __attribute__((noinline)) int helper_a(int x) { return x * 3 + 1; }
 __attribute__((noinline)) int helper_b(int x) { return x ^ (x >> 3); }
 int combine(int x, int y) {
-    int t = helper_a(x) + helper_b(y);
+    int t = helper_a(x) + helper_b(y * 0x9e3779b1);
     if (t > 10)
         t = helper_a(t);
     return t - helper_b(x);

@@ -1204,6 +1204,14 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
     // reach the threshold.
     let mut adapted = signature.clone();
     adapted.features.retain(|feature| !unnamed(feature));
+    // A signature whose only identifying evidence was those names would be
+    // left with shape alone, and lookalikes in every unrelated executable
+    // match it: on the `--world` tier, dropping them there too raised the
+    // hint-free any-verdict false-positive rate 0.105 -> 0.167 for 103 more
+    // top-1 hits. Such a signature abstains instead.
+    if identifying_required(&adapted).is_empty() {
+        return None;
+    }
     Some(adapted)
 }
 
