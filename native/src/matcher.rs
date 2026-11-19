@@ -2707,8 +2707,16 @@ pub fn self_test<S: ByteSource + ?Sized>(
     }
 
     let hits = anchor_hits(source, signature);
-    let mut candidates =
-        candidate_starts(source, signature, &hits, max_candidates, true, None, None, None);
+    let mut candidates = candidate_starts(
+        source,
+        signature,
+        &hits,
+        max_candidates,
+        true,
+        None,
+        None,
+        None,
+    );
     if !candidates.contains(&start) && hits.iter().any(|(_, key)| key.starts_with("str:")) {
         // String anchors only rank through the reference index; build it once
         // before declaring the function unreachable.
