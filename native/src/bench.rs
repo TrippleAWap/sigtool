@@ -39,6 +39,14 @@ fn level(opt: &str) -> &str {
     opt.rsplit_once('-').map_or(opt, |(_, level)| level)
 }
 
+/// The compiler of a build, recorded as the signature's provenance `tool`:
+/// `gcc-O2` -> `gcc`. A bare level is the toy corpus, which
+/// `corpus/build.py` builds with clang only.
+fn compiler(opt: &str) -> &str {
+    opt.split_once('-')
+        .map_or("clang", |(compiler, _)| compiler)
+}
+
 /// Same optimization level, built by a different compiler.
 fn other_compiler(cell: &RecallCell) -> bool {
     cell.source_opt != cell.target_opt && level(&cell.source_opt) == level(&cell.target_opt)
@@ -608,7 +616,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             *start,
             None,
             Some(&target.opt),
-            Some("clang"),
+            Some(compiler(&target.opt)),
             None,
             None,
             Some(context),
@@ -661,13 +669,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 source: &targets[*a].source,
                 addr: *a_start,
                 opt: Some(opt),
-                tool: Some("clang"),
+                tool: Some(compiler(opt)),
             },
             MergeSample {
                 source: &targets[*b].source,
                 addr: *b_start,
                 opt: Some(opt),
-                tool: Some("clang"),
+                tool: Some(compiler(opt)),
             },
         ];
         let contexts: Vec<Option<&ScanContext>> = [*a, *b]
@@ -1050,7 +1058,7 @@ fn measure_joint(
                 *start,
                 Some(name),
                 Some(&source.opt),
-                Some("clang"),
+                Some(compiler(&source.opt)),
                 None,
                 None,
                 Some(context),
@@ -2044,6 +2052,13 @@ mod tests {
         assert_ne!(seeded, unseeded);
         assert_eq!(seeded, limit_functions(functions.clone(), 8, Some(7)));
         assert_ne!(seeded, limit_functions(functions, 8, Some(8)));
+    }
+
+    #[test]
+    fn compiler_comes_from_the_build_directory() {
+        assert_eq!(compiler("gcc-O2"), "gcc");
+        assert_eq!(compiler("clang-Os"), "clang");
+        assert_eq!(compiler("O0"), "clang");
     }
 
     #[test]
