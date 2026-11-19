@@ -508,6 +508,15 @@ def main() -> int:
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
+        plugin.ShowDbHandler(str(db)).run()
+        listing = idb.choosers[-1]
+        signed = int(summary.split()[1])
+        check(
+            listing.title.startswith(f"sigtool: {db.name}: {signed} signatures, spec ")
+            and len(listing.rows) == signed
+            and all(row.ea is None and row.cells[1] for row in listing.rows),
+            f"the DB's contents list its {signed} signatures ({listing.title})",
+        )
         check(
             "\nverdicts: " in summary and "\nconfidence: " in summary,
             "the sign-all summary counts verdicts and confidence: "

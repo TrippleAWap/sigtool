@@ -120,6 +120,8 @@ SIGN_ALL_LABEL = "sigtool: sign all named functions to a DB"
 APPLY_ACTION = "sigtool:apply_names"
 APPLY_LABEL = "sigtool: apply names from a DB"
 REVERT_ACTION = "sigtool:revert_names"
+SHOW_DB_ACTION = "sigtool:show_db"
+SHOW_DB_LABEL = "sigtool: show a DB's contents"
 EXPLAIN_ACTION = "sigtool:explain"
 EXPLAIN_LABEL = "sigtool: explain the locate result at the cursor"
 EXPLAIN_ROW_ACTION = "sigtool:explain_row"
@@ -849,9 +851,10 @@ def revert_plan(
 
 @dataclass(frozen=True)
 class Row:
-    """One chooser row: the address a double-click jumps to, and its cells."""
+    """One chooser row: the address a double-click jumps to (``None``: a row
+    with no address, such as a DB entry), and its cells."""
 
-    ea: int
+    ea: int | None
     cells: tuple[str, ...]
 
 
@@ -978,6 +981,37 @@ def format_explanation(explain: dict | None, signature: str, where: str) -> str:
     if explain.get("cross_isa"):
         lines.append("cross-ISA comparison (another architecture's sample)")
     return "\n".join(lines)
+
+
+def describe_db(info: dict) -> str:
+    """One line for a ``db info --json`` document."""
+    parts = [f"{info.get('signatures', '?')} signatures, spec {info.get('spec_version', '?')}"]
+    for field in ("confidence", "arches"):
+        counts = info.get(field) or {}
+        if isinstance(counts, dict) and counts:
+            listed = ", ".join(f"{key} {counts[key]}" for key in sorted(counts))
+            parts.append(f"{'arch' if field == 'arches' else field}: {listed}")
+    return "; ".join(parts)
+
+
+def db_rows(listing: dict) -> list[Row]:
+    """Chooser rows for a ``db list --json`` document, in its (sorted) order."""
+    rows = []
+    for entry in listing.get("signatures") or []:
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            Row(
+                ea=None,
+                cells=(
+                    str(entry.get("name") or ""),
+                    str(entry.get("signature_id") or ""),
+                    "+".join(str(arch) for arch in entry.get("arches") or []),
+                    str(entry.get("confidence") or ""),
+                ),
+            )
+        )
+    return rows
 
 
 # -- CLI glue -----------------------------------------------------------------
@@ -1113,6 +1147,28 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
     if returncode not in ok_codes:
         raise SigtoolError(status.error(returncode))
     return status.stderr()
+
+
+def _run_json(args: list[str]) -> dict:
+    """A quick CLI run that prints JSON on stdout (``db info``, ``db list``)."""
+    try:
+        result = subprocess.run(
+            [_native(), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SigtoolError(f"sigtool-native {' '.join(args[:2])}: {error}") from error
+    if result.returncode != 0:
+        raise SigtoolError(result.stderr.strip() or f"exit code {result.returncode}")
+    try:
+        return json.loads(result.stdout)
+    except ValueError as error:
+        raise SigtoolError(f"sigtool-native {' '.join(args[:2])}: bad JSON: {error}") from error
 
 
 def _echo_cli_lines(stderr: str, prefixes: tuple[str, ...] = ("sigtool-native:",)) -> None:
@@ -1921,11 +1977,12 @@ class ResultChooser(ida_kernwin.Choose):
         return list(self.rows[n].cells)
 
     def OnGetEA(self, n: int) -> int:
-        return self.rows[n].ea
+        ea = self.rows[n].ea
+        return ida_idaapi.BADADDR if ea is None else ea
 
     def OnSelectLine(self, n):
         index = n[0] if isinstance(n, list) else n
-        if 0 <= index < len(self.rows):
+        if 0 <= index < len(self.rows) and self.rows[index].ea is not None:
             ida_kernwin.jumpto(self.rows[index].ea)
         return (ida_kernwin.Choose.NOTHING_CHANGED,)
 
@@ -2034,6 +2091,13 @@ class ApplyNamesHandler(_Handler):
         _last_paths["db"] = db
         _remember("db", db)
         image = _input_file()
+        try:
+            ida_kernwin.msg(
+                f"sigtool: applying {db}: {describe_db(_run_json(['db', 'info', db, '--json']))}\n"
+            )
+        except SigtoolError as error:
+            # The scan reports an unreadable DB itself, with a better message.
+            ida_kernwin.msg(f"sigtool: cannot read {db}'s summary: {error}\n")
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "hits.json"
             # Exit 1 is "no accepted match", not a failure. Hint-free discovery
@@ -2214,6 +2278,30 @@ class RevertNamesHandler(_Handler):
             )
 
 
+class ShowDbHandler(_Handler):
+    """List a signatures DB's signatures: name, id, arches, confidence."""
+
+    def __init__(self, db: str | None = None) -> None:
+        super().__init__()
+        self.db = db
+
+    def run(self, ctx=None) -> None:
+        db = self.db
+        if not db or not os.path.isfile(db):
+            db = _ask_path("db", False, "*.db", "Signatures DB to show")
+        if not db:
+            return
+        _last_paths["db"] = db
+        summary = describe_db(_run_json(["db", "info", db, "--json"]))
+        rows = db_rows(_run_json(["db", "list", db, "--json"]))
+        ida_kernwin.msg(f"sigtool: {db}: {summary}\n")
+        show_results(
+            f"sigtool: {Path(db).name}: {summary}",
+            [["Name", 32], ["Signature", 32], ["Arches", 16], ["Confidence", 12]],
+            rows,
+        )
+
+
 class MenuForm(ida_kernwin.Form):
     """The action menu (IDA-Fusion style): one radio row per action, and the
     signatures DB that sign-all writes and apply-names reads."""
@@ -2241,6 +2329,7 @@ class MenuForm(ida_kernwin.Form):
             "Every function with a meaningful name",
         ),
         ("rApply", "Apply names from the DB", "Rename identified matches of the DB's signatures"),
+        ("rShowDb", "Show the DB's contents", "Every signature in the DB below"),
         (
             "rExplain",
             "Explain the locate result at the cursor",
@@ -2349,6 +2438,7 @@ class MenuHandler(_Handler):
             "rApply": lambda: ApplyNamesHandler(db),
             "rRevert": RevertNamesHandler,
             "rExplain": ExplainHandler,
+            "rShowDb": lambda: ShowDbHandler(db),
         }
         # The menu acts on the cursor, as the hotkey's context is no view.
         handlers[name]().run(None)
@@ -2362,6 +2452,7 @@ ACTIONS = (
     (SIGN_ALL_ACTION, SIGN_ALL_LABEL, SignAllHandler, ""),
     (APPLY_ACTION, APPLY_LABEL, ApplyNamesHandler, ""),
     (REVERT_ACTION, REVERT_LABEL, RevertNamesHandler, ""),
+    (SHOW_DB_ACTION, SHOW_DB_LABEL, ShowDbHandler, ""),
 )
 
 

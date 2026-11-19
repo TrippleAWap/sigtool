@@ -479,6 +479,41 @@ class ExplainTests(unittest.TestCase):
         self.assertIn("nothing to explain", plugin.format_explanation(None, "inflate", "0x10"))
 
 
+class DbContentsTests(unittest.TestCase):
+    def test_db_summary(self):
+        info = {
+            "spec_version": "7",
+            "signatures": 3,
+            "confidence": {"single-arch": 2, "low": 1},
+            "arches": {"x64": 3, "arm64": 1},
+        }
+        self.assertEqual(
+            plugin.describe_db(info),
+            "3 signatures, spec 7; confidence: low 1, single-arch 2; arch: arm64 1, x64 3",
+        )
+        self.assertEqual(
+            plugin.describe_db({"spec_version": "7", "signatures": 0}), "0 signatures, spec 7"
+        )
+
+    def test_db_rows(self):
+        listing = {
+            "signatures": [
+                {
+                    "name": "deflate",
+                    "signature_id": "ab",
+                    "arches": ["arm64", "x64"],
+                    "confidence": "multi-arch",
+                },
+                {"name": "inflate", "signature_id": "cd", "arches": [], "confidence": "low"},
+            ]
+        }
+        rows = plugin.db_rows(listing)
+        self.assertEqual([row.ea for row in rows], [None, None])
+        self.assertEqual(rows[0].cells, ("deflate", "ab", "arm64+x64", "multi-arch"))
+        self.assertEqual(rows[1].cells, ("inflate", "cd", "", "low"))
+        self.assertEqual(plugin.db_rows({}), [])
+
+
 class InputFileTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
