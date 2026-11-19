@@ -768,6 +768,23 @@ As of 2026-11-19, `real-world` branch, spec v6.
   other compiler 0.739. No held-out row is worse than tuning by more than
   0.05 (G4 met at v6); the held-out libraries are easier than SQLite and Lua
   at this sample size, so the gap is not evidence of headroom.
+- Real-world tier precision (2026-11-19, `real-world`, spec v6, diagnosis
+  only; `bench --corpus ../corpus/build-world --max-functions 4 --fp-report`,
+  which now logs whether each recall answer is `identified`): 181 of 6393
+  hint-free identified answers are wrong (0.972). 104 are `lua_next` answered
+  at `luaH_next`, 35 `LZ4_loadDict` at `LZ4_loadDict_internal`, 16
+  `sqlite3PagerSharedLock` at `walIndexReadHdr`, 4 `LZ4F_compressFrameBound`
+  at `LZ4F_compressBound_internal`: a thin wrapper signed from a build that
+  inlined its callee carries the callee's evidence, and in a build that keeps
+  the call the callee is the function holding it. 18 more are `LZ4_loadDict`
+  at libc's `stpcpy` in static images. 120 of the wrong answers match a
+  string, which `MIN_ANSWER_SIMILARITY`'s "a string needs no floor" assumed
+  never happens (it held on the shared-object corpora). Similarity does not
+  separate them: a 0.5 floor on string answers keeps 888 of 1616 correct
+  and 39 of 120 wrong. Candidate rule, not built: an identified first match
+  whose direct caller is a thin wrapper around it is a `candidate` (labels
+  only; needs the call graph in the recall log to simulate, and costs every
+  correctly found function that has such a wrapper).
 - Next: the open real-world items (RW4 distro packages and C++, RW5, RW6),
   identified precision on the real-world tier (0.972, below 0.98), and
   pointer-width-dependent constants (M10).
