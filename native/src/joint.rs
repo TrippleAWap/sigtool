@@ -224,8 +224,10 @@ fn module_of(signature: &Signature) -> &str {
 
 /// Every function of the target a signature can be assigned to: unwind
 /// entries (hint-free) or function starts (hinted), plus the direct call
-/// targets of those, each where recovery starts at that address.
-fn universe<S: ByteSource + ?Sized>(
+/// targets of those, each where recovery starts at that address. Public so
+/// the scale harness (`examples/profile_scale.rs`) can check a module's
+/// pairs against [`MAX_PAIRS`].
+pub fn universe<S: ByteSource + ?Sized>(
     source: &S,
     context: &ScanContext,
     hints: bool,
