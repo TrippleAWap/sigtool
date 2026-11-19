@@ -6,11 +6,16 @@
 
 Landed on `real-world` (details and numbers in `PLAN.md` §8): RW1; RW2 except
 the build metadata in ground truth and the real negative set; RW3's floors and
-error paths (no process bench cell yet); RW4's gcc profile tier
+error paths; RW4's gcc profile tier
 (`--world`) with spec v6's executable-callee rule and the x86 `rbp` fix it
 exposed; RW7's packed relocations and section-less ELF; RW8's batch scan,
-image identity and `db info`/`list`. Open: RW4 distro packages, C++, joint
-drift; RW5; RW6; RW7 raw blobs; RW8 `--explain` and generation warnings.
+image identity and `db info`/`list`. On `rw/trust-tools`: RW3's process-path
+bench cell (`bench --process-like`, measured, ungated: top-1 0.010 against
+0.353 file hinted, because the scanner path has no candidate list), RW7 raw
+blobs (`--raw`), RW8 `locate --explain` / `--expect`. Open: RW3 routing `scan`
+and `locate` through `scan_in` per module (now measured as the fix the process
+path needs); RW4 distro packages, C++, joint drift; RW5; RW6; RW7 the IDA
+plugin's `--raw` fallback; RW8 generation warnings.
 
 ## 1. Diagnosis
 

@@ -32,6 +32,8 @@ sigtool-native gen --pid 1234 --module kernel32 --rva 0x1000  # live Windows pro
 sigtool-native merge --sample x64/libfoo.so:0x12340 --sample arm64/libfoo.so:+0x10c80 --output fn.yaml
 sigtool-native locate --signature fn.yaml --file other/libfoo.so --json matches.json
 sigtool-native locate --signature fn.yaml --file stripped.so --discovery hint-free  # default auto
+sigtool-native locate --signature fn.yaml --file stripped.so --explain --expect 0x4f20  # why (not) here
+sigtool-native locate --signature fn.yaml --raw text.bin --arch thumb --base 0x8000  # raw code blob
 sigtool-native scan --file image.so --db signatures.db
 sigtool-native scan --path firmware/ --recursive --db signatures.db --jsonl hits.jsonl  # batch
 sigtool-native db build --signature fn.yaml --output signatures.db
@@ -65,6 +67,28 @@ scan work budget ran out, listed in `truncated`; never a timeout). A file's
 status does not change the exit code: the run exits `0` when every file got a
 line, hits or not, and `2` when `DIR`, the signatures, or `OUT` cannot be
 used. The output is byte-identical across runs and thread counts.
+
+`locate --explain` prints, after the match list, why the matcher accepted or
+rejected the best match, or the function at `--expect RVA`: the signature
+features it matched, holds only through a small callee (`inl:`), or missed
+(`!` marks required ones), the neighbour keys its callers and callees share,
+the chance estimate, and each gate in the order the scan applies it (candidate
+start, score against the threshold, `min_distinct`, shape or its neighbour
+waiver, then the hinted floors or the hint-free similarity, anchoring, chance,
+neighbour and evidence gates), with the first that failed as `decided`. For the
+first match it also says why the answer is not `identified` (tie, waived
+shape gate, rival, answer similarity floor). Under `--json` the same is an
+`explain` object. The gates are the matcher's own functions; nothing is
+re-derived. Files only (`--file`, `--raw`), not `--pid`.
+
+`--raw FILE --arch x64|arm64|arm32|thumb --base ADDR` (on `gen`, `locate`, and
+`scan`) maps a code blob with no container, such as firmware or a dump of one
+code region, as one executable region at `ADDR`. It has no symbols,
+relocations, or unwind tables, so discovery is hint-free (`--discovery hinted`
+is refused), every value inside the blob's range counts as an address
+(SPEC.md §2.2, images without a relocation table), and function starts are
+synthesized from the code. Data outside the blob (strings in `.rodata`) is not
+there to match. Blobs over 1 GiB are refused.
 
 A DB or signature written for another spec version is refused (exit `2`), and
 the error says how to rebuild: `db build --file IMAGE --functions F.json`
@@ -111,7 +135,18 @@ cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-fu
     --baseline ../tests/baseline/native-real-bench.json
 cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-functions 24 \
     --sample-seed 7                        # another function sample (milestone exits)
+cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 \
+    --process-like                         # also the live-process scan path, as discovery `process`
 ```
+
+`--process-like` scans each stripped target the way `scan --pid` scans a live
+process: no symbol starts, unwind-table bounds as hints (no synthesized
+starts), the incremental scanner. Its recall, `identified` precision, and
+false-positive rows are reported as discovery `process`; a baseline saved
+without the flag has none, so the gate does not compare them. On the real
+corpus (spec v6, `--max-functions 4`) it finds almost nothing: top-1 140 of
+14088 recall scans (0.010; file hinted 0.353, hint-free 0.358), all on x64
+targets, and of its 107 `identified` answers 36 are right (see `PLAN.md` §8).
 
 The text report prints every rate as `k/n = rate [low, high]`, with the 95%
 Wilson interval, and each false-positive cell with the number and size of the
