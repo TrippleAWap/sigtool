@@ -1175,6 +1175,11 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
     if !signature.features.iter().any(unnamed) {
         return None;
     }
+    // Only a target that names no function of its own: one that names some
+    // (a shared object) and lacks this one is evidence the function is not
+    // there. Waiving in every target that lacked the name doubled the real
+    // corpus's any-verdict false positives (arm32 0.117 -> 0.217), because
+    // unrelated libraries lack it too.
     let names = context.callee_names.get_or_init(|| {
         source
             .modules()
@@ -1190,10 +1195,13 @@ fn unnamed_callees_optional<S: ByteSource + ?Sized>(
             .map(str::to_string)
             .collect()
     });
+    if !names.is_empty() {
+        return None;
+    }
     let mut adapted = signature.clone();
     let mut changed = false;
     for feature in &mut adapted.features {
-        if unnamed(feature) && !names.contains(&feature.value) {
+        if unnamed(feature) {
             feature.required = false;
             changed = true;
         }
@@ -1210,9 +1218,13 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
+    // The keys a target cannot name stay identifying: a match that holds
+    // none of the rest still needs `MIN_UNANCHORED_SIMILARITY`, so the
+    // lighter required set does not admit lookalikes.
+    let identifying = identifying_required(signature);
     let adapted = unnamed_callees_optional(source, signature, context);
     let signature = adapted.as_ref().unwrap_or(signature);
-    let mut matches = scan_in_ranked(source, signature, context, hints);
+    let mut matches = scan_in_ranked(source, signature, &identifying, context, hints);
     // Only the first match can be an answer, so only it needs a rival.
     if let Some(first) = matches.first() {
         if identified(first) {
@@ -1230,6 +1242,7 @@ pub const MAX_RIVALS: usize = 64;
 fn scan_in_ranked<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
+    identifying: &[String],
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
@@ -1293,9 +1306,8 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
         // on constants alone needs hint-free's similarity floor (see
         // `MIN_CONSTANT_ANCHORED_SIMILARITY`). Small images are exempt for
         // the same reason as in hint-free mode.
-        return hinted_floors(source, signature, matches);
+        return hinted_floors_with(source, identifying, matches);
     }
-    let identifying = identifying_required(signature);
     let frequencies = context.frequencies[usize::from(hints)]
         .get_or_init(|| Frequencies::build(source, &context.features, hints));
     let Some(frequencies) = frequencies else {
@@ -1375,10 +1387,17 @@ pub fn hinted_floors<S: ByteSource + ?Sized>(
     signature: &Signature,
     matches: Vec<Match>,
 ) -> Vec<Match> {
+    hinted_floors_with(source, &identifying_required(signature), matches)
+}
+
+fn hinted_floors_with<S: ByteSource + ?Sized>(
+    source: &S,
+    identifying: &[String],
+    matches: Vec<Match>,
+) -> Vec<Match> {
     if known_functions(source) < MIN_FREQUENCY_FUNCTIONS {
         return matches;
     }
-    let identifying = identifying_required(signature);
     matches
         .into_iter()
         .filter(enough_evidence)
