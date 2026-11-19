@@ -691,7 +691,7 @@ impl<'a, S: ByteSource + ?Sized> Normalizer<'a, S> {
         if !is_x86_const_mnemonic(mnemonic) {
             return false;
         }
-        // Stack adjustments and frame arithmetic encode ABI, not program logic.
+        // Stack adjustments encode ABI, not program logic.
         !x86_touches_stack_pointer(operands)
     }
 
@@ -875,12 +875,21 @@ fn x86_is_hotpatch(mnemonic: &str, operands: &[Operand]) -> bool {
     }
 }
 
+/// The stack pointer alone, as the ARM decoders test `sp`. `rbp` is the
+/// frame pointer only with `-fno-omit-frame-pointer`; gcc omits it from
+/// `-O1` up and allocates `rbp` like any register, and at `-O0` the
+/// constants a function stores to its `rbp`-relative locals are program
+/// values (ARM's `mov r0, #k; str r0, [r11, #-8]` keeps them). Counting
+/// `rbp` dropped those immediates: `imul edi, ebp, 0x9e3779b1` and `cmp ebp,
+/// 0xb` gave no `const` record.
+const X86_STACK_POINTER_REGS: [&str; 3] = ["rsp", "esp", "sp"];
+
 fn x86_touches_stack_pointer(operands: &[Operand]) -> bool {
     operands.iter().any(|operand| match *operand {
-        Operand::Reg(register) => X86_STACK_REGS.contains(&register_name(register)),
+        Operand::Reg(register) => X86_STACK_POINTER_REGS.contains(&register_name(register)),
         Operand::Mem { base, index, .. } => {
-            X86_STACK_REGS.contains(&register_name(base))
-                || X86_STACK_REGS.contains(&register_name(index))
+            X86_STACK_POINTER_REGS.contains(&register_name(base))
+                || X86_STACK_POINTER_REGS.contains(&register_name(index))
         }
         _ => false,
     })
