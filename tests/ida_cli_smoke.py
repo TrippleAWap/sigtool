@@ -471,6 +471,11 @@ def main() -> int:
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
+        check(
+            any(text.endswith(" s") for text in idb.wait_texts)
+            and all(text.endswith(" s") for text in idb.wait_texts),
+            f"the wait box shows progress and the elapsed time ({idb.wait_texts[-1:]})",
+        )
 
         # The Functions view's selection, not the cursor: three named rows
         # (indices into the sorted function list) sign into one DB.
@@ -555,10 +560,6 @@ def main() -> int:
         plugin.WaitStatus = RecordingStatus
         plugin.ApplyNamesHandler(str(db)).run()
         check(not idb.answers, "apply-names takes the menu's DB without a dialog")
-        check(
-            any(text.endswith(" s") for text in idb.wait_texts),
-            "the wait box shows the elapsed time",
-        )
         if plugin._supports("scan", "--progress"):
             check(bool(progress_seen), f"apply-names saw scan progress ({progress_seen[-1:]})")
         else:

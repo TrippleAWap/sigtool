@@ -850,7 +850,8 @@ def _supports(subcommand: str, flag: str) -> bool:
                 timeout=30,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            _flag_support[key] = re.search(rf"(?<![\w-]){re.escape(flag)}\b", result.stdout) is not None
+            listed = re.search(rf"(?<![\w-]){re.escape(flag)}\b", result.stdout)
+            _flag_support[key] = listed is not None
         except (OSError, subprocess.TimeoutExpired):
             _flag_support[key] = False
     return _flag_support[key]
