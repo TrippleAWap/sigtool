@@ -935,7 +935,12 @@ impl ScanContext {
     /// Whether the function at `start` has exactly one direct caller and
     /// that caller calls nothing else: a wrapper whose body, in a build
     /// that inlined its callee, is this function's evidence.
-    pub fn sole_wrapper<S: ByteSource + ?Sized>(&self, source: &S, start: u64, hints: bool) -> bool {
+    pub fn sole_wrapper<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> bool {
         let callers = self.callers_of(source, start, hints);
         let [caller] = callers.as_slice() else {
             return false;
@@ -2161,6 +2166,7 @@ fn explain_gates<S: ByteSource + ?Sized>(
         matched: result.matched,
         rival: None,
         waived,
+        wrapped: false,
     };
     let needed = |name: &str| match name {
         "similarity" => Some(MIN_SIMILARITY),
