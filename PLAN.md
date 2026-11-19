@@ -88,7 +88,10 @@ Set as hard gates after M8 measures them; until then they are targets.
 
 - Byte-identical signatures for identical input on Linux and Windows.
 - No crash, hang, or unbounded read on random, truncated, or hostile bytes
-  (fuzzed in CI).
+  (fuzzed in CI: the `fuzz` job runs the cargo-fuzz targets in `native/fuzz`
+  (`image`, `signature`, `db`, `code`) for 60 s each on every push, and
+  `native/tests/hostile_inputs.rs` runs fixed-seed header-field, corruption,
+  and truncation cases through the same drivers in `cargo test`).
 - Every user-visible behaviour covered by a test built from real compiler
   output.
 
@@ -239,6 +242,9 @@ Before tuning further, make sure the numbers can be trusted.
 - Per-library breakdown, so one library cannot hide another's regression.
 - A scheduled CI workflow that builds the real corpus (GCC image included)
   and runs the real bench weekly against the baseline.
+- Re-run the held-out corpus after the latest rules: it was last measured at
+  v4 (2026-11-16, strong FP 0.113), before in-module constants, FP
+  reduction, the integration label rules, and the strong FP floor.
 
 *Exit:* all G1-G5 measures appear in the baseline; held-out numbers are
 recorded; the weekly job is green.
@@ -257,6 +263,10 @@ Functions the tool cannot see cannot be found.
 *Exit:* each gap has a corpus or CLI case; function-start recall ≥ 0.99 on
 every arch (G4).
 
+*Non-goals for now (not in v1.0; revisit after M14):* Mach-O input
+(`FileSource` reads ELF and PE only, though a macOS binary is released) and
+32-bit x86 (32-bit and WOW64 processes stay rejected).
+
 ### M10. Cross-build robustness
 
 The largest gap is other-compiler and cross-optimization recall (0.18-0.30).
@@ -270,6 +280,8 @@ must survive them.
 - Coarser, layout-independent shape (loop nesting, call count buckets) where
   the corpus shows the current CFG buckets differ across compilers.
 - Each feature lands alone, measured, with a vector from real compiler output.
+- A C++ library in the real corpus (templates, vtables, duplicated template
+  instantiations); every corpus library is C today.
 
 *Exit:* the G1 other-compiler and cross-opt rows reach their v1.0 targets on
 the tuning corpus and within 0.05 on the held-out corpus.
@@ -325,7 +337,7 @@ documented.
 | Inlining and LTO erase function boundaries | Inline-invariant evidence (M10); accept that fully inlined copies are not findable |
 | Call-graph gaps on one arch skew joint resolution | Coverage first (M9); per-arch cells in the joint bench |
 | Slow benches discourage measuring | Cost metrics (M8), caching, a fast slice for iteration |
-| Hostile inputs | Bounds everywhere (rule 11), fuzzing in CI |
+| Hostile inputs | Bounds everywhere (rule 11), cargo-fuzz targets run in CI (`native/fuzz`), fixed-seed hostile-input test (`native/tests/hostile_inputs.rs`) |
 | Spec churn breaks users' DBs | Versioned documents, refuse old versions, freeze at v1.0 |
 
 ## 8. Status

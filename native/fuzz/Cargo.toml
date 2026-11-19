@@ -1,0 +1,52 @@
+# cargo-fuzz targets for the sigtool-native parsers, recovery, and extractor
+# (AGENTS.md rule 8). Run from `native/` on nightly: `cargo fuzz run image`.
+# libfuzzer-sys is a dependency of this crate only, never of the library.
+
+[package]
+name = "sigtool-native-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.sigtool-native]
+path = ".."
+
+# Its own workspace, so it is never part of a parent one.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "image"
+path = "fuzz_targets/image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signature"
+path = "fuzz_targets/signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "db"
+path = "fuzz_targets/db.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "code"
+path = "fuzz_targets/code.rs"
+test = false
+doc = false
+bench = false

@@ -80,6 +80,10 @@ pub struct Evidence {
     pub prologues: Vec<u64>,
     /// Literal pools and inline tables, `[start, end)`, sorted and merged.
     pub data: Vec<(u64, u64)>,
+    /// A sweep stopped at [`MAX_START_SWEEP_BYTES`] before the last code
+    /// region, so starts in the regions it skipped are missing. Reported by
+    /// the CLI (`coverage`); no rule reads it.
+    pub sweep_truncated: bool,
 }
 
 /// Executable regions that hold compiled functions: not the PLT, whose stubs
@@ -125,6 +129,7 @@ pub fn evidence(
             };
             for region in &code {
                 if budget < region.data.len() {
+                    found.sweep_truncated = true;
                     break;
                 }
                 budget -= region.data.len();
@@ -175,6 +180,7 @@ pub fn evidence(
         let mut budget = MAX_START_SWEEP_BYTES;
         for region in &code {
             if budget < region.data.len() {
+                found.sweep_truncated = true;
                 break;
             }
             budget -= region.data.len();
@@ -309,6 +315,17 @@ const MAX_X64_WALK_BYTES: u64 = 1 << 16;
 /// outside every table extent. New targets are walked too
 /// (bounded), so a table-less image is discovered from its exports.
 pub fn x64_call_targets(regions: &[Region], table: &[UnwindEntry], roots: &[u64]) -> Vec<u64> {
+    x64_call_targets_checked(regions, table, roots).0
+}
+
+/// [`x64_call_targets`], plus whether a walk was skipped because the
+/// [`MAX_START_SWEEP_BYTES`] budget ran out (starts it would have found are
+/// missing).
+pub fn x64_call_targets_checked(
+    regions: &[Region],
+    table: &[UnwindEntry],
+    roots: &[u64],
+) -> (Vec<u64>, bool) {
     use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction};
 
     let code: Vec<&Region> = regions.iter().filter(|r| r.executable).collect();
@@ -326,6 +343,7 @@ pub fn x64_call_targets(regions: &[Region], table: &[UnwindEntry], roots: &[u64]
     let mut work: Vec<(u64, u64)> = table.to_vec();
     work.extend(roots.iter().map(|root| (*root, 0)));
     let mut budget = MAX_START_SWEEP_BYTES as u64;
+    let mut truncated = false;
     let mut cursor = 0usize;
     while cursor < work.len() {
         let (start, end) = work[cursor];
@@ -341,7 +359,11 @@ pub fn x64_call_targets(regions: &[Region], table: &[UnwindEntry], roots: &[u64]
         } else {
             region.end().min(start.saturating_add(MAX_X64_WALK_BYTES))
         };
-        if limit <= start || budget < limit - start {
+        if limit <= start {
+            continue;
+        }
+        if budget < limit - start {
+            truncated = true;
             continue;
         }
         budget -= limit - start;
@@ -407,7 +429,7 @@ pub fn x64_call_targets(regions: &[Region], table: &[UnwindEntry], roots: &[u64]
     }
     found.sort_unstable();
     found.dedup();
-    found
+    (found, truncated)
 }
 
 /// Merge `synthesized` starts into unwind `table` entries.

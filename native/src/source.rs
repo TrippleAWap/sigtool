@@ -42,7 +42,9 @@ impl Region {
     }
 
     pub fn end(&self) -> u64 {
-        self.start + self.data.len() as u64
+        // Saturating: a hostile header can place a region at the top of the
+        // address space, and the end is only ever compared against.
+        self.start.saturating_add(self.data.len() as u64)
     }
 
     pub fn contains(&self, addr: u64, length: usize) -> bool {
@@ -178,6 +180,13 @@ pub trait ByteSource: Sync {
     /// are not symbol hints, so hint-free discovery may use them.
     fn unwind_entries(&self) -> &[(u64, u64)] {
         &[]
+    }
+
+    /// Whether start synthesis (`starts`) stopped at its sweep budget, so
+    /// [`ByteSource::unwind_entries`] may miss functions it would have found.
+    /// Reported to the user only; no matcher rule reads it.
+    fn start_sweep_truncated(&self) -> bool {
+        false
     }
 
     /// The unwind entry whose function contains `addr`: the greatest start at

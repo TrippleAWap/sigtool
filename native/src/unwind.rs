@@ -90,6 +90,10 @@ fn arm_exidx(region: &Region) -> Vec<UnwindEntry> {
 // -- .eh_frame ------------------------------------------------------------------
 
 const DW_EH_PE_OMIT: u8 = 0xff;
+/// Longest CIE augmentation string read. GCC and clang emit at most a few
+/// letters (`zPLRSB`); an FDE can name any offset as its CIE, so an unbounded
+/// scan per out-of-order CIE would make one table quadratic.
+const MAX_AUGMENTATION: usize = 32;
 
 /// Bounded little-endian cursor over one region.
 struct Cursor<'a> {
@@ -151,9 +155,11 @@ impl Cursor<'_> {
             }
         }
     }
-    fn cstr(&mut self) -> Option<&[u8]> {
+    /// A NUL-terminated string of at most `max` bytes.
+    fn cstr(&mut self, max: usize) -> Option<&[u8]> {
         let rest = self.data.get(self.pos..)?;
-        let length = rest.iter().position(|byte| *byte == 0)?;
+        let window = &rest[..rest.len().min(max.saturating_add(1))];
+        let length = window.iter().position(|byte| *byte == 0)?;
         let text = &rest[..length];
         self.pos += length + 1;
         Some(text)
@@ -197,7 +203,7 @@ struct Cie {
 
 fn parse_cie(cursor: &mut Cursor<'_>, pointer_size: usize) -> Option<Cie> {
     let version = cursor.u8()?;
-    let augmentation = cursor.cstr()?.to_vec();
+    let augmentation = cursor.cstr(MAX_AUGMENTATION)?.to_vec();
     if augmentation.windows(2).any(|pair| pair == b"eh") {
         cursor.take(pointer_size)?;
     }
@@ -387,5 +393,49 @@ mod tests {
             region(".ARM.exidx", 0x5000, data, false),
         ];
         assert_eq!(elf_entries(&regions, 4), vec![(0x1000, 0)]);
+    }
+
+    /// One CIE with `augmentation` (`R` encoding pcrel sdata4) and one FDE
+    /// for `[0x1000, 0x1040)`, for a table placed at 0x3000.
+    fn eh_frame_with(augmentation: &[u8]) -> Vec<u8> {
+        let mut body = vec![0, 0, 0, 0, 1];
+        body.extend_from_slice(augmentation);
+        body.extend_from_slice(&[0, 1, 0x78, 16, 1, 0x1b]);
+        while body.len() % 4 != 0 {
+            body.push(0);
+        }
+        let mut table = (body.len() as u32).to_le_bytes().to_vec();
+        table.extend_from_slice(&body);
+        let fde_start = table.len();
+        let place = 0x3000 + fde_start as i64 + 8;
+        let mut fde = ((fde_start + 4) as u32).to_le_bytes().to_vec();
+        fde.extend_from_slice(&((0x1000 - place) as i32).to_le_bytes());
+        fde.extend_from_slice(&0x40i32.to_le_bytes());
+        fde.extend_from_slice(&[0, 0, 0, 0]);
+        table.extend_from_slice(&(fde.len() as u32).to_le_bytes());
+        table.extend_from_slice(&fde);
+        table.extend_from_slice(&[0, 0, 0, 0]);
+        table
+    }
+
+    #[test]
+    fn cie_augmentation_scan_is_bounded() {
+        let entries = |augmentation: &[u8]| {
+            let regions = vec![
+                region(".text", 0x1000, vec![0; 0x100], true),
+                region(".eh_frame", 0x3000, eh_frame_with(augmentation), false),
+            ];
+            elf_entries(&regions, 8)
+        };
+        assert_eq!(entries(&b"zR"[..]), vec![(0x1000, 0x1040)]);
+        // 'S' (signal frame) reads no augmentation data, so "zRSS..." parses
+        // at any length unless the length cap rejects it: one byte at the cap
+        // still parses, one past it does not.
+        let mut at_cap = b"zR".to_vec();
+        at_cap.resize(MAX_AUGMENTATION, b'S');
+        assert_eq!(entries(at_cap.as_slice()), vec![(0x1000, 0x1040)]);
+        let mut over_cap = at_cap.clone();
+        over_cap.push(b'S');
+        assert_eq!(entries(over_cap.as_slice()), Vec::new());
     }
 }

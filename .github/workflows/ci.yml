@@ -109,3 +109,50 @@ jobs:
       - name: Tests (includes live PID mode)
         working-directory: native
         run: cargo test --release
+
+  fuzz:
+    name: fuzz (cargo-fuzz, 60 s per target)
+    # Independent of the corpus build: seeds come from tests/hostile_inputs.rs
+    # (images built in the test, a signature, a database) and the committed
+    # golden vectors' code sections.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Seed corpora
+        working-directory: native
+        env:
+          SIGTOOL_FUZZ_SEEDS: ${{ github.workspace }}/native/fuzz/corpus
+        run: cargo test --release --test hostile_inputs write_fuzz_seeds
+
+      - name: Build fuzz targets
+        working-directory: native
+        # cargo-fuzz's default build keeps debug assertions and overflow
+        # checks on, so arithmetic overflow on hostile input is a crash.
+        run: cargo fuzz build
+
+      - name: Fuzz
+        working-directory: native
+        # Every target runs even after one fails; -timeout turns a hang on one
+        # input into a reported crash (AGENTS.md rule 8).
+        run: |
+          status=0
+          for target in image signature db code; do
+            echo "::group::fuzz $target"
+            cargo fuzz run "$target" -- -max_total_time=60 -timeout=10 || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: native/fuzz/artifacts/
+          if-no-files-found: ignore

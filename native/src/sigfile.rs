@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 
 use serde::Serialize;
-use serde_yaml::Value;
+use serde_norway::Value;
 
 use crate::errors::SignatureError;
 use crate::features::{FeatureKind, FEATURE_KINDS};
@@ -233,7 +233,7 @@ impl Signature {
                 .map(ProvenanceDocument::from)
                 .collect(),
         };
-        serde_yaml::to_string(&document).map_err(|error| SignatureError(format!("{error}")))
+        serde_norway::to_string(&document).map_err(|error| SignatureError(format!("{error}")))
     }
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, SignatureError> {
@@ -246,7 +246,7 @@ impl Signature {
     }
 
     pub fn from_yaml(text: &str) -> Result<Signature, SignatureError> {
-        let raw: Value = serde_yaml::from_str(text)
+        let raw: Value = serde_norway::from_str(text)
             .map_err(|error| SignatureError(format!("invalid signature YAML: {error}")))?;
         let document = as_mapping(&raw, "signature")?;
 
@@ -403,11 +403,14 @@ impl<'a> From<&'a SampleProvenance> for ProvenanceDocument<'a> {
     }
 }
 
-fn field<'a>(mapping: &'a serde_yaml::Mapping, key: &str) -> Option<&'a Value> {
+fn field<'a>(mapping: &'a serde_norway::Mapping, key: &str) -> Option<&'a Value> {
     mapping.get(Value::String(key.to_string()))
 }
 
-fn as_mapping<'a>(value: &'a Value, what: &str) -> Result<&'a serde_yaml::Mapping, SignatureError> {
+fn as_mapping<'a>(
+    value: &'a Value,
+    what: &str,
+) -> Result<&'a serde_norway::Mapping, SignatureError> {
     value
         .as_mapping()
         .ok_or_else(|| SignatureError(format!("{what} must be a mapping")))

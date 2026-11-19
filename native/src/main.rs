@@ -38,11 +38,14 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::Value;
 
+use sigtool_native::coverage::Coverage;
 use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
-use sigtool_native::matcher::{evidence, scan, scan_in, Match, ScanContext};
+use sigtool_native::matcher::{
+    evidence, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
+};
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
 use sigtool_native::scanner::{ScanHit, SignatureScanner};
@@ -347,7 +350,8 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         args.module.as_deref(),
     )?;
     // The image's call graph gives the signature its neighbour keys. A live
-    // process is not indexed: the code index would decode every loaded DLL.
+    // process is not indexed: the code index would decode every loaded DLL,
+    // so `gen --pid` runs no budgeted pass and always reports `[]`.
     let context = args.file.is_some().then(|| ScanContext::build(source));
     let result = generate_in(
         source,
@@ -360,6 +364,10 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         context.as_ref(),
     )
     .map_err(classify_generate_error)?;
+    let mut coverage = Coverage::new();
+    if let Some(context) = &context {
+        coverage.add_context(context);
+    }
     let arch = source.arch().as_str().to_string();
     let label = source
         .label_for_address(result.matched.address)
@@ -370,6 +378,7 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         &label,
         args.output.as_deref(),
         args.json_report.as_deref(),
+        &coverage,
     )?;
     Ok(EXIT_OK)
 }
@@ -396,6 +405,7 @@ fn write_outputs(
     label: &str,
     output: Option<&Path>,
     json_report: Option<&Path>,
+    coverage: &Coverage,
 ) -> Result<(), CliError> {
     let text = result
         .to_yaml()
@@ -414,9 +424,11 @@ fn write_outputs(
     };
 
     eprintln!("{}", report_text(result, &destination, arch, label));
+    warn_coverage(coverage);
 
     if let Some(path) = json_report {
-        let document = report_document(result, arch, label);
+        let mut document = report_document(result, arch, label);
+        document.insert("truncated".to_string(), coverage_value(coverage));
         write_json(path, &document)?;
     }
     Ok(())
@@ -570,12 +582,17 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
         .collect();
     let arch = arches.into_iter().collect::<Vec<&str>>().join("+");
     let label = format!("{} samples", samples.len());
+    let mut coverage = Coverage::new();
+    for context in &contexts {
+        coverage.add_context(context);
+    }
     write_outputs(
         &result,
         &arch,
         &label,
         args.output.as_deref(),
         args.json_report.as_deref(),
+        &coverage,
     )?;
     Ok(EXIT_OK)
 }
@@ -591,14 +608,22 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
         "sigtool-native: {} discovery",
         if hints { "hinted" } else { "hint-free" }
     );
+    // Hinted locate builds no image index, so only hint-free has budgets
+    // to report; `[]` from hinted locate means no budgeted pass ran.
+    let mut coverage = Coverage::new();
     let matches = if hints {
         scan(source, &signature, None, 256, true, None)
     } else {
-        scan_in(source, &signature, &ScanContext::build(source), false)
+        let context = ScanContext::build(source);
+        coverage.add_context(&context);
+        coverage.add_source(source, false);
+        scan_in(source, &signature, &context, false)
     };
+    warn_coverage(&coverage);
 
     if let Some(path) = &args.json {
-        let document = match_document(source, &signature, &matches);
+        let mut document = match_document(source, &signature, &matches);
+        document.insert("truncated".to_string(), coverage_value(&coverage));
         write_json(path, &document)?;
     }
 
@@ -719,16 +744,24 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             .collect::<Result<Vec<_>, _>>()?
     };
 
+    let mut coverage = Coverage::new();
     let hits = if use_hints(source, &args.discovery) {
         let mut scanner = SignatureScanner::new(source, signatures, None, None)
             .map_err(|error| CliError::input(error.to_string()))?;
-        scanner.scan_pass().hits
+        let report = scanner.scan_pass();
+        // The scanner's own reference index is not passed to its matcher,
+        // so only the recovery budget can drop its matches.
+        coverage.add_scan_report(&report, DEFAULT_MAX_RECOVERIES);
+        report.hits
     } else {
-        hint_free_hits(source, &signatures)?
+        hint_free_hits(source, &signatures, &mut coverage)?
     };
+    warn_coverage(&coverage);
 
     if let Some(path) = &args.json {
-        write_json(path, &scan_document(source, &hits))?;
+        let mut document = scan_document(source, &hits);
+        document.insert("truncated".to_string(), coverage_value(&coverage));
+        write_json(path, &document)?;
     }
     for hit in &hits {
         let where_ = source
@@ -768,8 +801,11 @@ fn use_hints(source: &dyn ByteSource, discovery: &str) -> bool {
 fn hint_free_hits(
     source: &dyn ByteSource,
     signatures: &[Signature],
+    coverage: &mut Coverage,
 ) -> Result<Vec<ScanHit>, CliError> {
     let context = ScanContext::build(source);
+    coverage.add_context(&context);
+    coverage.add_source(source, false);
     // Signatures share only the context's caches, so they scan in parallel;
     // results keep signature order.
     if signatures.len() > 1 {
@@ -959,6 +995,9 @@ fn sign_functions(
     let entries = load_function_list(functions)?;
     let source = load_file(image)?;
     let context = ScanContext::build(&source);
+    // Signing self-tests hinted, so only the context's indexes apply.
+    let mut coverage = Coverage::new();
+    coverage.add_context(&context);
     let total = entries.len();
     let done = AtomicUsize::new(0);
     // Functions share only the context's caches, so they sign in parallel;
@@ -1037,8 +1076,10 @@ fn sign_functions(
         document.insert("signed".to_string(), Value::Number(signed.len().into()));
         document.insert("failed".to_string(), Value::Number(failed.into()));
         document.insert("functions".to_string(), Value::Array(rows));
+        document.insert("truncated".to_string(), coverage_value(&coverage));
         write_json(path, &document)?;
     }
+    warn_coverage(&coverage);
     eprintln!(
         "signed {} of {total} functions ({failed} skipped)",
         signed.len()
@@ -1208,6 +1249,44 @@ fn parse_address(text: &str, option: &str) -> Result<u64, CliError> {
             "{option} expects a decimal or 0x-prefixed address, got {text:?}"
         ))
     })
+}
+
+/// One stderr line per scan budget that ran out (`coverage`).
+fn warn_coverage(coverage: &Coverage) {
+    for line in coverage.warnings() {
+        eprintln!("sigtool-native: {line}");
+    }
+}
+
+/// The `truncated` JSON field: one object per exhausted budget, in budget
+/// order, each `{"budget", "count", "limit"}` (`count` is null when the pass
+/// keeps none). An empty array means every budgeted pass the command ran
+/// completed; commands that build no image index (hinted `locate`,
+/// `gen --pid`) always write `[]`, and the per-signature candidate cap, which
+/// ranks candidates and drops the least likely by design, is never reported
+/// (`Coverage`).
+fn coverage_value(coverage: &Coverage) -> Value {
+    Value::Array(
+        coverage
+            .exhausted()
+            .iter()
+            .map(|entry| {
+                let mut object: BTreeMap<String, Value> = BTreeMap::new();
+                object.insert(
+                    "budget".to_string(),
+                    Value::String(entry.budget.key().to_string()),
+                );
+                object.insert(
+                    "count".to_string(),
+                    entry
+                        .count
+                        .map_or(Value::Null, |count| Value::Number(count.into())),
+                );
+                object.insert("limit".to_string(), Value::Number(entry.limit.into()));
+                Value::Object(object.into_iter().collect())
+            })
+            .collect(),
+    )
 }
 
 fn write_json(path: &Path, document: &BTreeMap<String, Value>) -> Result<(), CliError> {

@@ -17,6 +17,10 @@ use crate::errors::{ReadError, SourceFormatError};
 use crate::source::{read_regions, ByteSource, Module, Region};
 use crate::starts;
 
+/// Symbol tables by section index: the raw entries and their string table,
+/// borrowed from the file where the section is file-backed.
+type SymbolTables<'a> = HashMap<usize, (Cow<'a, [u8]>, Cow<'a, [u8]>)>;
+
 pub const ELF_PLACE_BASE: u64 = 0x1000_0000;
 
 const ELF_SHT_SYMTAB: u32 = 2;
@@ -38,6 +42,124 @@ const R_X86_64_RELATIVE: u64 = 8;
 const R_AARCH64_RELATIVE: u64 = 1027;
 
 const PE_SECTION_HEADER_SIZE: usize = 40;
+
+/// Zero fill (ELF `SHT_NOBITS`, PE virtual size past the raw data) one image
+/// file may materialize: a floor that covers the `.bss` of any real program,
+/// plus a multiple of the file length so large images get more. Header sizes
+/// are attacker-chosen (`u64` per ELF section, 4 GiB per PE section), so
+/// without a total a small file could ask for terabytes.
+const ZERO_FILL_FLOOR: u64 = 1 << 30;
+const ZERO_FILL_PER_FILE_BYTE: u64 = 16;
+/// File-backed region bytes, as a multiple of the file length. Real sections
+/// do not overlap in the file, so their copies sum to at most the file; the
+/// headroom tolerates odd layouts while thousands of sections that all cover
+/// the whole file cannot multiply it.
+const FILE_COPIES_PER_FILE_BYTE: u64 = 2;
+/// Bytes of ELF section, symbol, and relocation names one parse may copy. A
+/// name runs to the next NUL, so N symbols naming one long unterminated
+/// string would cost N times the table; real names sum to about their string
+/// tables (relocations repeat names, still well under the multiple).
+const ELF_NAMES_FLOOR: usize = 64 << 20;
+const ELF_NAMES_PER_FILE_BYTE: usize = 32;
+/// PE export and import names, in total (the walkers also serve live
+/// processes, so the bound cannot come from a file length).
+const MAX_PE_NAME_BYTES: usize = 128 << 20;
+/// Longest name read from a PE file. MSVC truncates decorated names at 4096
+/// characters; a longer run is not a name.
+const MAX_PE_FILE_NAME: usize = 0x1_0000;
+/// Import thunk slots visited across all descriptors; real images import a
+/// few thousand functions.
+const MAX_PE_IMPORT_SLOTS: usize = 1 << 18;
+
+/// Bytes the image parsers may still materialize into regions.
+///
+/// A capped total keeps every region byte-identical for valid images. The
+/// alternative, regions with a virtual zero tail, would change what every
+/// `Region::data` reader sees (anchor search, page hashes, start sweeps).
+///
+/// Zero fill past the cap is dropped, not refused: a program with a multi-GB
+/// static array (Fortran, HPC codes) is valid, and its code is still worth
+/// scanning. The parsers keep the module bounds from the header sizes, so
+/// only reads inside the dropped tail differ (they find no region).
+struct RegionBudget {
+    file_bytes: u64,
+    zero_bytes: u64,
+}
+
+impl RegionBudget {
+    fn new(file_len: usize) -> RegionBudget {
+        let file_len = file_len as u64;
+        RegionBudget {
+            file_bytes: file_len.saturating_mul(FILE_COPIES_PER_FILE_BYTE),
+            zero_bytes: ZERO_FILL_FLOOR
+                .saturating_add(file_len.saturating_mul(ZERO_FILL_PER_FILE_BYTE)),
+        }
+    }
+
+    /// `bytes` copied out of the file, zero-filled up to `length`, or short
+    /// of it once the zero-fill budget runs out.
+    fn padded(&mut self, bytes: &[u8], length: u64) -> Result<Vec<u8>, SourceFormatError> {
+        let copied = bytes.len() as u64;
+        if copied > self.file_bytes {
+            return Err(SourceFormatError(
+                "image sections copy more bytes than the file can back".into(),
+            ));
+        }
+        let zeros = length.saturating_sub(copied).min(self.zero_bytes);
+        let total = usize::try_from(copied + zeros)
+            .map_err(|_| SourceFormatError("section does not fit in memory".into()))?;
+        self.file_bytes -= copied;
+        self.zero_bytes -= zeros;
+        if zeros == 0 {
+            return Ok(bytes.to_vec());
+        }
+        // Zeroed allocation first, so untouched fill pages can stay lazily
+        // committed instead of being written.
+        let mut out = vec![0u8; total];
+        out[..bytes.len()].copy_from_slice(bytes);
+        Ok(out)
+    }
+}
+
+/// Bytes of names a parser may still copy out of the image.
+struct NameBudget {
+    left: usize,
+}
+
+impl NameBudget {
+    fn new(limit: usize) -> NameBudget {
+        NameBudget { left: limit }
+    }
+
+    /// Charge `length` bytes; `false` (and spent) once that would overspend.
+    fn charge(&mut self, length: usize) -> bool {
+        if length > self.left {
+            self.left = 0;
+            return false;
+        }
+        self.left -= length;
+        true
+    }
+
+    /// [`cstr`], charged; `None` once the budget is spent. The scan stops one
+    /// byte past what is left, so scanning is bounded too.
+    fn cstr(&mut self, blob: &[u8], offset: usize) -> Option<String> {
+        let rest = blob.get(offset..).unwrap_or(&[]);
+        let window = &rest[..rest.len().min(self.left.saturating_add(1))];
+        let length = window
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(window.len());
+        if !self.charge(length) {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&rest[..length]).into_owned())
+    }
+}
+
+fn elf_names_exhausted() -> SourceFormatError {
+    SourceFormatError("ELF names exceed the bytes the file can account for".into())
+}
 
 #[derive(Debug, Clone)]
 struct Section {
@@ -65,6 +187,8 @@ pub struct FileSource {
     /// Unwind-table entries merged with synthesized starts, sorted.
     unwind: Vec<(u64, u64)>,
     synthesized: Vec<u64>,
+    /// Start synthesis ran out of its sweep budget (`starts`).
+    start_sweep_truncated: bool,
 }
 
 impl FileSource {
@@ -128,13 +252,16 @@ impl FileSource {
             mode_map,
             unwind,
             synthesized: Vec::new(),
+            start_sweep_truncated: false,
         };
         let mut synthesized: Option<Vec<u64>> = None;
         if let Some(roots) = &parsed.pe_roots {
             let mut roots = roots.clone();
             // With no table, the exports are starts themselves.
             roots.sort_unstable();
-            let mut found = starts::x64_call_targets(&source.regions, &source.unwind, &roots);
+            let (mut found, truncated) =
+                starts::x64_call_targets_checked(&source.regions, &source.unwind, &roots);
+            source.start_sweep_truncated |= truncated;
             found.extend(&roots);
             synthesized = Some(found);
         }
@@ -142,6 +269,7 @@ impl FileSource {
             // Decoding needs the finished mode map, so this runs last.
             let mut found =
                 starts::evidence(arch, &source.regions, &pointers, &|a| source.is_thumb(a));
+            source.start_sweep_truncated |= found.sweep_truncated;
             if !parsed.pointer_slots.is_empty() {
                 // Starts known without relocated pointers: every other rule,
                 // the unwind table, and exported function values.
@@ -217,6 +345,10 @@ impl ByteSource for FileSource {
 
     fn unwind_entries(&self) -> &[(u64, u64)] {
         &self.unwind
+    }
+
+    fn start_sweep_truncated(&self) -> bool {
+        self.start_sweep_truncated
     }
 
     fn hint_function(&self, addr: u64) -> Option<(u64, u64)> {
@@ -323,19 +455,19 @@ struct ParsedImage {
 // -- little-endian readers ----------------------------------------------------
 
 fn u16_at(data: &[u8], offset: usize) -> Result<u16, SourceFormatError> {
-    data.get(offset..offset + 2)
+    data.get(offset..offset.saturating_add(2))
         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
         .ok_or_else(|| SourceFormatError("truncated image".into()))
 }
 
 fn u32_at(data: &[u8], offset: usize) -> Result<u32, SourceFormatError> {
-    data.get(offset..offset + 4)
+    data.get(offset..offset.saturating_add(4))
         .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .ok_or_else(|| SourceFormatError("truncated image".into()))
 }
 
 fn u64_at(data: &[u8], offset: usize) -> Result<u64, SourceFormatError> {
-    data.get(offset..offset + 8)
+    data.get(offset..offset.saturating_add(8))
         .map(|bytes| {
             u64::from_le_bytes([
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
@@ -372,6 +504,17 @@ pub(crate) fn module_stem(name: &str) -> String {
 // -- ELF ----------------------------------------------------------------------
 
 fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFormatError> {
+    parse_elf_budgeted(data, name, arch, RegionBudget::new(data.len()))
+}
+
+/// [`parse_elf`] with an explicit region budget, so tests can reach the cap
+/// without allocating a gigabyte.
+fn parse_elf_budgeted(
+    data: &[u8],
+    name: &str,
+    arch: Arch,
+    mut budget: RegionBudget,
+) -> Result<ParsedImage, SourceFormatError> {
     if data.len() < 0x34 {
         return Err(SourceFormatError("truncated ELF header".into()));
     }
@@ -418,8 +561,8 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
 
     let mut sections: Vec<Section> = Vec::with_capacity(e_shnum as usize);
     for index in 0..e_shnum as usize {
-        let offset = e_shoff as usize + index * e_shentsize as usize;
-        if offset + sh_struct_size > data.len() {
+        let offset = (e_shoff as usize).saturating_add(index * e_shentsize as usize);
+        if offset.saturating_add(sh_struct_size) > data.len() {
             return Err(SourceFormatError("truncated ELF section table".into()));
         }
         if is64 {
@@ -454,27 +597,53 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
             "invalid ELF section-name table index".into(),
         ));
     }
-    let name_table = section_bytes(data, &sections[e_shstrndx as usize])?;
+    let mut name_budget = NameBudget::new(
+        ELF_NAMES_FLOOR.saturating_add(data.len().saturating_mul(ELF_NAMES_PER_FILE_BYTE)),
+    );
+    let name_table = section_bytes(data, &sections[e_shstrndx as usize], &mut budget)?;
     let names: Vec<String> = sections
         .iter()
-        .map(|section| cstr(&name_table, section.name_off as usize))
-        .collect();
+        .map(|section| {
+            name_budget
+                .cstr(&name_table, section.name_off as usize)
+                .ok_or_else(elf_names_exhausted)
+        })
+        .collect::<Result<_, _>>()?;
 
     let mut places: HashMap<usize, u64> = HashMap::new();
     let mut regions: Vec<Region> = Vec::new();
+    // Header-claimed end of the sections, which a zero fill cut short by the
+    // region budget does not reach.
+    let mut claimed_end = 0u64;
     for (index, section) in sections.iter().enumerate() {
         if section.flags & ELF_SHF_ALLOC == 0 || section.size == 0 {
             continue;
         }
         let start = if e_type == ELF_ET_REL {
-            ELF_PLACE_BASE + section.offset
+            ELF_PLACE_BASE.saturating_add(section.offset)
         } else {
             if section.addr == 0 {
                 continue;
             }
             section.addr
         };
+        // Every later address computation (region ends, unwind cursors, start
+        // sweeps) assumes a section's span fits in the address space; checking
+        // once here keeps a hostile header from wrapping any of them.
+        if start.checked_add(section.size).is_none() {
+            return Err(SourceFormatError(
+                "ELF section extends past the end of the address space".into(),
+            ));
+        }
         places.insert(index, start);
+        claimed_end = claimed_end.max(start.saturating_add(section.size));
+        let bytes = match section_bytes(data, section, &mut budget)? {
+            Cow::Borrowed(bytes) => budget.padded(bytes, bytes.len() as u64)?,
+            Cow::Owned(zeros) => zeros,
+        };
+        if bytes.is_empty() {
+            continue; // zero fill past the budget; the bounds still cover it
+        }
         regions.push(Region::new(
             if names[index].is_empty() {
                 format!("section{index}")
@@ -482,7 +651,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                 names[index].clone()
             },
             start,
-            section_bytes(data, section)?,
+            bytes,
             section.flags & ELF_SHF_EXECINSTR != 0,
             section.flags & ELF_SHF_WRITE != 0,
         ));
@@ -495,7 +664,10 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
 
     let sym_struct_size = if is64 { 24usize } else { 16usize };
     let mut symbols: Vec<(String, u64, u8, u16, u64, bool)> = Vec::new();
-    let mut tables: HashMap<usize, (Vec<u8>, Vec<u8>)> = HashMap::new();
+    let mut tables: SymbolTables<'_> = HashMap::new();
+    // Real symbol tables are disjoint in the file; many headers that all
+    // point at one table must not multiply the work (2x headroom).
+    let mut symbol_entries_left = data.len() / 8;
     let mut symtab_functions = false;
     // Pointers to code that survive `strip --strip-all`: exported function
     // values (Thumb bit kept) and relative relocation targets. Evidence for
@@ -508,9 +680,12 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         if section.link as usize >= sections.len() {
             continue;
         }
-        let raw = section_bytes(data, section)?;
-        let strings = section_bytes(data, &sections[section.link as usize])?;
-        tables.insert(index, (raw.clone(), strings.clone()));
+        let raw = section_bytes(data, section, &mut budget)?;
+        let strings = section_bytes(data, &sections[section.link as usize], &mut budget)?;
+        tables.insert(index, (raw, strings));
+        let (raw, strings) = &tables[&index];
+        let raw: &[u8] = raw;
+        let strings: &[u8] = strings;
         let entry_size = if section.entsize != 0 {
             section.entsize as usize
         } else {
@@ -519,29 +694,38 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         if entry_size < sym_struct_size {
             continue;
         }
-        for symbol_index in 0..raw.len() / entry_size {
+        let count = raw.len() / entry_size;
+        if count > symbol_entries_left {
+            return Err(SourceFormatError(
+                "ELF symbol tables hold more entries than the file".into(),
+            ));
+        }
+        symbol_entries_left -= count;
+        for symbol_index in 0..count {
             let offset = symbol_index * entry_size;
             if offset + sym_struct_size > raw.len() {
                 break;
             }
             let (st_name, st_info, st_shndx, st_value, st_size) = if is64 {
                 (
-                    u32_at(&raw, offset)?,
+                    u32_at(raw, offset)?,
                     raw[offset + 4],
                     u16::from_le_bytes([raw[offset + 6], raw[offset + 7]]),
-                    u64_at(&raw, offset + 8)?,
-                    u64_at(&raw, offset + 16)?,
+                    u64_at(raw, offset + 8)?,
+                    u64_at(raw, offset + 16)?,
                 )
             } else {
                 (
-                    u32_at(&raw, offset)?,
+                    u32_at(raw, offset)?,
                     raw[offset + 12],
                     u16::from_le_bytes([raw[offset + 14], raw[offset + 15]]),
-                    u32_at(&raw, offset + 4)? as u64,
-                    u32_at(&raw, offset + 8)? as u64,
+                    u32_at(raw, offset + 4)? as u64,
+                    u32_at(raw, offset + 8)? as u64,
                 )
             };
-            let symbol_name = cstr(&strings, st_name as usize);
+            let symbol_name = name_budget
+                .cstr(strings, st_name as usize)
+                .ok_or_else(elf_names_exhausted)?;
             if section.kind == ELF_SHT_SYMTAB && st_info & 0xF == ELF_STT_FUNC && st_shndx != 0 {
                 symtab_functions = true;
             }
@@ -570,6 +754,9 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     // Every word the loader writes in a shared object or PIE: the only places
     // such an image can hold an absolute address (SPEC.md §2.2).
     let mut relocations: Vec<u64> = Vec::new();
+    // As for symbols: relocation tables are disjoint in a real file (2x
+    // headroom over the smallest entry).
+    let mut relocation_entries_left = data.len() / 4;
     for section in &sections {
         if section.kind != ELF_SHT_RELA && section.kind != ELF_SHT_REL {
             continue;
@@ -590,8 +777,15 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         if entry_size < rel_struct_size {
             continue;
         }
-        let raw = section_bytes(data, section)?;
-        for rel_index in 0..raw.len() / entry_size {
+        let raw = section_bytes(data, section, &mut budget)?;
+        let count = raw.len() / entry_size;
+        if count > relocation_entries_left {
+            return Err(SourceFormatError(
+                "ELF relocation tables hold more entries than the file".into(),
+            ));
+        }
+        relocation_entries_left -= count;
+        for rel_index in 0..count {
             let offset = rel_index * entry_size;
             if offset + rel_struct_size > raw.len() {
                 break;
@@ -631,8 +825,16 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                 continue;
             }
             let symbol_index = if is64 { r_info >> 32 } else { r_info >> 8 };
-            let Some(target) = symbol_name(&tables, section.link as usize, symbol_index, is64)
-            else {
+            // A spent budget only stops naming relocation targets: a large C++
+            // image repeats long mangled names once per call site, and losing
+            // some import names is better than refusing the whole image.
+            let Some(target) = symbol_name(
+                &tables,
+                section.link as usize,
+                symbol_index,
+                is64,
+                &mut name_budget,
+            ) else {
                 continue;
             };
             if target.is_empty() {
@@ -642,7 +844,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                 let Some(base) = places.get(&(section.info as usize)) else {
                     continue;
                 };
-                base + r_offset
+                base.wrapping_add(r_offset)
             } else {
                 r_offset
             };
@@ -665,7 +867,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
             continue;
         };
         let mut address = if e_type == ELF_ET_REL {
-            base + value
+            base.wrapping_add(value)
         } else {
             value
         };
@@ -680,7 +882,7 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
                 .entry(address)
                 .or_insert_with(|| symbol_name.clone());
             if size > 0 {
-                bounds.push((address, address + size));
+                bounds.push((address, address.saturating_add(size)));
                 if thumb {
                     thumb_starts.push(address);
                 }
@@ -700,7 +902,12 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
         Some(base) if e_type != ELF_ET_REL => base.min(section_start),
         _ => section_start,
     };
-    let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
+    let module_end = regions
+        .iter()
+        .map(|region| region.end())
+        .max()
+        .unwrap_or(0)
+        .max(claimed_end);
     relocations.sort_unstable();
     relocations.dedup();
     let module = Module {
@@ -766,9 +973,15 @@ fn parse_elf(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceF
     })
 }
 
-fn section_bytes(data: &[u8], section: &Section) -> Result<Vec<u8>, SourceFormatError> {
+/// A section's bytes: borrowed from the file, or for `SHT_NOBITS` zeros
+/// charged to `budget` (the size is a header field, not file data).
+fn section_bytes<'a>(
+    data: &'a [u8],
+    section: &Section,
+    budget: &mut RegionBudget,
+) -> Result<Cow<'a, [u8]>, SourceFormatError> {
     if section.kind == ELF_SHT_NOBITS {
-        return Ok(vec![0; section.size as usize]);
+        return Ok(Cow::Owned(budget.padded(&[], section.size)?));
     }
     let start = section.offset as usize;
     let end = start
@@ -777,28 +990,23 @@ fn section_bytes(data: &[u8], section: &Section) -> Result<Vec<u8>, SourceFormat
     if end > data.len() {
         return Err(SourceFormatError("ELF section exceeds file size".into()));
     }
-    Ok(data[start..end].to_vec())
+    Ok(Cow::Borrowed(&data[start..end]))
 }
 
 fn symbol_name(
-    tables: &HashMap<usize, (Vec<u8>, Vec<u8>)>,
+    tables: &SymbolTables<'_>,
     table_index: usize,
     symbol_index: u64,
     is64: bool,
+    names: &mut NameBudget,
 ) -> Option<String> {
     let (raw, strings) = tables.get(&table_index)?;
     let entry_size = if is64 { 24usize } else { 16usize };
-    let offset = (symbol_index as usize).checked_mul(entry_size)?;
-    if offset + 4 > raw.len() {
-        return None;
-    }
-    let st_name = u32::from_le_bytes([
-        raw[offset],
-        raw[offset + 1],
-        raw[offset + 2],
-        raw[offset + 3],
-    ]);
-    Some(cstr(strings, st_name as usize))
+    let bytes = (symbol_index as usize)
+        .checked_mul(entry_size)
+        .and_then(|offset| raw.get(offset..offset.checked_add(4)?))?;
+    let st_name = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    names.cstr(strings, st_name as usize)
 }
 
 // -- PE -----------------------------------------------------------------------
@@ -993,7 +1201,10 @@ impl PeImage for PeFile<'_> {
 
     fn cstr(&self, rva: u64) -> String {
         self.offset(rva)
-            .map(|offset| cstr(self.data, offset))
+            .map(|offset| {
+                let end = offset.saturating_add(MAX_PE_FILE_NAME).min(self.data.len());
+                cstr(&self.data[offset.min(end)..end], 0)
+            })
             .unwrap_or_default()
     }
 }
@@ -1021,6 +1232,7 @@ pub(crate) fn pe_metadata(
     max_pdata_bytes: usize,
 ) -> PeMetadata {
     let mut metadata = PeMetadata::default();
+    let mut names = NameBudget::new(MAX_PE_NAME_BYTES);
     if let Some((export_rva, export_size)) = headers.export {
         if export_rva != 0 && export_size != 0 {
             parse_pe_exports(
@@ -1030,6 +1242,7 @@ pub(crate) fn pe_metadata(
                 u64::from(export_size),
                 strict,
                 &mut metadata,
+                &mut names,
             );
         }
     }
@@ -1041,6 +1254,7 @@ pub(crate) fn pe_metadata(
                 u64::from(import_rva),
                 headers.thunk_size,
                 &mut metadata.imports,
+                &mut names,
             );
         }
     }
@@ -1057,23 +1271,48 @@ pub(crate) fn pe_metadata(
 }
 
 fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFormatError> {
+    parse_pe_budgeted(data, name, arch, RegionBudget::new(data.len()))
+}
+
+/// [`parse_pe`] with an explicit region budget, so tests can reach the cap
+/// without allocating a gigabyte.
+fn parse_pe_budgeted(
+    data: &[u8],
+    name: &str,
+    arch: Arch,
+    mut budget: RegionBudget,
+) -> Result<ParsedImage, SourceFormatError> {
     let headers = parse_pe_headers(data)?;
     let image_base = headers.image_base;
+    // RVAs are 32-bit, so every address in the image lies below
+    // `image_base + 4 GiB`; refusing a base that leaves no room for that keeps
+    // section, unwind, export, and import addresses from wrapping.
+    if image_base.checked_add(1 << 32).is_none() {
+        return Err(SourceFormatError(
+            "PE image base leaves no room for the image".into(),
+        ));
+    }
     let mut regions: Vec<Region> = Vec::new();
+    // Header-claimed end of the sections, which a zero fill cut short by the
+    // region budget does not reach.
+    let mut claimed_end = 0u64;
     for section in &headers.sections {
         let span = section.span();
-        let mut payload = {
-            let take = (section.raw_size.min(span)) as usize;
-            let end = section.raw_ptr.saturating_add(take).min(data.len());
-            let start = section.raw_ptr.min(data.len());
-            data[start..end].to_vec()
-        };
-        if (payload.len() as u64) < span {
-            payload.resize(span as usize, 0);
+        let take = (section.raw_size.min(span)) as usize;
+        let end = section.raw_ptr.saturating_add(take).min(data.len());
+        let start = section.raw_ptr.min(data.len());
+        let payload = budget.padded(&data[start..end], span)?;
+        claimed_end = claimed_end.max(
+            image_base
+                .wrapping_add(section.virtual_address)
+                .saturating_add(span),
+        );
+        if payload.is_empty() {
+            continue; // zero fill past the budget; the bounds still cover it
         }
         regions.push(Region::new(
             section.name.clone(),
-            image_base + section.virtual_address,
+            image_base.wrapping_add(section.virtual_address),
             payload,
             section.characteristics & 0x2000_0000 != 0,
             section.characteristics & 0x8000_0000 != 0,
@@ -1099,7 +1338,12 @@ fn parse_pe(data: &[u8], name: &str, arch: Arch) -> Result<ParsedImage, SourceFo
     // A PE RVA is relative to ImageBase, which the headers occupy.
     let section_start = regions.iter().map(|region| region.start).min().unwrap_or(0);
     let image_start = image_base.min(section_start);
-    let module_end = regions.iter().map(|region| region.end()).max().unwrap_or(0);
+    let module_end = regions
+        .iter()
+        .map(|region| region.end())
+        .max()
+        .unwrap_or(0)
+        .max(claimed_end);
     let module = Module {
         name: module_stem(name),
         base: section_start,
@@ -1149,6 +1393,7 @@ fn parse_pe_exports(
     export_size: u64,
     strict: bool,
     metadata: &mut PeMetadata,
+    names: &mut NameBudget,
 ) {
     let Some(directory) = image.bytes(export_rva, 40) else {
         return;
@@ -1195,6 +1440,9 @@ fn parse_pe_exports(
         if symbol.is_empty() {
             continue;
         }
+        if !names.charge(symbol.len()) {
+            return;
+        }
         if strict
             && (function_rva == 0
                 || (export_rva..export_rva + export_size).contains(&function_rva)
@@ -1202,7 +1450,7 @@ fn parse_pe_exports(
         {
             continue;
         }
-        let address = image_base + function_rva;
+        let address = image_base.wrapping_add(function_rva);
         if seen.insert(symbol.clone()) {
             metadata.exports.push((symbol.clone(), address));
         }
@@ -1216,6 +1464,7 @@ fn parse_pe_imports(
     import_rva: u64,
     thunk_size: usize,
     imports: &mut HashMap<u64, String>,
+    names: &mut NameBudget,
 ) {
     if !image.contains(import_rva) {
         return;
@@ -1226,6 +1475,9 @@ fn parse_pe_imports(
     } else {
         1u64 << 31
     };
+    // Descriptors can share one thunk array, so the per-descriptor bound
+    // alone would allow 4096 x 4096 slots.
+    let mut slots_left = MAX_PE_IMPORT_SLOTS;
     for index in 0..4096u64 {
         let Some(descriptor) = image.bytes(import_rva + index * 20, 20) else {
             return;
@@ -1248,6 +1500,9 @@ fn parse_pe_imports(
             continue;
         }
         let dll = module_stem(&image.cstr(name_rva));
+        if !names.charge(dll.len()) {
+            return;
+        }
         let thunk_rva = if original_thunk != 0 {
             original_thunk
         } else {
@@ -1257,6 +1512,10 @@ fn parse_pe_imports(
             continue;
         }
         for slot in 0..4096u64 {
+            if slots_left == 0 {
+                return;
+            }
+            slots_left -= 1;
             let entry = thunk_rva + slot * thunk;
             let value = if thunk_size == 8 {
                 image.u64(entry)
@@ -1278,10 +1537,355 @@ fn parse_pe_imports(
                 }
                 image.cstr(hint_rva + 2)
             };
-            let address = image_base + first_thunk + slot * thunk;
+            if !names.charge(dll.len() + 1 + symbol.len()) {
+                return;
+            }
+            let address = image_base
+                .wrapping_add(first_thunk)
+                .wrapping_add(slot.wrapping_mul(thunk));
             imports
                 .entry(address)
                 .or_insert_with(|| format!("{dll}!{symbol}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHT_PROGBITS: u32 = 1;
+    const SHT_STRTAB: u32 = 3;
+
+    struct ElfSection {
+        name: &'static str,
+        kind: u32,
+        flags: u64,
+        addr: u64,
+        offset: u64,
+        size: u64,
+    }
+
+    fn section_header(name: u32, section: &ElfSection) -> [u8; 64] {
+        let mut entry = [0u8; 64];
+        entry[0..4].copy_from_slice(&name.to_le_bytes());
+        entry[4..8].copy_from_slice(&section.kind.to_le_bytes());
+        entry[8..16].copy_from_slice(&section.flags.to_le_bytes());
+        entry[16..24].copy_from_slice(&section.addr.to_le_bytes());
+        entry[24..32].copy_from_slice(&section.offset.to_le_bytes());
+        entry[32..40].copy_from_slice(&section.size.to_le_bytes());
+        entry
+    }
+
+    /// A little-endian x86-64 `ET_EXEC` with `body` at file offset 0x40 and
+    /// `sections`, plus a null section and a trailing `.shstrtab`.
+    fn elf64(body: &[u8], sections: &[ElfSection]) -> Vec<u8> {
+        let mut image = vec![0u8; 0x40];
+        image[..4].copy_from_slice(b"\x7fELF");
+        image[4] = 2;
+        image[5] = 1;
+        image[6] = 1;
+        image[16..18].copy_from_slice(&2u16.to_le_bytes());
+        image[18..20].copy_from_slice(&62u16.to_le_bytes());
+        image.extend_from_slice(body);
+        let mut strings = vec![0u8];
+        let mut name_offsets = Vec::new();
+        for section in sections {
+            name_offsets.push(strings.len() as u32);
+            strings.extend_from_slice(section.name.as_bytes());
+            strings.push(0);
+        }
+        let shstrtab_name = strings.len() as u32;
+        strings.extend_from_slice(b".shstrtab\0");
+        let strings_offset = image.len() as u64;
+        image.extend_from_slice(&strings);
+        while !image.len().is_multiple_of(8) {
+            image.push(0);
+        }
+        let shoff = image.len() as u64;
+        let null = ElfSection {
+            name: "",
+            kind: 0,
+            flags: 0,
+            addr: 0,
+            offset: 0,
+            size: 0,
+        };
+        image.extend_from_slice(&section_header(0, &null));
+        for (section, name) in sections.iter().zip(&name_offsets) {
+            image.extend_from_slice(&section_header(*name, section));
+        }
+        let shstrtab = ElfSection {
+            name: ".shstrtab",
+            kind: SHT_STRTAB,
+            flags: 0,
+            addr: 0,
+            offset: strings_offset,
+            size: strings.len() as u64,
+        };
+        image.extend_from_slice(&section_header(shstrtab_name, &shstrtab));
+        let count = (sections.len() + 2) as u16;
+        image[0x28..0x30].copy_from_slice(&shoff.to_le_bytes());
+        image[0x3A..0x3C].copy_from_slice(&64u16.to_le_bytes());
+        image[0x3C..0x3E].copy_from_slice(&count.to_le_bytes());
+        image[0x3E..0x40].copy_from_slice(&(count - 1).to_le_bytes());
+        image
+    }
+
+    fn text() -> ElfSection {
+        ElfSection {
+            name: ".text",
+            kind: SHT_PROGBITS,
+            flags: ELF_SHF_ALLOC | ELF_SHF_EXECINSTR,
+            addr: 0x40_1000,
+            offset: 0x40,
+            size: 0x10,
+        }
+    }
+
+    fn bss(size: u64) -> ElfSection {
+        ElfSection {
+            name: ".bss",
+            kind: ELF_SHT_NOBITS,
+            flags: ELF_SHF_ALLOC | ELF_SHF_WRITE,
+            addr: 0x40_2000,
+            offset: 0x50,
+            size,
+        }
+    }
+
+    #[test]
+    fn nobits_section_is_zero_filled() {
+        let image = elf64(&[0xC3; 0x10], &[text(), bss(0x1_0000)]);
+        let parsed = parse_elf(&image, "bss", Arch::X64).expect("valid ELF");
+        let bss = parsed
+            .regions
+            .iter()
+            .find(|region| region.name == ".bss")
+            .expect(".bss region");
+        assert_eq!(bss.data.len(), 0x1_0000);
+        assert!(bss.data.iter().all(|byte| *byte == 0));
+        assert_eq!(parsed.module.size, 0x40_2000 + 0x1_0000 - 0x40_1000);
+    }
+
+    /// A budget small enough that tests reach the zero-fill cap cheaply.
+    fn small_budget() -> RegionBudget {
+        RegionBudget {
+            file_bytes: 1 << 20,
+            zero_bytes: 0x2_0000,
+        }
+    }
+
+    #[test]
+    fn huge_nobits_section_is_cut_to_the_budget() {
+        for size in [u64::MAX / 2, 1 << 40, 0x2_0000 + 1] {
+            let image = elf64(&[0xC3; 0x10], &[text(), bss(size)]);
+            let parsed = parse_elf_budgeted(&image, "bss", Arch::X64, small_budget())
+                .unwrap_or_else(|error| panic!("size 0x{size:x}: {}", error.0));
+            let bss = parsed
+                .regions
+                .iter()
+                .find(|region| region.name == ".bss")
+                .expect(".bss region");
+            assert_eq!(bss.data.len(), 0x2_0000, "size 0x{size:x}");
+            // The bounds still come from the header, as without the cap.
+            assert_eq!(
+                parsed.module.size,
+                0x40_2000u64.saturating_add(size) - 0x40_1000,
+                "size 0x{size:x}"
+            );
+        }
+        // A section whose end would pass the top of the address space is
+        // refused before any budgeting: later address arithmetic relies on it.
+        let image = elf64(&[0xC3; 0x10], &[text(), bss(u64::MAX)]);
+        let Err(error) = parse_elf_budgeted(&image, "bss", Arch::X64, small_budget()) else {
+            panic!("a section past the address space must be refused");
+        };
+        assert!(error.0.contains("address space"), "{}", error.0);
+        // Within the budget nothing is cut.
+        let image = elf64(&[0xC3; 0x10], &[text(), bss(0x2_0000)]);
+        let parsed = parse_elf_budgeted(&image, "bss", Arch::X64, small_budget()).unwrap();
+        assert_eq!(parsed.regions[1].data.len(), 0x2_0000);
+    }
+
+    #[test]
+    fn real_budget_scales_with_the_file() {
+        let budget = RegionBudget::new(100 << 20);
+        assert_eq!(budget.zero_bytes, ZERO_FILL_FLOOR + (1600 << 20));
+        assert_eq!(budget.file_bytes, 200 << 20);
+    }
+
+    #[test]
+    fn overlapping_sections_cannot_multiply_the_file() {
+        let sections: Vec<ElfSection> = (0..8u64)
+            .map(|index| ElfSection {
+                name: ".data",
+                kind: SHT_PROGBITS,
+                flags: ELF_SHF_ALLOC,
+                addr: 0x50_0000 + index * 0x1_0000,
+                offset: 0x40,
+                size: 0x1000,
+            })
+            .collect();
+        let image = elf64(&[0x55; 0x1000], &sections);
+        assert!(parse_elf(&image, "overlap", Arch::X64).is_err());
+        // One copy of the same bytes is fine.
+        let image = elf64(&[0x55; 0x1000], &sections[..1]);
+        let parsed = parse_elf(&image, "overlap", Arch::X64).expect("valid ELF");
+        assert_eq!(parsed.regions[0].data, vec![0x55; 0x1000]);
+    }
+
+    #[test]
+    fn repeated_symbol_tables_are_refused() {
+        // Sixteen `.symtab` headers over the same zeroed table.
+        let mut sections = vec![text()];
+        sections.extend((0..16).map(|_| ElfSection {
+            name: ".symtab",
+            kind: ELF_SHT_SYMTAB,
+            flags: 0,
+            addr: 0,
+            offset: 0x40,
+            size: 0x1800,
+        }));
+        let image = elf64(&[0; 0x1800], &sections);
+        let error = parse_elf(&image, "symtab", Arch::X64)
+            .err()
+            .expect("refused");
+        assert!(error.0.contains("symbol tables"), "{}", error.0);
+    }
+
+    struct PeSectionSpec {
+        name: &'static str,
+        virtual_size: u32,
+        virtual_address: u32,
+        raw: Vec<u8>,
+        characteristics: u32,
+    }
+
+    /// An x86-64 PE32+ with no data directories and `sections`, whose raw
+    /// data follows the headers in order.
+    fn pe64(sections: &[PeSectionSpec]) -> Vec<u8> {
+        let optional = 0x58usize;
+        let headers_end = optional + 240;
+        let mut image = vec![0u8; headers_end + sections.len() * PE_SECTION_HEADER_SIZE];
+        image[..2].copy_from_slice(b"MZ");
+        image[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        image[0x40..0x44].copy_from_slice(b"PE\0\0");
+        image[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+        image[0x46..0x48].copy_from_slice(&(sections.len() as u16).to_le_bytes());
+        image[0x54..0x56].copy_from_slice(&240u16.to_le_bytes());
+        image[optional..optional + 2].copy_from_slice(&0x20Bu16.to_le_bytes());
+        image[optional + 24..optional + 32].copy_from_slice(&0x1_4000_0000u64.to_le_bytes());
+        image[optional + 108..optional + 112].copy_from_slice(&16u32.to_le_bytes());
+        while !image.len().is_multiple_of(0x200) {
+            image.push(0);
+        }
+        for (index, section) in sections.iter().enumerate() {
+            let raw_ptr = image.len() as u32;
+            image.extend_from_slice(&section.raw);
+            let header = headers_end + index * PE_SECTION_HEADER_SIZE;
+            let name = section.name.as_bytes();
+            image[header..header + name.len()].copy_from_slice(name);
+            image[header + 8..header + 12].copy_from_slice(&section.virtual_size.to_le_bytes());
+            image[header + 12..header + 16].copy_from_slice(&section.virtual_address.to_le_bytes());
+            image[header + 16..header + 20]
+                .copy_from_slice(&(section.raw.len() as u32).to_le_bytes());
+            image[header + 20..header + 24].copy_from_slice(&raw_ptr.to_le_bytes());
+            image[header + 36..header + 40].copy_from_slice(&section.characteristics.to_le_bytes());
+        }
+        image
+    }
+
+    #[test]
+    fn pe_virtual_size_is_zero_filled() {
+        let image = pe64(&[
+            PeSectionSpec {
+                name: ".text",
+                virtual_size: 0x20,
+                virtual_address: 0x1000,
+                raw: vec![0xC3; 0x10],
+                characteristics: 0x6000_0020,
+            },
+            PeSectionSpec {
+                name: ".bss",
+                virtual_size: 0x1_0000,
+                virtual_address: 0x2000,
+                raw: Vec::new(),
+                characteristics: 0xC000_0080,
+            },
+        ]);
+        let parsed = parse_pe(&image, "bss.exe", Arch::X64).expect("valid PE");
+        let text = &parsed.regions[0];
+        assert_eq!(text.start, 0x1_4000_1000);
+        assert_eq!(text.data.len(), 0x20);
+        assert_eq!(&text.data[..0x10], &[0xC3; 0x10]);
+        assert!(text.data[0x10..].iter().all(|byte| *byte == 0));
+        assert_eq!(parsed.regions[1].data.len(), 0x1_0000);
+        assert_eq!(parsed.module.size, 0x2000 + 0x1_0000 - 0x1000);
+    }
+
+    #[test]
+    fn huge_pe_virtual_sizes_are_cut_to_the_budget() {
+        let mut sections: Vec<PeSectionSpec> = (0..96u32)
+            .map(|index| PeSectionSpec {
+                name: ".bss",
+                virtual_size: u32::MAX,
+                virtual_address: 0x1000 + index * 0x1000,
+                raw: Vec::new(),
+                characteristics: 0xC000_0080,
+            })
+            .collect();
+        // Raw data is charged to the file budget, so a section after the zero
+        // fill ran out keeps its bytes.
+        sections.push(PeSectionSpec {
+            name: ".text",
+            virtual_size: 0x20,
+            virtual_address: 0x10_0000,
+            raw: vec![0xC3; 0x10],
+            characteristics: 0x6000_0020,
+        });
+        let image = pe64(&sections);
+        let parsed = parse_pe_budgeted(&image, "huge.exe", Arch::X64, small_budget())
+            .expect("cut, not refused");
+        // The first section takes the whole zero fill; the rest get none and
+        // are left out, except for `.text`'s file bytes.
+        assert_eq!(parsed.regions.len(), 2);
+        assert_eq!(parsed.regions[0].data.len(), 0x2_0000);
+        assert_eq!(parsed.regions[1].name, ".text");
+        assert_eq!(parsed.regions[1].data, vec![0xC3; 0x10]);
+        let last_end = 0x1_4000_0000u64 + 0x1000 + 95 * 0x1000 + u64::from(u32::MAX);
+        assert_eq!(parsed.module.size, last_end - 0x1_4000_1000);
+    }
+
+    #[test]
+    fn region_budget_counts_across_sections() {
+        let mut budget = RegionBudget {
+            file_bytes: 4,
+            zero_bytes: 8,
+        };
+        assert_eq!(budget.padded(&[1, 2], 6).unwrap(), vec![1, 2, 0, 0, 0, 0]);
+        // Zero fill past the budget is cut, then none is left.
+        assert_eq!(budget.padded(&[], 5).unwrap(), vec![0; 4]);
+        assert_eq!(budget.padded(&[], 4).unwrap(), Vec::<u8>::new());
+        assert!(budget.padded(&[1, 2, 3], 3).is_err());
+        assert_eq!(budget.padded(&[7, 8], 2).unwrap(), vec![7, 8]);
+        assert_eq!(budget.padded(&[], 0).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn name_budget_matches_cstr_until_spent() {
+        let blob = b"abc\0tail";
+        for offset in 0..blob.len() + 2 {
+            assert_eq!(
+                NameBudget::new(64).cstr(blob, offset),
+                Some(cstr(blob, offset))
+            );
+        }
+        let mut names = NameBudget::new(5);
+        assert_eq!(names.cstr(blob, 0).as_deref(), Some("abc"));
+        assert_eq!(names.cstr(blob, 4), None);
+        // Spent stays spent: only empty names remain free.
+        assert_eq!(names.cstr(blob, 0), None);
+        assert_eq!(names.cstr(blob, 3).as_deref(), Some(""));
     }
 }

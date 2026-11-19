@@ -69,27 +69,77 @@ cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-fu
     --baseline ../tests/baseline/native-real-bench.json
 ```
 
-Real corpus, top-1 recall (the right function ranked first), 4 functions per
-library per build, targets stripped for hint-free scans:
+The numbers below come from the real-corpus baseline
+(`tests/baseline/native-real-bench.json`, spec v5, saved in commit `0e28cbf`
+on 2026-11-17 and recorded in `PLAN.md` §8 on 2026-11-18). The bench ran with
+`--max-functions 4 --joint` over the tuning corpus: zlib, lz4, cJSON, Lua, and
+SQLite, built by clang and gcc at `-O0/-O2/-Os` for all four architectures.
+Hint-free scans search the stripped copies.
+
+Top-1 recall: the expected function is the single best match, and ties count
+as misses.
 
 | Search | hinted | hint-free (stripped) |
 |---|---|---|
-| same arch, same build | 0.671 | 0.810 |
-| same arch, other compiler (clang ↔ gcc) | 0.354 | 0.304 |
-| same arch, other optimization level | 0.296 | 0.249 |
-| other arch, one sample, same level | 0.326 | 0.301 |
-| other arch, one sample, other compiler | 0.263 | 0.210 |
-| merged x64+arm64 signature, same level | 0.593 | 0.649 |
-| merged, held-out arch, same level | 0.454 | 0.392 |
+| same arch, same build | 0.690 | 0.835 |
+| same arch, other compiler (clang ↔ gcc), same level | 0.406 | 0.412 |
+| same arch, other optimization level | 0.357 | 0.365 |
+| other arch, one sample, same build settings | 0.374 | 0.433 |
+| other arch, one sample, other compiler, same level | 0.307 | 0.287 |
+| other arch, one sample, other optimization level | 0.270 | 0.259 |
+| merged x64+arm64 signature, same build settings | 0.595 | 0.711 |
+| merged, held-out arch (ARM32, Thumb), same build settings | 0.490 | 0.558 |
 
-False positives: strong signatures 0.072 against other corpus libraries,
-0.000 against the negative corpus; any-verdict hint-free 0.163. Hinted scans
-may use the target's symbols. Hint-free scans of stripped targets compare
-every unwind entry, while hinted scans start from anchor hits; that is
-probably why hint-free is ahead on same-arch searches.
+Whole-module sets (`bench --joint`, hint-free, signatures from one clang-O2
+x64 module resolved together through call-graph links): other arch same build
+0.810, other arch other compiler 0.630, other arch other optimization level
+0.531, same arch other compiler 0.714.
 
-See `docs/history/PLAN-v0.5.md` section 13 for how these were reached, and `PLAN.md` for the
-v1.0 goals and the milestones toward them.
+False positives, as the share of signatures with an accepted match in an
+unrelated library: strong signatures 0.000 against the other corpus libraries
+and 0.000 against the negative corpus; any verdict, hinted 0.075 and
+hint-free 0.115. Precision of `identified` answers (correct over all
+identified answers, including those in images without the function):
+hint-free 0.993, hinted 0.994.
+
+Hinted scans may use the target's symbols. Hint-free scans of stripped
+targets compare every unwind entry, while hinted scans start from anchor
+hits; that is probably why hint-free is ahead on same-build searches.
+
+The held-out corpus (zstd, libyaml, mbedtls; never used for tuning) was last
+measured at spec v4 on 2026-11-16, before the in-module constant, FP
+reduction, and strong FP rules: hint-free same build 0.896, other compiler
+0.368, other arch 0.414; FP strong 0.113, any verdict 0.080, hint-free
+0.054.
+
+See `PLAN.md` §8 for how each number moved, `docs/history/PLAN-v0.5.md`
+section 13 for the earlier history, and `PLAN.md` for the v1.0 goals and the
+milestones toward them.
+
+## Limitations
+
+- **Input formats:** ELF and PE images only. Mach-O files are rejected. The
+  release builds a macOS binary (macos-aarch64) beside Linux and Windows
+  (x86-64 and AArch64), but it still reads only ELF and PE files.
+- **Architectures:** x86-64, AArch64, ARM32, and Thumb. No 32-bit x86;
+  32-bit and WOW64 processes are rejected.
+- **Live processes:** Windows only. There is no Linux `/proc` source yet.
+- **Corpora are C only.** Tuning: zlib, lz4, cJSON, Lua, SQLite. Held-out:
+  zstd, libyaml, mbedtls. C++ templates, vtables, and duplicated template
+  instantiations are untested.
+- **Image size:** the largest tuning-corpus image is arm64 gcc-O0 SQLite,
+  about 1.3 MB; held-out zstd at `-O0` reaches about 2.1 MB. Scans have
+  fixed budgets: 4M indexed instructions (and 4M decoded for hint-free
+  discovery), 65,536 unwind candidates, and a 128 MiB start-sweep byte
+  budget. Larger images can run out of one; when that happens the CLI prints
+  a warning on stderr and lists the budget in the `truncated` field of its
+  JSON output (`locate --json`, `scan --json`, `gen`/`merge --json-report`,
+  `db build --report`).
+- **Held-out false positives** were last measured at spec v4 (2026-11-16:
+  strong FP 0.113) and predate the later rule changes.
+- **IDA plugin:** tested only against stubbed IDA modules
+  (`tests/test_ida_plugin.py`, `tests/ida_cli_smoke.py`), not in a licensed
+  IDA. Its dialogs, choosers, and menus are unexercised.
 
 ## Layout
 
@@ -100,3 +150,9 @@ spec/          signature spec and changelog
 corpus/        toy and real corpus build scripts (binaries are never committed)
 tests/         golden vectors, bench baselines
 ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option. Release archives include both
+files.
