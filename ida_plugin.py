@@ -38,9 +38,11 @@ A file dialog asks for the input file only when neither works (an IDB of
 another format).
 
 Ctrl-Alt-G (or Edit > Plugins > sigtool) opens the action menu, laid out
-like IDA-Fusion's: one radio row per action, the signatures DB that sign-all
-writes and apply-names reads, and "Configure settings", whose checkboxes are
-kept in IDA's registry. The menu remembers the last action and DB. By
+like IDA-Fusion's: one radio row per action, the signatures DB apply-names
+reads, and "Configure settings", whose checkboxes are kept in IDA's
+registry. The menu remembers the last action and the last DB applied or
+signed; sign-all writes this IDB's own DB unless another path is typed in,
+and asks before replacing a DB that is not this IDB's own. By
 default nothing asks for a file: a new signature is copied to the clipboard
 and saved as ``sigtool/<function>.yaml`` beside the IDB, DBs go to the same
 folder, locate takes the signature on the clipboard, and the best match is
@@ -79,8 +81,10 @@ another" workflow: sign the analysed IDB, then apply the DB in the other one.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import hashlib
+import importlib
 import json
 import os
 import queue
@@ -88,6 +92,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Callable, Iterable
@@ -154,10 +159,8 @@ DEFAULT_SETTINGS = (
     | SET_LIST_MATCHES
     | SET_CONFIRM_RENAMES
 )
-# Generation decodes one function; locating sweeps the image. Both are bounded
-# so a pathological input cannot hang the IDA UI thread forever. Whole-IDB
-# runs have no fixed bound; they show a wait box with a cancel button instead.
-TIMEOUT_SECONDS = 300
+# CLI runs have no time limit: a large image legitimately takes minutes, so
+# every run shows a wait box whose Cancel button kills it instead.
 # The signature spec this plugin was released with (native/src/spec.rs
 # SPEC_VERSION; a unit test keeps them equal). A CLI writing another spec
 # still runs, but its signatures and DBs will not load in a matching build.
@@ -199,6 +202,13 @@ def is_meaningful_name(name: str | None) -> bool:
     if name.startswith(AUTO_NAME_PREFIXES):
         return False
     return _DUMMY_NAME.search(name) is None
+
+
+def name_arguments(name: str | None) -> list[str]:
+    """``--name`` for ``gen`` or ``merge`` when IDA's name for the function is
+    a resolved one; none for a made-up name, so the CLI falls back to the
+    image's symbol, else ``sub_<module>+<rva>``."""
+    return ["--name", str(name)] if is_meaningful_name(name) else []
 
 
 def parse_progress(line: str) -> tuple[int, int] | None:
@@ -338,15 +348,46 @@ def is_signature_text(text: str | None) -> bool:
     )
 
 
+# A mangled C++ name can run to hundreds of characters; file systems refuse a
+# component past 255 bytes, and Windows a path past 260 characters.
+MAX_FILE_STEM = 96
+
+
 def safe_file_name(name: str) -> str:
-    """``name`` usable as a file name (mangled names hold characters file systems refuse)."""
-    return re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+    """``name`` usable as a file name (mangled names hold characters file systems
+    refuse); a long one is cut and keeps a hash of the whole, so two long names
+    sharing a prefix stay apart."""
+    safe = re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+    if len(safe) <= MAX_FILE_STEM:
+        return safe
+    digest = hashlib.blake2b(name.encode("utf-8", "replace"), digest_size=4).hexdigest()
+    return f"{safe[:MAX_FILE_STEM].rstrip('._')}_{digest}"
 
 
 def output_path(idb_path: str, name: str, suffix: str) -> str:
     """Where an output named ``name`` goes without asking: ``sigtool/`` beside the IDB."""
     folder = os.path.join(os.path.dirname(idb_path) or os.getcwd(), "sigtool")
     return os.path.join(folder, safe_file_name(name) + suffix)
+
+
+def own_db_paths(idb_path: str, stem: str) -> tuple[str, str]:
+    """This IDB's own DBs: sign-all's, and generate-on-selection's."""
+    return output_path(idb_path, stem, ".db"), output_path(idb_path, f"{stem}.selection", ".db")
+
+
+def signing_db_path(field: str, shown: str, idb_path: str, stem: str, selection: bool) -> str:
+    """Where sign-all (``selection`` false) or generate on a selection, run
+    from the menu, writes its DB.
+
+    The menu's DB field starts as ``shown``: the DB apply-names last read,
+    which may be another IDB's reference DB, and signing replaces a DB
+    outright. So signing goes to this IDB's own DB unless the user typed
+    another path into the field.
+    """
+    typed = field.strip()
+    if typed and typed != shown.strip():
+        return typed
+    return own_db_paths(idb_path, stem)[1 if selection else 0]
 
 
 def _basename(path: str) -> str:
@@ -422,6 +463,53 @@ class Segment:
 
 _SHT_PROGBITS, _SHT_STRTAB, _SHT_NOBITS = 1, 3, 8
 _SHF_WRITE, _SHF_ALLOC, _SHF_EXECINSTR = 0x1, 0x2, 0x4
+_PT_LOAD = 1
+# More program headers than any linker writes; a corrupt count is not walked.
+_MAX_PROGRAM_HEADERS = 4096
+
+
+def _elf_loads(image: bytes, is64: bool) -> list[tuple[int, int, int]]:
+    """``(p_offset, p_vaddr, p_filesz)`` of each ``PT_LOAD`` in ``image``'s
+    program headers; empty when the table is missing or out of bounds."""
+    if is64:
+        phoff = struct.unpack_from("<Q", image, 0x20)[0]
+        entsize, count = struct.unpack_from("<HH", image, 0x36)
+        layout, need = "<IIQQQQ", 48
+    else:
+        phoff = struct.unpack_from("<I", image, 0x1C)[0]
+        entsize, count = struct.unpack_from("<HH", image, 0x2A)
+        layout, need = "<IIIIII", 24
+    if entsize < need or count > _MAX_PROGRAM_HEADERS or phoff + entsize * count > len(image):
+        return []
+    loads = []
+    for index in range(count):
+        row = struct.unpack_from(layout, image, phoff + index * entsize)
+        if is64:
+            kind, _flags, offset, vaddr, _paddr, filesz = row
+        else:
+            kind, offset, vaddr, _paddr, filesz, _memsz = row
+        if kind == _PT_LOAD and filesz:
+            loads.append((offset, vaddr, filesz))
+    return loads
+
+
+def rebase_delta(image: bytes, segments: Iterable[Segment], is64: bool) -> int | None:
+    """How far the IDB moved ``image`` from its own addresses (IDA's Rebase
+    program), from where its file-backed segments sit against the ``PT_LOAD``
+    that holds their bytes: 0 when nothing says otherwise, ``None`` when the
+    segments disagree."""
+    loads = _elf_loads(image, is64)
+    deltas = set()
+    for segment in segments:
+        if segment.file_offset is None or segment.end <= segment.start:
+            continue
+        for offset, vaddr, filesz in loads:
+            if offset <= segment.file_offset < offset + filesz:
+                deltas.add(segment.start - (vaddr + segment.file_offset - offset))
+                break
+    if len(deltas) > 1:
+        return None
+    return deltas.pop() if deltas else 0
 
 
 def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
@@ -433,11 +521,19 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
     section table), plus how IDA merged unnamed sections into ``LOAD``
     segments; ``sigtool-native`` reads the dynamic symbols and relocations
     from the dynamic segment when the section table does not describe them.
+
+    A rebased IDB maps every segment above the addresses the program headers
+    give; the sections are written at the file's own addresses, since
+    ``sigtool-native`` takes the image base from the lowest ``PT_LOAD``.
     """
     if len(image) < 0x40 or image[:4] != b"\x7fELF" or image[5] != 1:
         return None
     is64 = image[4] == 2
     if not is64 and image[4] != 1:
+        return None
+    segments = list(segments)
+    delta = rebase_delta(image, segments, is64)
+    if delta is None:
         return None
     entry = struct.Struct("<IIQQQQIIQQ" if is64 else "<IIIIIIIIII")
     names = bytearray(b"\0")
@@ -459,10 +555,11 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
         size = segment.end - segment.start
         if kind == _SHT_PROGBITS and offset + size > len(image):
             return None
+        address = segment.start - delta
+        if not 0 <= address < (1 << (64 if is64 else 32)):
+            return None
         rows.append(
-            entry.pack(
-                name_offset(segment.name), kind, flags, segment.start, offset, size, 0, 0, 1, 0
-            )
+            entry.pack(name_offset(segment.name), kind, flags, address, offset, size, 0, 0, 1, 0)
         )
     table_name = name_offset(".shstrtab")
     names_offset = len(image)
@@ -480,6 +577,27 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
         struct.pack_into("<I", out, 0x20, table_offset)
         struct.pack_into("<HHH", out, 0x2E, entry.size, len(rows), len(rows) - 1)
     return bytes(out)
+
+
+def file_extents(segments: list[Segment], file_size: int) -> list[int]:
+    """How many of the file's bytes each of ``segments`` holds, in order.
+
+    A PE section's virtual size can exceed its raw data (`.data` with
+    uninitialized space), and IDA maps the whole virtual size; the bytes past
+    the raw data are not in the file, and an offset past them is the next
+    section's. So a segment holds the file only up to the next file-backed
+    segment's offset and the end of the file. Zero-fill segments hold none.
+    """
+    offsets = sorted({item.file_offset for item in segments if item.file_offset is not None})
+    extents = []
+    for segment in segments:
+        if segment.file_offset is None:
+            extents.append(0)
+            continue
+        following = offsets[bisect.bisect_right(offsets, segment.file_offset) :]
+        limit = min(following[0] if following else file_size, file_size)
+        extents.append(max(0, min(segment.end - segment.start, limit - segment.file_offset)))
+    return extents
 
 
 # IDA keeps the PE headers it parsed (`peutils_t().header()`) in its own
@@ -508,12 +626,14 @@ def rebuild_pe(
     is64 = machine in _PE64_MACHINES
 
     sections = []
-    for segment in sorted(segments, key=lambda item: item.start):
+    ordered = sorted(segments, key=lambda item: item.start)
+    extents = file_extents(ordered, len(image))
+    for index, segment in enumerate(ordered):
+        raw_size = extents[index]
         size = segment.end - segment.start
         if size <= 0 or segment.start < image_base:
             continue
         raw_ptr = segment.file_offset or 0
-        raw_size = min(size, max(0, len(image) - raw_ptr)) if segment.file_offset is not None else 0
         flags = 0x4000_0000  # IMAGE_SCN_MEM_READ
         if segment.executable:
             flags |= 0x2000_0000 | 0x20  # MEM_EXECUTE, CNT_CODE
@@ -810,8 +930,9 @@ def _input_file() -> str:
     if rebuilt is not None:
         return rebuilt
 
-    # Last resort, for a format the IDB cannot be rebuilt into yet (PE): the
-    # binary is not where IDA recorded it nor beside the IDB.
+    # Last resort, for an IDB that is neither ELF nor PE (or whose PE headers
+    # IDA did not keep): the binary is not where IDA recorded it nor beside
+    # the IDB.
     where = f"not at {recorded}" if recorded else "no path recorded"
     path = ida_kernwin.ask_file(
         False, root or "*", f"Where is {root or 'the input file'}? ({where}, not beside the IDB)"
@@ -889,12 +1010,13 @@ def _image_from_idb(root: str) -> str | None:
     # Page by page: a segment's bytes are contiguous in the file only as far
     # as IDA's file-region map says, so each page is placed by its own offset.
     page = 0x1000
-    for segment in segments:
+    extents = file_extents(segments, size)
+    for index, segment in enumerate(segments):
         if segment.file_offset is None:
             continue
-        ea = segment.start
-        while ea < segment.end:
-            take = min(page - (ea % page), segment.end - ea)
+        ea, end = segment.start, segment.start + extents[index]
+        while ea < end:
+            take = min(page - (ea % page), end - ea)
             offset = int(ida_loader.get_fileregion_offset(ea))
             data = ida_bytes.get_bytes(ea, take) if offset >= 0 else None
             if data and offset + len(data) <= size:
@@ -1026,16 +1148,41 @@ def _remember(name: str, value: str) -> None:
         ida_registry.reg_write_string(name, value, REGISTRY_KEY)
 
 
+_QT_BINDINGS = ("PySide6.QtWidgets", "PyQt5.QtWidgets")
+
+
+def qt_binding_order(kernel_version: str, loaded: Iterable[str] = ()) -> list[str]:
+    """The Qt bindings to try for IDA's own ``QApplication``, most likely first.
+
+    IDA 9.2 moved from PyQt5 (Qt 5) to PySide6 (Qt 6). A binding IDA already
+    imported comes first; then the one this IDA version ships, so an older
+    IDA never loads a pip-installed PySide6 next to its own Qt.
+    """
+    match = re.match(r"(\d+)\.(\d+)", kernel_version or "")
+    modern = match is None or (int(match.group(1)), int(match.group(2))) >= (9, 2)
+    order = list(_QT_BINDINGS if modern else reversed(_QT_BINDINGS))
+    present = set(loaded)
+    return [name for name in order if name in present] + [
+        name for name in order if name not in present
+    ]
+
+
 def _qt_clipboard():
-    # IDA 9.2 ships PySide6 (Qt 6); older releases PyQt5. Without a GUI
-    # (idat), IDA 9.2's PyQt5 shim raises NotImplementedError, not ImportError.
-    for module in ("PySide6.QtWidgets", "PyQt5.QtWidgets"):
+    try:
+        version = str(ida_kernwin.get_kernel_version())
+    except Exception:
+        version = ""
+    for name in qt_binding_order(version, sys.modules):
         try:
-            widgets = __import__(module, fromlist=["QApplication"])
+            # Without a GUI (idat) IDA 9.2's PyQt5 shim raises ImportError; a
+            # binding built against another Qt may raise anything.
+            widgets = sys.modules.get(name) or importlib.import_module(name)
+            app = widgets.QApplication.instance()
         except Exception:
             continue
-        app = widgets.QApplication.instance()
-        return app.clipboard() if app is not None else None
+        # A binding with no application is not the one IDA runs on.
+        if app is not None:
+            return app.clipboard()
     return None
 
 
@@ -1056,6 +1203,8 @@ def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
     """Hand a new signature over as the settings say: clipboard, a file beside
     the IDB, or a save dialog when neither is on; the report goes to the
     Output window, and to a dialog only if asked for."""
+    # The report first: a failed save must not lose it.
+    ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
     done = []
     if _setting(SET_COPY_TO_CLIPBOARD) and _set_clipboard(text):
         done.append("copied to the clipboard")
@@ -1064,12 +1213,25 @@ def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
         path = output_path(_idb_path(), label, suffix)
     elif not done:
         path = _ask_path("yaml", True, f"{safe_file_name(label)}{suffix}", f"Save {label} as")
-    if path:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(text, encoding="utf-8")
+    while path:
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(text, encoding="utf-8")
+        except OSError as error:
+            failed = f"not saved to {path} ({error})"
+            ida_kernwin.msg(f"sigtool: {label} {failed}\n")
+            path = _ask_path(
+                "yaml",
+                True,
+                f"{safe_file_name(label)}{suffix}",
+                f"Could not save {label}; save it as",
+            )
+            if not path:
+                done.append(failed)
+            continue
         _last_paths["yaml"] = path
         done.append(f"saved to {path}")
-    ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
+        break
     ida_kernwin.msg(f"sigtool: signature of {label} {' and '.join(done) or 'discarded'}\n")
     if _setting(SET_SHOW_REPORT):
         ida_kernwin.info(f"{report}\n\n{label}: {', '.join(done) or 'not saved'}")
@@ -1101,6 +1263,34 @@ def _add_function(ea: int, base: int) -> int | None:
         return None
     function = ida_funcs.get_func(ea)
     return None if function is None else int(function.start_ea) - base
+
+
+def _signable_start(ea: int) -> int:
+    """Where to sign for a cursor at ``ea``: the function holding it, else code
+    there once the user agrees to make it a function.
+
+    The CLI signs whatever bytes it is pointed at, so a cursor on data would
+    give a signature of noise that still passes its own self-test.
+    """
+    function = ida_funcs.get_func(ea)
+    if function is not None:
+        return int(function.start_ea)
+    if not ida_bytes.is_code(ida_bytes.get_flags(ea)):
+        raise SigtoolError(f"{ea:#x} is not code; put the cursor in a function to sign it")
+    answer = ida_kernwin.ask_yn(
+        1,
+        f"HIDECANCEL\n{ea:#x} is code outside any function.\n\n"
+        "Create a function there and sign it?",
+    )
+    if answer != 1:
+        raise SigtoolCancelled
+    start = _add_function(ea, 0)
+    if start is None:
+        # Code IDA will not make a function of (a tail it already assigned,
+        # say) is still signed from the cursor, as asked.
+        ida_kernwin.msg(f"sigtool: IDA could not create a function at {ea:#x}; signing from it\n")
+        return ea
+    return start
 
 
 def _unsignable(ea: int) -> str | None:
@@ -1152,6 +1342,40 @@ def _db_path(name: str, what: str, given: str | None = None) -> str | None:
     )
 
 
+def _db_signature_count(path: str) -> int | None:
+    """How many signatures the DB at ``path`` holds (``db info``), or ``None``
+    when it is not a DB this CLI reads."""
+    try:
+        result = subprocess.run(
+            [_native(), "db", "info", path, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return int(json.loads(result.stdout)["signatures"]) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return None
+
+
+def _confirm_replace(path: str, what: str) -> None:
+    """Ask before ``db build`` replaces a DB that is not this IDB's own."""
+    own = {
+        os.path.normcase(os.path.abspath(item)) for item in own_db_paths(_idb_path(), _image_stem())
+    }
+    if not os.path.exists(path) or os.path.normcase(os.path.abspath(path)) in own:
+        return
+    count = _db_signature_count(path)
+    holds = f"holds {count} signatures" if count is not None else "is not a DB this sigtool reads"
+    answer = ida_kernwin.ask_yn(
+        0,
+        f"HIDECANCEL\n{path} already exists and {holds}; it is not this IDB's own DB.\n\n"
+        f"Replace it with the {what}?",
+    )
+    if answer != 1:
+        raise SigtoolCancelled
+
+
 def _sign_to_db(
     image: str, functions: list[dict[str, str]], what: str, name: str, db: str | None = None
 ) -> None:
@@ -1159,6 +1383,7 @@ def _sign_to_db(
     path = _db_path(name, what, db)
     if not path:
         return
+    _confirm_replace(path, what)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         listing = Path(temp) / "functions.json"
@@ -1186,7 +1411,8 @@ def _sign_to_db(
         if line.startswith("skipped "):
             ida_kernwin.msg(f"sigtool: {line}\n")
     _last_paths["db"] = path
-    _remember("db", path)
+    # The DB just signed is the one to apply next, in this IDB or another.
+    _remember("apply_db", path)
     summary = summarize_build(report)
     ida_kernwin.msg(f"sigtool: {summary.splitlines()[0]}; wrote {path}\n")
     ida_kernwin.info(f"{summary}\n\nDB: {path}")
@@ -1200,7 +1426,7 @@ class _Handler(ida_kernwin.action_handler_t):
             self.run(ctx)
         except SigtoolCancelled:
             ida_kernwin.msg("sigtool: cancelled\n")
-        except (SigtoolError, subprocess.TimeoutExpired, OSError) as error:
+        except (SigtoolError, OSError) as error:
             ida_kernwin.warning(f"sigtool: {error}")
         return 1
 
@@ -1217,7 +1443,18 @@ def _generate(image: str, ea: int, output: Path) -> str:
     # Signing builds the image's call graph first, which takes a while on a
     # large image: run it behind the cancellable wait box.
     return _run_cancellable(
-        ["gen", "--file", image, "--rva", hex(rva), "--tool", "IDA", "--output", str(output)],
+        [
+            "gen",
+            "--file",
+            image,
+            "--rva",
+            hex(rva),
+            *name_arguments(ida_funcs.get_func_name(ea)),
+            "--tool",
+            "IDA",
+            "--output",
+            str(output),
+        ],
         f"sigtool: signing {_function_label(ea)}",
     ).strip()
 
@@ -1235,6 +1472,8 @@ class GenerateHandler(_Handler):
 
     def run(self, ctx=None) -> None:
         starts = _target_functions(ctx)
+        if len(starts) == 1:
+            starts = [_signable_start(starts[0])]
         image = _input_file()
         if len(starts) > 1:
             functions, skipped = _function_entries(starts)
@@ -1261,7 +1500,7 @@ class MergeHandler(_Handler):
     """Sign the function together with other builds of it into one signature."""
 
     def run(self, ctx=None) -> None:
-        ea = _target_functions(ctx)[0]
+        ea = _signable_start(_target_functions(ctx)[0])
         image = _input_file()
         label = _function_label(ea)
         samples = [f"{image}:+{_rva(ea):#x}"]
@@ -1276,7 +1515,12 @@ class MergeHandler(_Handler):
             return
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "merged.yaml"
-            arguments = ["merge", "--name", label, "--output", str(output)]
+            arguments = [
+                "merge",
+                *name_arguments(ida_funcs.get_func_name(ea)),
+                "--output",
+                str(output),
+            ]
             for sample in samples:
                 arguments += ["--sample", sample]
             report = _run_cancellable(
@@ -1479,7 +1723,7 @@ class ApplyNamesHandler(_Handler):
         if not db:
             return
         _last_paths["db"] = db
-        _remember("db", db)
+        _remember("apply_db", db)
         image = _input_file()
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "hits.json"
@@ -1589,7 +1833,7 @@ class ApplyNamesHandler(_Handler):
 
 class MenuForm(ida_kernwin.Form):
     """The action menu (IDA-Fusion style): one radio row per action, and the
-    signatures DB that sign-all writes and apply-names reads."""
+    signatures DB that apply-names reads (sign-all writes it only when typed in)."""
 
     # (control name, label, hint); the radio index is the position here.
     CHOICES = (
@@ -1630,8 +1874,8 @@ class MenuForm(ida_kernwin.Form):
                 "",
                 *rows,
                 "",
-                "<#Written by sign-all and generate-on-selection, read by apply-names#"
-                "Signatures DB:{iDb}>",
+                "<#Read by apply-names. Sign-all writes this IDB's own DB "
+                "unless you enter another path here#Signatures DB:{iDb}>",
                 "",
             ]
         )
@@ -1652,9 +1896,11 @@ class SettingsForm(ida_kernwin.Form):
     def __init__(self) -> None:
         names = [f"s{index}" for index in range(len(SETTINGS))]
         rows = []
-        for index, (name, (_flag, label)) in enumerate(zip(names, SETTINGS, strict=True)):
+        # Not zip(..., strict=True): IDA 8.4 can run Python 3.8, where that
+        # raises TypeError and the form never opens.
+        for index, (_flag, label) in enumerate(SETTINGS):
             closing = "{cSettings}>" if index == len(SETTINGS) - 1 else ""
-            rows.append(f"<{label}:{{{name}}}>{closing}")
+            rows.append(f"<{label}:{{{names[index]}}}>{closing}")
         form = "\n".join(["sigtool settings", "", *rows, ""])
         super().__init__(form, {"cSettings": ida_kernwin.Form.ChkGroupControl(tuple(names))})
 
@@ -1689,26 +1935,26 @@ class MenuHandler(_Handler):
 
     def run(self, ctx=None) -> None:
         choice = int(_remembered("choice", "0") or 0)
-        db = _remembered("db", "")
-        if not db:
-            db = output_path(_idb_path(), _image_stem(), ".db")
+        # The field shows the DB to apply; apply-names remembers it, the
+        # menu does not, so a path typed for signing does not become it.
+        shown = _remembered("apply_db", "") or own_db_paths(_idb_path(), _image_stem())[0]
+        db = shown
         while True:
             picked = show_menu(choice, db)
             if picked is None:
                 return
             choice, db = picked
             _remember("choice", str(choice))
-            if db:
-                _remember("db", db)
             name = MenuForm.CHOICES[choice][0]
             if name != "rSettings":
                 break
             show_settings()
+        idb, stem = _idb_path(), _image_stem()
         handlers = {
-            "rGen": lambda: GenerateHandler(db),
+            "rGen": lambda: GenerateHandler(signing_db_path(db, shown, idb, stem, True)),
             "rMerge": MergeHandler,
             "rLocate": LocateHandler,
-            "rSignAll": lambda: SignAllHandler(db),
+            "rSignAll": lambda: SignAllHandler(signing_db_path(db, shown, idb, stem, False)),
             "rApply": lambda: ApplyNamesHandler(db),
         }
         # The menu acts on the cursor, as the hotkey's context is no view.

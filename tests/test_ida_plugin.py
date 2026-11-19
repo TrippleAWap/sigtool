@@ -4,6 +4,7 @@ plain Python: ``python -m unittest tests/test_ida_plugin.py``."""
 
 from __future__ import annotations
 
+import ast
 import importlib
 import re
 import struct
@@ -12,6 +13,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def _load_plugin():
@@ -78,6 +80,11 @@ class NameTests(unittest.TestCase):
     def test_resolved_names_are_meaningful(self):
         for name in ("inflate", "_ZN3foo3barEv", "lua_pushnumber", "submit", "sub_total"):
             self.assertTrue(plugin.is_meaningful_name(name), name)
+
+    def test_only_resolved_names_are_passed_to_the_cli(self):
+        self.assertEqual(plugin.name_arguments("decrypt_config"), ["--name", "decrypt_config"])
+        for name in (None, "", "sub_1234", "j_sub_10", "unknown_libname_3"):
+            self.assertEqual(plugin.name_arguments(name), [], name)
 
     def test_progress_lines(self):
         self.assertEqual(plugin.parse_progress("progress 3/40\n"), (3, 40))
@@ -191,6 +198,81 @@ class RenameBlockerTests(unittest.TestCase):
             self.assertIn("could not create", reason)
 
 
+class CursorTests(unittest.TestCase):
+    """Which address a single-function generate or merge signs."""
+
+    def start(self, ea, function=None, code=False, answer=1, created=None):
+        asked, added = [], []
+
+        def add_func(at):
+            added.append(at)
+            return created is not None
+
+        def get_func(at):
+            if function is not None:
+                return types.SimpleNamespace(start_ea=function)
+            if added and created is not None:
+                return types.SimpleNamespace(start_ea=created)
+            return None
+
+        with (
+            mock.patch.object(plugin.ida_funcs, "get_func", get_func, create=True),
+            mock.patch.object(plugin.ida_funcs, "add_func", add_func, create=True),
+            mock.patch.object(plugin.ida_bytes, "get_flags", lambda at: at, create=True),
+            mock.patch.object(plugin.ida_bytes, "is_code", lambda _flags: code, create=True),
+            mock.patch.object(
+                plugin.ida_kernwin,
+                "ask_yn",
+                lambda _default, text: asked.append(text) or answer,
+                create=True,
+            ),
+            mock.patch.object(plugin.ida_kernwin, "msg", lambda _text: None, create=True),
+        ):
+            return plugin._signable_start(ea), asked, added
+
+    def test_a_cursor_in_a_function_signs_its_start(self):
+        self.assertEqual(self.start(0x1234, function=0x1200), (0x1200, [], []))
+
+    def test_a_cursor_on_data_is_refused(self):
+        with self.assertRaises(plugin.SigtoolError) as caught:
+            self.start(0x5000)
+        self.assertIn("0x5000 is not code", str(caught.exception))
+
+    def test_code_outside_a_function_asks_before_creating_one(self):
+        start, asked, added = self.start(0x3000, code=True, created=0x3000)
+        self.assertEqual((start, added), (0x3000, [0x3000]))
+        self.assertIn("outside any function", asked[0])
+        with self.assertRaises(plugin.SigtoolCancelled):
+            self.start(0x3000, code=True, answer=0)
+        # IDA refusing to make a function still signs the code, as confirmed.
+        self.assertEqual(self.start(0x3000, code=True)[0], 0x3000)
+
+
+class QtBindingTests(unittest.TestCase):
+    def test_order_follows_the_ida_version_and_what_is_loaded(self):
+        pyside, pyqt = "PySide6.QtWidgets", "PyQt5.QtWidgets"
+        self.assertEqual(plugin.qt_binding_order("9.2"), [pyside, pyqt])
+        self.assertEqual(plugin.qt_binding_order("10.0"), [pyside, pyqt])
+        self.assertEqual(plugin.qt_binding_order("9.1"), [pyqt, pyside])
+        self.assertEqual(plugin.qt_binding_order("8.4"), [pyqt, pyside])
+        self.assertEqual(plugin.qt_binding_order(""), [pyside, pyqt])
+        self.assertEqual(plugin.qt_binding_order("9.2", {pyqt}), [pyqt, pyside])
+
+    def test_a_binding_without_an_application_is_passed_over(self):
+        def widgets(app):
+            module = types.ModuleType("QtWidgets")
+            module.QApplication = types.SimpleNamespace(instance=lambda: app)
+            return module
+
+        app = types.SimpleNamespace(clipboard=lambda: "pyqt5 clipboard")
+        stubs = {"PySide6.QtWidgets": widgets(None), "PyQt5.QtWidgets": widgets(app)}
+        with (
+            mock.patch.dict(sys.modules, stubs),
+            mock.patch.object(plugin.ida_kernwin, "get_kernel_version", lambda: "9.2", create=True),
+        ):
+            self.assertEqual(plugin._qt_clipboard(), "pyqt5 clipboard")
+
+
 class ProvenanceTests(unittest.TestCase):
     def proposal(self):
         return plugin.Proposal(0x200, "inflate", 0.91234, "identified", "sub_200", "abc123")
@@ -299,6 +381,40 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual((data[2], data[4]), (0x3, 0x1100))
         self.assertEqual(bss[1], 8)
 
+    def elf_with_loads(self):
+        # Two PT_LOADs as lld lays out a shared object: text from offset 0 at
+        # address 0, data one page up in memory.
+        image = bytearray(0x1140)
+        image[:6] = b"\x7fELF\x02\x01"
+        struct.pack_into("<QHH", image, 0x20, 0x40, 56, 0)
+        struct.pack_into("<HH", image, 0x36, 56, 2)
+        struct.pack_into("<IIQQQQQQ", image, 0x40, 1, 5, 0, 0, 0, 0x1100, 0x1100, 0x1000)
+        struct.pack_into("<IIQQQQQQ", image, 0x78, 1, 6, 0x1100, 0x2000, 0x2000, 0x40, 0x80, 0x1000)
+        return bytes(image)
+
+    def section_addresses(self, out):
+        shoff = struct.unpack_from("<Q", out, 0x28)[0]
+        count = struct.unpack_from("<H", out, 0x3C)[0]
+        return [struct.unpack_from("<IIQQ", out, shoff + 64 * i)[3] for i in range(1, count - 1)]
+
+    def test_rebased_elf_is_rebuilt_at_the_file_addresses(self):
+        image = self.elf_with_loads()
+        delta = 0x10000000
+        shifted = [
+            plugin.Segment(
+                s.name, s.start + delta, s.end + delta, s.file_offset, s.executable, s.writable
+            )
+            for s in self.segments()
+        ]
+        plain = plugin.rebuild_elf(image, self.segments())
+        self.assertEqual(self.section_addresses(plain), [0x1000, 0x2000, 0x2040])
+        self.assertEqual(plugin.rebuild_elf(image, shifted), plain)
+
+    def test_elf_segments_that_disagree_on_the_rebase_are_refused(self):
+        segments = self.segments()
+        segments[1] = plugin.Segment(".data", 0x3000, 0x3040, 0x1100, False, True)
+        self.assertIsNone(plugin.rebuild_elf(self.elf_with_loads(), segments))
+
     def test_elf_rejects_other_formats_and_segments_past_the_file(self):
         self.assertIsNone(plugin.rebuild_elf(b"MZ" + bytes(0x100), self.segments()))
         elf = b"ELF" + bytes(0x100)
@@ -336,6 +452,29 @@ class RebuildTests(unittest.TestCase):
         )
         self.assertIsNone(plugin.rebuild_pe(image, segments, b"", base))
 
+    def test_pe_raw_size_stops_at_the_next_section(self):
+        # `.data`'s virtual size runs past its raw data, into `.rdata`'s bytes.
+        header = bytearray(248)
+        header[:4] = b"PE\0\0"
+        struct.pack_into("<HH", header, 4, 0x8664, 3)
+        base = 0x180000000
+        segments = [
+            plugin.Segment(".text", base + 0x1000, base + 0x1100, 0x400, True, False),
+            plugin.Segment(".data", base + 0x2000, base + 0x2800, 0x600, False, True),
+            plugin.Segment(".rdata", base + 0x3000, base + 0x3100, 0x800, False, False),
+            plugin.Segment(".bss", base + 0x4000, base + 0x4100, None, False, True),
+        ]
+        image = bytes(0x880)
+        self.assertEqual(plugin.file_extents(segments, len(image)), [0x100, 0x200, 0x80, 0])
+        out = plugin.rebuild_pe(image, segments, bytes(header), base)
+        lfanew = struct.unpack_from("<I", out, 0x3C)[0]
+        table = lfanew + 24 + 240
+        rows = [struct.unpack_from("<8sIIII", out, table + 40 * i) for i in range(4)]
+        self.assertEqual(
+            [(vsize, raw_size, raw_ptr) for _name, vsize, _rva, raw_size, raw_ptr in rows],
+            [(0x100, 0x100, 0x400), (0x800, 0x200, 0x600), (0x100, 0x80, 0x800), (0x100, 0, 0)],
+        )
+
 
 class MenuHelperTests(unittest.TestCase):
     def test_clipboard_signature_detection(self):
@@ -350,6 +489,82 @@ class MenuHelperTests(unittest.TestCase):
             plugin.output_path(idb, "deflate<int>::run", ".yaml"),
             str(Path("work") / "sigtool" / "deflate_int_run.yaml"),
         )
+
+    def test_signing_goes_to_this_idbs_own_db_unless_another_is_typed(self):
+        idb = str(Path("b") / "libb.so.i64")
+        own, selection = plugin.own_db_paths(idb, "libb.so")
+        self.assertEqual(own, str(Path("b") / "sigtool" / "libb.so.db"))
+        self.assertEqual(selection, str(Path("b") / "sigtool" / "libb.so.selection.db"))
+        other = str(Path("a") / "sigtool" / "liba.so.db")
+        # The field still shows the DB applied last (another IDB's): not it.
+        self.assertEqual(plugin.signing_db_path(other, other, idb, "libb.so", False), own)
+        self.assertEqual(plugin.signing_db_path(other, other, idb, "libb.so", True), selection)
+        # This IDB's own DB shown by default: a selection still gets its own.
+        self.assertEqual(plugin.signing_db_path(own, own, idb, "libb.so", True), selection)
+        self.assertEqual(plugin.signing_db_path("", other, idb, "libb.so", False), own)
+        typed = str(Path("c") / "new.db")
+        self.assertEqual(plugin.signing_db_path(f" {typed} ", other, idb, "libb.so", False), typed)
+
+    def test_replacing_another_idbs_db_asks_first(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        idb = str(Path(temp.name) / "b" / "libb.so.i64")
+        own = Path(plugin.own_db_paths(idb, "libb.so")[0])
+        own.parent.mkdir(parents=True)
+        own.write_bytes(b"own")
+        other = Path(temp.name) / "liba.so.db"
+        other.write_bytes(b"other")
+        asked = []
+        kernwin = plugin.ida_kernwin
+        with (
+            mock.patch.object(plugin, "_idb_path", lambda: idb),
+            mock.patch.object(plugin, "_image_stem", lambda: "libb.so"),
+            mock.patch.object(plugin, "_db_signature_count", lambda _path: 120),
+            mock.patch.object(
+                kernwin, "ask_yn", lambda _d, text: asked.append(text) or 0, create=True
+            ),
+        ):
+            plugin._confirm_replace(str(own), "12 named functions")
+            plugin._confirm_replace(str(Path(temp.name) / "new.db"), "12 named functions")
+            self.assertEqual(asked, [])
+            with self.assertRaises(plugin.SigtoolCancelled):
+                plugin._confirm_replace(str(other), "12 named functions")
+        self.assertIn("holds 120 signatures", asked[0])
+        self.assertIn(str(other), asked[0])
+
+    def test_long_names_are_cut_and_keep_a_hash(self):
+        idb = str(Path("work") / "libz.so.i64")
+        first = plugin.output_path(idb, "_ZN" + "a" * 300 + "Ev", ".merged.yaml")
+        second = plugin.output_path(idb, "_ZN" + "a" * 300 + "Ei", ".merged.yaml")
+        stem = Path(first).name[: -len(".merged.yaml")]
+        self.assertLessEqual(len(stem), plugin.MAX_FILE_STEM + 9)
+        self.assertTrue(stem.startswith("ZNaaaa"))
+        self.assertRegex(stem, r"_[0-9a-f]{8}$")
+        self.assertNotEqual(first, second)
+        short = "inflate" + "x" * (plugin.MAX_FILE_STEM - 7)
+        self.assertEqual(plugin.safe_file_name(short), short)
+
+    def test_a_failed_save_keeps_the_report_and_says_so(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        # A file where the sigtool folder would go makes the save fail.
+        (Path(temp.name) / "sigtool").write_text("")
+        log, asked = [], []
+        settings = plugin.SET_SAVE_BESIDE_IDB | plugin.SET_SHOW_REPORT
+        kernwin = plugin.ida_kernwin
+        with (
+            mock.patch.object(plugin, "_settings", lambda: settings),
+            mock.patch.object(plugin, "_idb_path", lambda: str(Path(temp.name) / "a.i64")),
+            mock.patch.object(plugin, "_ask_path", lambda *args: asked.append(args)),
+            mock.patch.object(kernwin, "msg", log.append, create=True),
+            mock.patch.object(kernwin, "info", log.append, create=True),
+        ):
+            plugin._deliver_signature("spec_version: '7'\n", "REPORT", "inflate", ".yaml")
+        self.assertIn("REPORT", log[0])
+        self.assertEqual(len(asked), 1)
+        self.assertIn("not saved to", log[-2])
+        self.assertIn("REPORT", log[-1])
+        self.assertIn("not saved to", log[-1])
 
     def test_settings_are_distinct_bits_in_form_order(self):
         flags = [flag for flag, _label in plugin.SETTINGS]
@@ -396,6 +611,18 @@ class NativeDiscoveryTests(unittest.TestCase):
         self.assertIsNone(plugin.version_problem(f"sigtool-native 0.1.0 (spec {expected})\n"))
         self.assertIn("expects spec", plugin.version_problem("sigtool-native 0.1.0 (spec 99)"))
         self.assertIn("does not report", plugin.version_problem("sigtool-native 0.1.0"))
+
+    def test_plugin_parses_and_calls_like_python_3_8(self):
+        # IDA 8.4 can embed Python 3.8: no newer syntax, and no `strict=`
+        # (zip, 3.10), which parses everywhere but fails when called.
+        source = Path(plugin.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source, feature_version=(3, 8))
+        strict = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and any(k.arg == "strict" for k in node.keywords)
+        ]
+        self.assertEqual(strict, [])
 
     def test_expected_spec_matches_the_crate(self):
         spec = (Path(__file__).resolve().parent.parent / "native" / "src" / "spec.rs").read_text()
