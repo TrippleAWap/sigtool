@@ -1,36 +1,46 @@
 {
-  "spec_version": "5",
+  "spec_version": "6",
   "hint_free_stripped": false,
   "hint_free_false_positives": [
     {
       "arch": "arm32",
       "signatures": 51,
       "signatures_with_hits": 9,
-      "hits": 72
+      "hits": 72,
+      "targets": 9,
+      "target_bytes": 54328
     },
     {
       "arch": "arm64",
       "signatures": 51,
       "signatures_with_hits": 6,
-      "hits": 9
+      "hits": 9,
+      "targets": 9,
+      "target_bytes": 60992
     },
     {
       "arch": "merged",
       "signatures": 44,
       "signatures_with_hits": 6,
-      "hits": 139
+      "hits": 143,
+      "targets": 36,
+      "target_bytes": 227412
     },
     {
       "arch": "thumb",
       "signatures": 51,
       "signatures_with_hits": 9,
-      "hits": 67
+      "hits": 67,
+      "targets": 9,
+      "target_bytes": 51948
     },
     {
       "arch": "x64",
       "signatures": 51,
-      "signatures_with_hits": 3,
-      "hits": 5
+      "signatures_with_hits": 2,
+      "hits": 4,
+      "targets": 9,
+      "target_bytes": 60144
     }
   ],
   "signatures": 248,
@@ -39,13 +49,13 @@
   "verdicts": {
     "arm32": {
       "small": 15,
-      "strong": 6,
-      "weak": 30
+      "strong": 4,
+      "weak": 32
     },
     "arm64": {
       "small": 15,
-      "strong": 6,
-      "weak": 30
+      "strong": 5,
+      "weak": 31
     },
     "merged": {
       "small": 4,
@@ -54,8 +64,8 @@
     },
     "thumb": {
       "small": 16,
-      "strong": 5,
-      "weak": 30
+      "strong": 4,
+      "weak": 31
     },
     "x64": {
       "small": 13,
@@ -555,8 +565,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 19
     },
     {
@@ -564,8 +574,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 19
     },
     {
@@ -609,8 +619,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 16
     },
     {
@@ -618,8 +628,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -663,8 +673,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 16
     },
     {
@@ -672,8 +682,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -1203,8 +1213,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 19
     },
     {
@@ -1212,8 +1222,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 10,
+      "top_hits": 10,
       "attempts": 19
     },
     {
@@ -1266,8 +1276,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -1320,8 +1330,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -1365,8 +1375,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 14
     },
     {
@@ -1374,8 +1384,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 7,
-      "top_hits": 7,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 14
     },
     {
@@ -1383,8 +1393,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1392,8 +1402,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1401,8 +1411,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1410,8 +1420,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1527,8 +1537,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 13,
-      "top_hits": 13,
+      "hits": 14,
+      "top_hits": 14,
       "attempts": 14
     },
     {
@@ -1545,8 +1555,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 14
     },
     {
@@ -1554,8 +1564,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 14
     },
     {
@@ -1563,8 +1573,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 14
     },
     {
@@ -1572,8 +1582,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 14
     },
     {
@@ -1707,8 +1717,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 6,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1716,8 +1726,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 6,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1725,8 +1735,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1734,8 +1744,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1851,8 +1861,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 13,
-      "top_hits": 13,
+      "hits": 14,
+      "top_hits": 14,
       "attempts": 14
     },
     {
@@ -1869,8 +1879,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 14
     },
     {
@@ -1878,8 +1888,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1887,8 +1897,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 14
     },
     {
@@ -1896,8 +1906,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 14
     },
     {
@@ -1905,8 +1915,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 2,
+      "top_hits": 2,
       "attempts": 16
     },
     {
@@ -1914,8 +1924,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -1959,8 +1969,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 14
     },
     {
@@ -1968,8 +1978,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 14
     },
     {
@@ -2508,8 +2518,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 19
     },
     {
@@ -2553,8 +2563,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 16
     },
     {
@@ -2562,8 +2572,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 7,
+      "top_hits": 7,
       "attempts": 16
     },
     {
@@ -2607,8 +2617,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 16
     },
     {
@@ -2616,8 +2626,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 8,
+      "top_hits": 8,
       "attempts": 16
     },
     {
@@ -2661,8 +2671,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 16,
-      "top_hits": 16,
+      "hits": 17,
+      "top_hits": 17,
       "attempts": 19
     },
     {
@@ -2679,8 +2689,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 16
     },
     {
@@ -2697,8 +2707,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 2,
-      "top_hits": 2,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 16
     },
     {
@@ -2715,8 +2725,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 16
     },
     {
@@ -2724,8 +2734,8 @@
       "source_opt": "O2",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -2769,8 +2779,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 3,
-      "top_hits": 3,
+      "hits": 4,
+      "top_hits": 4,
       "attempts": 16
     },
     {
@@ -2778,8 +2788,8 @@
       "source_opt": "Os",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 5,
-      "top_hits": 5,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 16
     },
     {
@@ -2823,8 +2833,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 19
     },
     {
@@ -2832,8 +2842,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hinted",
-      "hits": 8,
-      "top_hits": 8,
+      "hits": 9,
+      "top_hits": 9,
       "attempts": 19
     },
     {
@@ -2841,8 +2851,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -2850,8 +2860,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -2859,8 +2869,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -2868,8 +2878,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -2985,8 +2995,8 @@
       "source_opt": "O0",
       "target_opt": "O0",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 6,
+      "top_hits": 6,
       "attempts": 19
     },
     {
@@ -3003,8 +3013,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 16
     },
     {
@@ -3021,8 +3031,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 1,
-      "top_hits": 1,
+      "hits": 3,
+      "top_hits": 3,
       "attempts": 16
     },
     {
@@ -3165,8 +3175,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -3174,8 +3184,8 @@
       "source_opt": "O0",
       "target_opt": "O2",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -3183,8 +3193,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hint-free",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -3192,8 +3202,8 @@
       "source_opt": "O0",
       "target_opt": "Os",
       "discovery": "hinted",
-      "hits": 4,
-      "top_hits": 4,
+      "hits": 5,
+      "top_hits": 5,
       "attempts": 16
     },
     {
@@ -3308,65 +3318,85 @@
   "false_positives": [
     {
       "arch": "arm32",
-      "signatures": 6,
+      "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 3,
+      "target_bytes": 18776
     },
     {
       "arch": "arm64",
-      "signatures": 6,
+      "signatures": 5,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 6,
+      "target_bytes": 42096
     },
     {
       "arch": "merged",
       "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 12,
+      "target_bytes": 77928
     },
     {
       "arch": "thumb",
-      "signatures": 5,
+      "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 3,
+      "target_bytes": 17704
     },
     {
       "arch": "x64",
       "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 3,
+      "target_bytes": 20232
     }
   ],
   "negative_false_positives": [
     {
       "arch": "arm32",
-      "signatures": 6,
+      "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 3,
+      "target_bytes": 16748
     },
     {
       "arch": "arm64",
-      "signatures": 6,
+      "signatures": 5,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 3,
+      "target_bytes": 18896
     },
     {
       "arch": "merged",
       "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 12,
+      "target_bytes": 72044
     },
     {
       "arch": "thumb",
-      "signatures": 5,
+      "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 3,
+      "target_bytes": 16352
     },
     {
       "arch": "x64",
       "signatures": 4,
       "signatures_with_hits": 0,
-      "hits": 0
+      "hits": 0,
+      "targets": 3,
+      "target_bytes": 20048
     }
   ],
   "any_false_positives": [
@@ -3374,31 +3404,41 @@
       "arch": "arm32",
       "signatures": 51,
       "signatures_with_hits": 6,
-      "hits": 40
+      "hits": 40,
+      "targets": 6,
+      "target_bytes": 37580
     },
     {
       "arch": "arm64",
       "signatures": 51,
       "signatures_with_hits": 7,
-      "hits": 52
+      "hits": 52,
+      "targets": 6,
+      "target_bytes": 42096
     },
     {
       "arch": "merged",
       "signatures": 44,
       "signatures_with_hits": 4,
-      "hits": 140
+      "hits": 140,
+      "targets": 24,
+      "target_bytes": 155368
     },
     {
       "arch": "thumb",
       "signatures": 51,
       "signatures_with_hits": 6,
-      "hits": 36
+      "hits": 36,
+      "targets": 6,
+      "target_bytes": 35596
     },
     {
       "arch": "x64",
       "signatures": 51,
       "signatures_with_hits": 6,
-      "hits": 36
+      "hits": 36,
+      "targets": 6,
+      "target_bytes": 40096
     }
   ],
   "any_negative_false_positives": [
@@ -3406,31 +3446,41 @@
       "arch": "arm32",
       "signatures": 51,
       "signatures_with_hits": 7,
-      "hits": 32
+      "hits": 32,
+      "targets": 3,
+      "target_bytes": 16748
     },
     {
       "arch": "arm64",
       "signatures": 51,
       "signatures_with_hits": 6,
-      "hits": 54
+      "hits": 54,
+      "targets": 3,
+      "target_bytes": 18896
     },
     {
       "arch": "merged",
       "signatures": 44,
-      "signatures_with_hits": 4,
-      "hits": 120
+      "signatures_with_hits": 5,
+      "hits": 125,
+      "targets": 12,
+      "target_bytes": 72044
     },
     {
       "arch": "thumb",
       "signatures": 51,
       "signatures_with_hits": 7,
-      "hits": 31
+      "hits": 31,
+      "targets": 3,
+      "target_bytes": 16352
     },
     {
       "arch": "x64",
       "signatures": 51,
       "signatures_with_hits": 4,
-      "hits": 28
+      "hits": 28,
+      "targets": 3,
+      "target_bytes": 20048
     }
   ],
   "joint": [],
@@ -3438,15 +3488,15 @@
   "identified": [
     {
       "discovery": "hint-free",
-      "answers": 584,
-      "correct": 552,
+      "answers": 601,
+      "correct": 573,
       "unrelated_scans": 2280,
       "unrelated_answers": 0
     },
     {
       "discovery": "hinted",
-      "answers": 579,
-      "correct": 579,
+      "answers": 592,
+      "correct": 592,
       "unrelated_scans": 2280,
       "unrelated_answers": 0
     }
@@ -3456,28 +3506,28 @@
       "library": "loops",
       "discovery": "hint-free",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 30,
+      "top_hits": 32,
       "attempts": 46
     },
     {
       "library": "loops",
       "discovery": "hint-free",
       "row": "other arch, other optimization level",
-      "top_hits": 213,
+      "top_hits": 219,
       "attempts": 576
     },
     {
       "library": "loops",
       "discovery": "hint-free",
       "row": "other arch, same build settings",
-      "top_hits": 151,
+      "top_hits": 156,
       "attempts": 300
     },
     {
       "library": "loops",
       "discovery": "hint-free",
       "row": "same arch, other optimization level",
-      "top_hits": 83,
+      "top_hits": 85,
       "attempts": 192
     },
     {
@@ -3491,21 +3541,21 @@
       "library": "loops",
       "discovery": "hinted",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 30,
+      "top_hits": 32,
       "attempts": 46
     },
     {
       "library": "loops",
       "discovery": "hinted",
       "row": "other arch, other optimization level",
-      "top_hits": 258,
+      "top_hits": 260,
       "attempts": 576
     },
     {
       "library": "loops",
       "discovery": "hinted",
       "row": "other arch, same build settings",
-      "top_hits": 175,
+      "top_hits": 182,
       "attempts": 300
     },
     {
@@ -3526,14 +3576,14 @@
       "library": "parser",
       "discovery": "hint-free",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 23,
+      "top_hits": 22,
       "attempts": 42
     },
     {
       "library": "parser",
       "discovery": "hint-free",
       "row": "other arch, other optimization level",
-      "top_hits": 171,
+      "top_hits": 181,
       "attempts": 576
     },
     {
@@ -3547,42 +3597,42 @@
       "library": "parser",
       "discovery": "hint-free",
       "row": "same arch, other optimization level",
-      "top_hits": 72,
+      "top_hits": 76,
       "attempts": 192
     },
     {
       "library": "parser",
       "discovery": "hint-free",
       "row": "same arch, same build",
-      "top_hits": 93,
+      "top_hits": 94,
       "attempts": 104
     },
     {
       "library": "parser",
       "discovery": "hinted",
       "row": "merged x64+arm64, held-out arch, same level",
-      "top_hits": 23,
+      "top_hits": 22,
       "attempts": 42
     },
     {
       "library": "parser",
       "discovery": "hinted",
       "row": "other arch, other optimization level",
-      "top_hits": 205,
+      "top_hits": 219,
       "attempts": 576
     },
     {
       "library": "parser",
       "discovery": "hinted",
       "row": "other arch, same build settings",
-      "top_hits": 149,
+      "top_hits": 153,
       "attempts": 312
     },
     {
       "library": "parser",
       "discovery": "hinted",
       "row": "same arch, other optimization level",
-      "top_hits": 86,
+      "top_hits": 88,
       "attempts": 192
     },
     {
@@ -3599,35 +3649,35 @@
       {
         "phase": "load",
         "millis": 1,
-        "peak_memory_bytes": 8290304
+        "peak_memory_bytes": 8761344
       },
       {
         "phase": "indexes",
-        "millis": 7,
-        "peak_memory_bytes": 10596352
+        "millis": 3,
+        "peak_memory_bytes": 11108352
       },
       {
         "phase": "samples",
-        "millis": 25,
-        "peak_memory_bytes": 11980800
+        "millis": 15,
+        "peak_memory_bytes": 12562432
       },
       {
         "phase": "merge",
-        "millis": 37,
-        "peak_memory_bytes": 12140544
+        "millis": 14,
+        "peak_memory_bytes": 12787712
       },
       {
         "phase": "recall",
-        "millis": 417,
-        "peak_memory_bytes": 20541440
+        "millis": 148,
+        "peak_memory_bytes": 21762048
       },
       {
         "phase": "false positives",
-        "millis": 183,
-        "peak_memory_bytes": 24485888
+        "millis": 83,
+        "peak_memory_bytes": 26210304
       }
     ],
-    "total_millis": 673,
-    "peak_memory_bytes": 24485888
+    "total_millis": 268,
+    "peak_memory_bytes": 26210304
   }
 }
