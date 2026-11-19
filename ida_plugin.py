@@ -120,6 +120,10 @@ SIGN_ALL_LABEL = "sigtool: sign all named functions to a DB"
 APPLY_ACTION = "sigtool:apply_names"
 APPLY_LABEL = "sigtool: apply names from a DB"
 REVERT_ACTION = "sigtool:revert_names"
+EXPLAIN_ACTION = "sigtool:explain"
+EXPLAIN_LABEL = "sigtool: explain the locate result at the cursor"
+EXPLAIN_ROW_ACTION = "sigtool:explain_row"
+EXPLAIN_ROW_LABEL = "sigtool: explain this row"
 REVERT_LABEL = "sigtool: revert sigtool names"
 OPEN_ACTION = "sigtool:open"
 OPEN_LABEL = "sigtool: open menu"
@@ -898,6 +902,84 @@ def locate_actions(rows: list[Row], auto_jump: bool, list_matches: bool) -> tupl
     return auto_jump and trusted, list_matches or not trusted
 
 
+def _keys(keys: Iterable[str]) -> str:
+    return " ".join(keys) or "-"
+
+
+def format_explanation(explain: dict | None, signature: str, where: str) -> str:
+    """``locate --explain --json``'s ``explain`` object as text: why the
+    function at ``where`` is or is not ``signature``'s answer.
+
+    Mirrors the CLI's own text: the deciding gate, every gate, the score
+    against the threshold, the withheld reason, and the matched, inherited,
+    and missed keys (required ones listed apart, as they decide the match).
+    """
+    if not explain:
+        return f"{signature} at {where}: nothing to explain (the CLI returned no explanation)"
+
+    def number(value, digits: int = 3) -> str:
+        return "-" if value is None else f"{float(value):.{digits}f}"
+
+    def short(value) -> str:
+        # Gate values are scores, counts, or floors: 0.65, 7, 0.85.
+        if value is None:
+            return "-"
+        return f"{float(value):.3f}".rstrip("0").rstrip(".")
+
+    decided = str(explain.get("decided") or "?")
+    verdict = "accepted" if decided == "accepted" else f"decided by the {decided} gate"
+    lines = [f"{signature} at {where}: {verdict}"]
+    if explain.get("rank") is not None:
+        lines.append(
+            f"rank {explain['rank']} of {explain.get('matches', '?')} matches, "
+            f"{explain.get('evidence') or 'no evidence label'}"
+        )
+    else:
+        lines.append(f"not among the {explain.get('matches', 0)} matches")
+    lines.append(
+        f"score {number(explain.get('score'))} (threshold {number(explain.get('threshold'), 2)}), "
+        f"similarity {number(explain.get('similarity'))}, required "
+        f"{explain.get('matched_required', '?')}/{explain.get('required', '?')} "
+        f"(min distinct {explain.get('min_distinct', '?')})"
+    )
+    if explain.get("answer_withheld"):
+        lines.append(
+            f"not identified: {explain['answer_withheld']} "
+            f"(answer floor {number(explain.get('answer_floor'), 2)}, "
+            f"rival {number(explain.get('rival'))})"
+        )
+    if explain.get("start") and explain.get("start") != explain.get("address"):
+        lines.append(f"function start {explain['start']}")
+    lines.append("")
+    lines.append("gates:")
+    for gate in explain.get("gates") or []:
+        detail = ""
+        if gate.get("value") is not None or gate.get("needed") is not None:
+            detail = f" {short(gate.get('value'))} vs {short(gate.get('needed'))}"
+        passed = "pass" if gate.get("passed") else "FAIL"
+        lines.append(f"  {gate.get('gate')!s:<18} {passed}{detail}")
+    missed = explain.get("missed") or []
+    required = [str(item.get("key")) for item in missed if item.get("required")]
+    optional = [str(item.get("key")) for item in missed if not item.get("required")]
+    matched = [str(key) for key in explain.get("matched") or []]
+    inherited = [str(key) for key in explain.get("inherited") or []]
+    lines.append("")
+    lines.append(f"matched ({len(matched)}): {_keys(matched)}")
+    if inherited:
+        lines.append(f"inherited from callees ({len(inherited)}): {_keys(inherited)}")
+    lines.append(f"missed, required ({len(required)}): {_keys(required)}")
+    lines.append(f"missed, optional ({len(optional)}): {_keys(optional)}")
+    neighbours = explain.get("neighbours") or {}
+    if neighbours.get("shared") or neighbours.get("missed"):
+        lines.append(
+            f"neighbour keys: shared {_keys(neighbours.get('shared') or [])}; "
+            f"missed {_keys(neighbours.get('missed') or [])}"
+        )
+    if explain.get("cross_isa"):
+        lines.append("cross-ISA comparison (another architecture's sample)")
+    return "\n".join(lines)
+
+
 # -- CLI glue -----------------------------------------------------------------
 
 
@@ -1625,47 +1707,112 @@ class MergeHandler(_Handler):
         _deliver_signature(text, report, label, ".merged.yaml")
 
 
+@dataclass(frozen=True)
+class LocateSource:
+    """The signature a locate ran with, kept so its rows can be explained."""
+
+    text: str
+    source: str
+    stem: str
+
+
+def _pick_signature(prompt: str) -> LocateSource | None:
+    """The signature on the clipboard (when that setting is on), else a file."""
+    clipboard = _clipboard_text() if _setting(SET_LOCATE_CLIPBOARD) else ""
+    if is_signature_text(clipboard):
+        return LocateSource(clipboard, "the clipboard", "clipboard")
+    path = _ask_path("yaml", False, "*.yaml", prompt)
+    if not path:
+        return None
+    return LocateSource(Path(path).read_text(encoding="utf-8"), Path(path).name, Path(path).stem)
+
+
+def _locate(signature: LocateSource, message: str, extra: Iterable[str] = ()) -> dict:
+    """``locate --json`` of ``signature`` in this IDB's image (hint-free)."""
+    image = _input_file()
+    with tempfile.TemporaryDirectory() as temp:
+        path = Path(temp) / "signature.yaml"
+        path.write_text(signature.text, encoding="utf-8")
+        output = Path(temp) / "matches.json"
+        # Exit 1 is "no accepted match"; the JSON is written either way.
+        stderr = _run_cancellable(
+            [
+                "locate",
+                "--signature",
+                str(path),
+                "--file",
+                image,
+                "--json",
+                str(output),
+                "--yes",
+                # As apply-names: the result must not depend on whether
+                # the input file (with its symbols) sits beside the IDB,
+                # which `auto` would let pick hinted discovery.
+                "--discovery",
+                "hint-free",
+                *extra,
+            ],
+            message,
+            ok_codes=(0, 1),
+        )
+        result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+    _echo_cli_lines(stderr)
+    return result
+
+
+# Text views stay open after their action returns; keep them referenced.
+_OPEN_VIEWS: dict[str, object] = {}
+
+
+def _show_text(title: str, text: str) -> None:
+    """``text`` in the Output window, and in a text view (a dialog in an IDA
+    without ``simplecustviewer_t``)."""
+    for line in text.splitlines():
+        ida_kernwin.msg(f"sigtool: {line}\n")
+    viewer_type = getattr(ida_kernwin, "simplecustviewer_t", None)
+    if viewer_type is None:
+        ida_kernwin.info(text)
+        return
+    previous = _OPEN_VIEWS.pop(title, None)
+    if previous is not None:
+        with contextlib.suppress(Exception):
+            previous.Close()
+    viewer = viewer_type()
+    if not viewer.Create(title):
+        ida_kernwin.info(text)
+        return
+    for line in text.splitlines():
+        viewer.AddLine(line)
+    viewer.Show()
+    _OPEN_VIEWS[title] = viewer
+
+
+def _explain(signature: LocateSource, ea: int) -> None:
+    """Explain why ``signature`` does or does not match the function at ``ea``."""
+    where = f"{ea:#x} ({ida_name.get_ea_name(ea) or _function_label(ea)})"
+    result = _locate(
+        signature,
+        f"sigtool: explaining the signature from {signature.source} at {ea:#x}",
+        ["--explain", "--expect", hex(_rva(ea))],
+    )
+    name = str(result.get("signature") or signature.stem)
+    text = format_explanation(result.get("explain"), name, where)
+    truncation = describe_truncation(result)
+    if truncation:
+        text += f"\n\n{truncation}"
+    _show_text(f"sigtool: explain {name}", text)
+
+
 class LocateHandler(_Handler):
     """Scan this IDB with a signature (the clipboard's, else a file) and jump to it."""
 
     def run(self, ctx=None) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            signature = None
-            clipboard = _clipboard_text() if _setting(SET_LOCATE_CLIPBOARD) else ""
-            if is_signature_text(clipboard):
-                signature = str(Path(temp) / "clipboard.yaml")
-                Path(signature).write_text(clipboard, encoding="utf-8")
-                source = "the clipboard"
-            else:
-                signature = _ask_path("yaml", False, "*.yaml", "Signature to locate in this IDB")
-                if not signature:
-                    return
-                source = Path(signature).name
-            image = _input_file()
-            output = Path(temp) / "matches.json"
-            # Exit 1 is "no accepted match"; the JSON is written either way.
-            stderr = _run_cancellable(
-                [
-                    "locate",
-                    "--signature",
-                    signature,
-                    "--file",
-                    image,
-                    "--json",
-                    str(output),
-                    "--yes",
-                    # As apply-names: the result must not depend on whether
-                    # the input file (with its symbols) sits beside the IDB,
-                    # which `auto` would let pick hinted discovery.
-                    "--discovery",
-                    "hint-free",
-                ],
-                f"sigtool: locating the signature from {source}",
-                ok_codes=(0, 1),
-            )
-            result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
-        _echo_cli_lines(stderr)
-        name = str(result.get("signature") or Path(signature).stem)
+        signature = _pick_signature("Signature to locate in this IDB")
+        if signature is None:
+            return
+        source = signature.source
+        result = _locate(signature, f"sigtool: locating the signature from {source}")
+        name = str(result.get("signature") or signature.stem)
         truncation = describe_truncation(result)
         rows = match_rows(
             result.get("matches", []), int(ida_nalt.get_imagebase()), ida_name.get_ea_name
@@ -1699,9 +1846,41 @@ class LocateHandler(_Handler):
                     ["Matched", 8],
                 ],
                 rows,
+                explain=signature,
             )
         if jump:
             ida_kernwin.jumpto(rows[0].ea)
+
+
+class ExplainHandler(_Handler):
+    """Explain the locate verdict on the function under the cursor."""
+
+    def run(self, ctx=None) -> None:
+        ea = _target_functions(ctx)[0]
+        signature = _pick_signature(f"Signature to explain at {ea:#x}")
+        if signature is not None:
+            _explain(signature, ea)
+
+
+def _chooser_of(ctx) -> ResultChooser | None:
+    title = getattr(ctx, "widget_title", None)
+    if not title and getattr(ctx, "widget", None) is not None:
+        title = ida_kernwin.get_widget_title(ctx.widget)
+    return _OPEN_CHOOSERS.get(str(title or ""))
+
+
+class ExplainRowHandler(_Handler):
+    """Explain the selected row of a locate result list (its right-click menu)."""
+
+    def run(self, ctx=None) -> None:
+        chooser = _chooser_of(ctx)
+        selection = _chosen(getattr(ctx, "chooser_selection", None))
+        if chooser is None or chooser.explain is None or not selection:
+            raise SigtoolError("select a row of a locate result list to explain")
+        index = selection[0]
+        if not 0 <= index < len(chooser.rows):
+            raise SigtoolError(f"no row {index} in {chooser.title}")
+        _explain(chooser.explain, chooser.rows[index].ea)
 
 
 class SignAllHandler(_Handler):
@@ -1723,9 +1902,17 @@ class SignAllHandler(_Handler):
 class ResultChooser(ida_kernwin.Choose):
     """A non-modal list of addresses; Enter or a double-click jumps to the row."""
 
-    def __init__(self, title: str, columns: list[list], rows: list[Row]) -> None:
+    def __init__(
+        self,
+        title: str,
+        columns: list[list],
+        rows: list[Row],
+        explain: LocateSource | None = None,
+    ) -> None:
         super().__init__(title, columns)
         self.rows = rows
+        # The signature of a locate result list, for "Explain this row".
+        self.explain = explain
 
     def OnGetSize(self) -> int:
         return len(self.rows)
@@ -1753,7 +1940,9 @@ class ResultChooser(ida_kernwin.Choose):
 _OPEN_CHOOSERS: dict[str, ResultChooser] = {}
 
 
-def show_results(title: str, columns: list[list], rows: list[Row]) -> None:
+def show_results(
+    title: str, columns: list[list], rows: list[Row], explain: LocateSource | None = None
+) -> None:
     """Open ``rows`` in a non-modal chooser, replacing one with the same title.
 
     IDA reactivates an open chooser of the same title instead of showing new
@@ -1762,7 +1951,7 @@ def show_results(title: str, columns: list[list], rows: list[Row]) -> None:
     previous = _OPEN_CHOOSERS.pop(title, None)
     if previous is not None:
         previous.Close()
-    chooser = ResultChooser(title, columns, rows)
+    chooser = ResultChooser(title, columns, rows, explain)
     _OPEN_CHOOSERS[title] = chooser
     chooser.Show()
 
@@ -2053,6 +2242,11 @@ class MenuForm(ida_kernwin.Form):
         ),
         ("rApply", "Apply names from the DB", "Rename identified matches of the DB's signatures"),
         (
+            "rExplain",
+            "Explain the locate result at the cursor",
+            "Why the signature (clipboard, else a file) does or does not match here",
+        ),
+        (
             "rRevert",
             "Revert sigtool names",
             "Restore the names apply replaced, where the name is still sigtool's",
@@ -2154,6 +2348,7 @@ class MenuHandler(_Handler):
             "rSignAll": lambda: SignAllHandler(db),
             "rApply": lambda: ApplyNamesHandler(db),
             "rRevert": RevertNamesHandler,
+            "rExplain": ExplainHandler,
         }
         # The menu acts on the cursor, as the hotkey's context is no view.
         handlers[name]().run(None)
@@ -2163,6 +2358,7 @@ ACTIONS = (
     (GEN_ACTION, GEN_LABEL, GenerateHandler, ""),
     (MERGE_ACTION, MERGE_LABEL, MergeHandler, ""),
     (LOCATE_ACTION, LOCATE_LABEL, LocateHandler, ""),
+    (EXPLAIN_ACTION, EXPLAIN_LABEL, ExplainHandler, ""),
     (SIGN_ALL_ACTION, SIGN_ALL_LABEL, SignAllHandler, ""),
     (APPLY_ACTION, APPLY_LABEL, ApplyNamesHandler, ""),
     (REVERT_ACTION, REVERT_LABEL, RevertNamesHandler, ""),
@@ -2173,6 +2369,13 @@ class PopupHooks(ida_kernwin.UI_Hooks):
     """Attach the actions to the disassembly and Functions right-click menus."""
 
     def populating_widget_popup(self, form, popup, *_args) -> None:
+        # A locate result list (a chooser this plugin opened) gets "Explain
+        # this row"; the other actions belong to the code views.
+        if ida_kernwin.get_widget_type(form) == getattr(ida_kernwin, "BWN_CHOOSER", None):
+            chooser = _OPEN_CHOOSERS.get(str(ida_kernwin.get_widget_title(form) or ""))
+            if chooser is not None and chooser.explain is not None:
+                ida_kernwin.attach_action_to_popup(form, popup, EXPLAIN_ROW_ACTION)
+            return
         if ida_kernwin.get_widget_type(form) not in (
             ida_kernwin.BWN_DISASM,
             ida_kernwin.BWN_FUNCS,
@@ -2208,6 +2411,12 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
                 ida_kernwin.action_desc_t(action, label, handler(), hotkey or None)
             )
             ida_kernwin.attach_action_to_menu(menu_path, action, ida_kernwin.SETMENU_APP)
+        # Only on a locate result list's right-click menu (PopupHooks).
+        ida_kernwin.register_action(
+            ida_kernwin.action_desc_t(
+                EXPLAIN_ROW_ACTION, EXPLAIN_ROW_LABEL, ExplainRowHandler(), None
+            )
+        )
         self._hooks = PopupHooks()
         self._hooks.hook()
         return ida_idaapi.PLUGIN_KEEP
@@ -2221,6 +2430,7 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
             self._hooks.unhook()
             self._hooks = None
         ida_kernwin.unregister_action(OPEN_ACTION)
+        ida_kernwin.unregister_action(EXPLAIN_ROW_ACTION)
         for action, *_rest in ACTIONS:
             ida_kernwin.unregister_action(action)
         if self._menu:

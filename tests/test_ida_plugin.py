@@ -5,6 +5,7 @@ plain Python: ``python -m unittest tests/test_ida_plugin.py``."""
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import struct
 import sys
@@ -408,6 +409,74 @@ class MatchRowTests(unittest.TestCase):
             self.assertEqual(
                 plugin.locate_actions(rows(evidence, "identified"), True, False), (False, True)
             )
+
+
+# `locate --explain --expect 0x15bb0 --discovery hint-free --json` of zlib's
+# `inflate` signature (x64 clang-O2) on the same image: inflateUndermine fails
+# the score gate. Captured from sigtool-native 0.1.1 (spec 7).
+EXPLAIN = json.loads(
+    """{"address": "0x15bb0", "answer_floor": null, "answer_withheld": null, "candidate": true,
+    "carriers": null, "chance": null, "cross_isa": false, "decided": "score", "end": "0x15bf4",
+    "evidence": null, "gates": [{"gate": "candidate", "needed": null, "passed": true,
+    "value": null}, {"gate": "score", "needed": 0.75, "passed": false, "value": 0.650246}],
+    "inherited": [], "label": "inflateUndermine", "matched": ["cfg:loops:1", "const:0x0",
+    "const:0x1f", "const:0xffffc0cc", "const:0xfffffffe", "ops:ret:2"], "matched_required": 4,
+    "matches": 1, "min_distinct": 3, "missed": [{"key": "cfg:blocks:8", "required": false},
+    {"key": "cfg:edges:9", "required": false}, {"key": "const:0x1e", "required": true},
+    {"key": "const:0x3f3f", "required": true}, {"key": "const:0x3f40", "required": true},
+    {"key": "ops:arith:5", "required": false}, {"key": "ops:branch:2", "required": false},
+    {"key": "ops:cmp:7", "required": false}, {"key": "ops:cond:7", "required": false},
+    {"key": "ops:load:6", "required": false}, {"key": "ops:move:7", "required": false},
+    {"key": "ops:stack:10", "required": false}], "module": "zlib", "neighbours": {"missed":
+    ["in2:const:0x40000000", "in:str:1.3.1", "in:str:unexpected end of file"], "shared": []},
+    "optional_callees": [], "rank": null, "required": 7, "rival": null, "rva": "0x15bb0",
+    "score": 0.650246, "similarity": 0.309496, "start": "0x15bb0", "threshold": 0.75}"""
+)
+
+
+class ExplainTests(unittest.TestCase):
+    def test_captured_explanation(self):
+        text = plugin.format_explanation(EXPLAIN, "inflate", "0x15bb0 (sub_15BB0)")
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "inflate at 0x15bb0 (sub_15BB0): decided by the score gate")
+        self.assertEqual(lines[1], "not among the 1 matches")
+        self.assertEqual(
+            lines[2],
+            "score 0.650 (threshold 0.75), similarity 0.309, required 4/7 (min distinct 3)",
+        )
+        self.assertIn("  candidate          pass", lines)
+        self.assertIn("  score              FAIL 0.65 vs 0.75", lines)
+        self.assertIn("missed, required (3): const:0x1e const:0x3f3f const:0x3f40", lines)
+        self.assertIn(
+            "matched (6): cfg:loops:1 const:0x0 const:0x1f const:0xffffc0cc "
+            "const:0xfffffffe ops:ret:2",
+            lines,
+        )
+        self.assertNotIn("not identified", text)
+        self.assertNotIn("inherited", text)
+
+    def test_withheld_answer_and_rank(self):
+        explain = {
+            **EXPLAIN,
+            "decided": "answer",
+            "rank": 1,
+            "matches": 2,
+            "evidence": "candidate",
+            "answer_withheld": "rival",
+            "answer_floor": 0.85,
+            "rival": 0.8123,
+            "inherited": ["inl:str:x"],
+        }
+        text = plugin.format_explanation(explain, "inflate", "0x15bb0")
+        self.assertIn("rank 1 of 2 matches, candidate", text)
+        self.assertTrue(text.startswith("inflate at 0x15bb0: decided by the answer gate"))
+        accepted = plugin.format_explanation({**EXPLAIN, "decided": "accepted"}, "f", "0x1")
+        self.assertTrue(accepted.startswith("f at 0x1: accepted\n"))
+        self.assertIn("not identified: rival (answer floor 0.85, rival 0.812)", text)
+        self.assertIn("inherited from callees (1): inl:str:x", text)
+
+    def test_missing_explanation(self):
+        self.assertIn("nothing to explain", plugin.format_explanation(None, "inflate", "0x10"))
 
 
 class InputFileTests(unittest.TestCase):

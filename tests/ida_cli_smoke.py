@@ -482,6 +482,28 @@ def main() -> int:
             "locate reads the exhausted budgets from both JSON documents",
         )
 
+        # Explain: at the cursor (asking for the signature file, as the
+        # clipboard holds none), then from the locate list's first row.
+        idb.screen_ea = by_name[target] + 1
+        idb.answer(str(yaml))
+        plugin.ExplainHandler().run()
+        explained = idb.infos[-1] if idb.infos else ""
+        check(
+            not idb.answers
+            and explained.startswith(f"{target} at {by_name[target]:#x}")
+            and "\ngates:\n" in explained
+            and "\nmatched (" in explained,
+            f"explain at the cursor shows the gates ({explained.splitlines()[0]})",
+        )
+        listing = idb.choosers[-1]
+        row_ctx = types.SimpleNamespace(widget_title=listing.title, chooser_selection=[0])
+        plugin.ExplainRowHandler().run(row_ctx)
+        check(
+            idb.infos[-1].startswith(f"{target} at {listing.rows[0].ea:#x}")
+            and "rank 1 of" in idb.infos[-1],
+            "explain this row explains the locate list's best match",
+        )
+
         db = outputs / f"{sign_image.name}.db"
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
