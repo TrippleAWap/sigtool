@@ -1,5 +1,34 @@
 # Spec changelog
 
+## v6 — real-world targets
+
+`SPEC_VERSION` is `6`. Feature records are unchanged; acceptance changes for
+targets that name no function, so v5 documents and DBs are refused (rule 16)
+and must be regenerated or rebuilt (`db build --file IMAGE --functions F`).
+
+### Callees in targets that name no function
+
+* A required `callee` without `!` is optional when the target's modules name
+  no defined function (SPEC.md §8, "Targets that name no function"), and stays
+  identifying for the anchoring floor.
+* Measured on the new real-world tier (`corpus/real.py --world`: the tuning
+  libraries built with gcc 12 as plain, `-O3`, hardened, LTO, PIE and static
+  executable, and the previous release; `bench --corpus ../corpus/build-world
+  --max-functions 4`), signing the plain `-O2` shared object, hint-free same
+  arch top-1: PIE 0.613 -> 0.700, static 0.525 -> 0.613, merged into PIE
+  0.542 -> 0.583; every shared-object target cell unchanged. Hint-free top-1
+  hits over the tier 9672 -> 9827. Strong FP 0.043 and hinted any-verdict FP
+  0.070 unchanged; hint-free any-verdict FP 0.105 -> 0.132 (within the 0.05
+  tolerance; the new hits are in unrelated PIE and static images); identified
+  precision hint-free 0.973 -> 0.972 (5968 -> 6099 correct). The real corpus
+  (`--max-functions 4 --joint`) is byte-identical apart from cost: every
+  target there is a shared object.
+* Lost: waiving a callee in any target that lacks its name. Unrelated
+  libraries lack it too, so on the real corpus any-verdict FP rose arm32 0.117
+  -> 0.217, arm64 0.083 -> 0.158, merged 0.019 -> 0.087, failing the gate.
+  Waived callees also left signatures with no identifying key, which the
+  anchoring floor then let through; they now stay identifying.
+
 ## v5 — in-module constants, matcher and trust rules
 
 `SPEC_VERSION` is `5`. `const` records change for ELF shared objects and
