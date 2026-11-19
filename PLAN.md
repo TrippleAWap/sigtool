@@ -391,6 +391,21 @@ As of 2026-11-18, `strong-fp-floor` branch, spec v5.
     the largest is x64 clang-O2 sqlite.
   - Open for M8 exit: the weekly workflow (`real-bench.yml`) has not run
     yet.
+  - RW2 bench honesty (2026-11-19, `rw/bench-honesty`): FP cells record
+    `targets` and `target_bytes`, and `compare` fails a gated FP cell that
+    scanned no image; every rate in the text report carries n and a 95%
+    Wilson interval (gating unchanged); `bench --sample-seed N` draws
+    another function sample; samples record their real compiler (gcc
+    samples had `tool: clang`), which changes only their `signature_id`.
+    Toy and real (`--max-functions 4 --joint`) reports are identical before
+    and after except for the new fields; two toy runs are identical. Real
+    corpus, per arch: corpus FP cells scan 30 images (7-11 MiB; merged 120,
+    38 MiB). The real corpus has no negative set, so its 10 negative FP
+    cells (strong and any verdict) scanned 0 images and now fail the real
+    baseline comparison; every other cell passes. They stay failing until
+    the real negative set (RW2) lands or the user agrees to drop them from
+    the baseline (rule 6). Example interval: hint-free identified precision,
+    toy corpus, 552/584 = 0.945 [0.924, 0.961].
 - M12, trust labels (2026-11-16, tuning corpus only): `identified` now
   needs an untied first match similar enough for its evidence, and
   shape-only matches need similarity 0.3 (hinted too, with 6 features).

@@ -39,6 +39,14 @@ fn level(opt: &str) -> &str {
     opt.rsplit_once('-').map_or(opt, |(_, level)| level)
 }
 
+/// The compiler of a build, recorded as the signature's provenance `tool`:
+/// `gcc-O2` -> `gcc`. A bare level is the toy corpus, which
+/// `corpus/build.py` builds with clang only.
+fn compiler(opt: &str) -> &str {
+    opt.split_once('-')
+        .map_or("clang", |(compiler, _)| compiler)
+}
+
 /// Same optimization level, built by a different compiler.
 fn other_compiler(cell: &RecallCell) -> bool {
     cell.source_opt != cell.target_opt && level(&cell.source_opt) == level(&cell.target_opt)
@@ -90,6 +98,15 @@ pub struct FalsePositiveCell {
     pub signatures: usize,
     pub signatures_with_hits: usize,
     pub hits: usize,
+    /// Distinct images the cell's signatures were scanned against. A cell
+    /// that scanned nothing has rate 0 by construction, so [`compare`] fails
+    /// it instead of letting it pass. Baselines saved before it was recorded
+    /// load as 0; only the current run's count is checked.
+    #[serde(default)]
+    pub targets: usize,
+    /// File bytes of those images (the stripped copies for hint-free scans).
+    #[serde(default)]
+    pub target_bytes: u64,
 }
 
 impl FalsePositiveCell {
@@ -229,6 +246,9 @@ pub struct Cost {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BenchReport {
     pub spec_version: String,
+    /// `--sample-seed` of the run; absent for the default, name-only sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_seed: Option<u64>,
     /// True when every hint-free scan ran on a `strip --strip-all` copy.
     #[serde(default)]
     pub hint_free_stripped: bool,
@@ -290,6 +310,9 @@ struct Target {
     context: OnceLock<ScanContext>,
     /// The same image after `strip --strip-all`, when the corpus has one.
     stripped: Option<(FileSource, OnceLock<ScanContext>)>,
+    /// File size of the image and of its stripped copy, for FP cell sizes.
+    bytes: u64,
+    stripped_bytes: Option<u64>,
 }
 
 impl Target {
@@ -299,6 +322,14 @@ impl Target {
     fn scan(&self, signature: &Signature, hints: bool) -> Vec<Match> {
         let (source, context) = self.scan_source(hints);
         scan_in(source, signature, context, hints)
+    }
+
+    /// File size of the image [`Target::scan`] reads in this mode.
+    fn scanned_bytes(&self, hints: bool) -> u64 {
+        match (self.stripped_bytes, hints) {
+            (Some(bytes), false) => bytes,
+            _ => self.bytes,
+        }
     }
 
     fn scan_source(&self, hints: bool) -> (&FileSource, &ScanContext) {
@@ -321,6 +352,32 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
     } else {
         numerator as f64 / denominator as f64
     }
+}
+
+/// Wilson score interval at 95% for `successes` of `n`; `(0, 1)` for `n = 0`.
+/// Corpus cells hold tens of samples, where the normal approximation's
+/// interval leaves [0, 1] and collapses to a point at rates 0 and 1.
+fn wilson(successes: usize, n: usize) -> (f64, f64) {
+    if n == 0 {
+        return (0.0, 1.0);
+    }
+    const Z: f64 = 1.959_963_984_540_054;
+    let n = n as f64;
+    let p = successes as f64 / n;
+    let z2 = Z * Z;
+    let denominator = 1.0 + z2 / n;
+    let centre = (p + z2 / (2.0 * n)) / denominator;
+    let half = Z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
+    ((centre - half).max(0.0), (centre + half).min(1.0))
+}
+
+/// `k/n = rate [low, high]`: the rate with its n and 95% Wilson interval.
+fn rate_text(successes: usize, n: usize) -> String {
+    let (low, high) = wilson(successes, n);
+    format!(
+        "{successes}/{n} = {:.3} [{low:.3}, {high:.3}]",
+        ratio(successes, n)
+    )
 }
 
 /// `(arch, opt, file stem)` from `arch/opt/file.elf` or `negative/arch/opt/file.elf`.
@@ -348,6 +405,7 @@ fn load_targets(
     entries: &[Value],
     arches: &BTreeSet<String>,
     max_functions: usize,
+    sample_seed: Option<u64>,
 ) -> Result<Vec<Target>, String> {
     let mut targets = Vec::new();
     for entry in entries {
@@ -360,6 +418,13 @@ fn load_targets(
         }
         let source =
             FileSource::from_path(corpus.join(path)).map_err(|error| format!("{path}: {error}"))?;
+        let file_size = |path: &str| {
+            std::fs::metadata(corpus.join(path))
+                .map(|metadata| metadata.len())
+                .map_err(|error| format!("{path}: {error}"))
+        };
+        let bytes = file_size(path)?;
+        let stripped_bytes = entry["stripped"].as_str().map(file_size).transpose()?;
         let stripped = match entry["stripped"].as_str() {
             Some(stripped) => Some((
                 FileSource::from_path(corpus.join(stripped))
@@ -383,7 +448,7 @@ fn load_targets(
             })
             .unwrap_or_default();
         let all_functions = functions.clone();
-        let functions = limit_functions(functions, max_functions);
+        let functions = limit_functions(functions, max_functions, sample_seed);
         targets.push(Target {
             arch,
             source_file,
@@ -393,6 +458,8 @@ fn load_targets(
             all_functions,
             context: OnceLock::new(),
             stripped,
+            bytes,
+            stripped_bytes,
         });
     }
     targets
@@ -410,13 +477,29 @@ fn parallel<T: Send, F: Fn(usize) -> T + Sync>(count: usize, job: F) -> Vec<T> {
 
 /// Keep the first `limit` functions by CRC-32 of the name (0 keeps all). The
 /// choice depends only on names, so every build of a library keeps the same set.
-fn limit_functions(functions: BTreeMap<String, u64>, limit: usize) -> BTreeMap<String, u64> {
+/// A `seed` ranks by CRC-32 of its little-endian bytes followed by the name
+/// instead: a different sample of the same libraries, so a milestone exit is
+/// not measured only on the functions every change was tuned against.
+fn limit_functions(
+    functions: BTreeMap<String, u64>,
+    limit: usize,
+    seed: Option<u64>,
+) -> BTreeMap<String, u64> {
     if limit == 0 || functions.len() <= limit {
         return functions;
     }
+    let rank = |name: &str| match seed {
+        None => crc32fast::hash(name.as_bytes()),
+        Some(seed) => {
+            let mut hasher = crc32fast::Hasher::new();
+            hasher.update(&seed.to_le_bytes());
+            hasher.update(name.as_bytes());
+            hasher.finalize()
+        }
+    };
     let mut ranked: Vec<(u32, String, u64)> = functions
         .into_iter()
-        .map(|(name, start)| (crc32fast::hash(name.as_bytes()), name, start))
+        .map(|(name, start)| (rank(&name), name, start))
         .collect();
     ranked.sort();
     ranked
@@ -445,6 +528,9 @@ pub struct BenchOptions {
     pub arches: Vec<String>,
     /// Ground-truth functions kept per binary; 0 keeps all.
     pub max_functions: usize,
+    /// Rank functions for `max_functions` by CRC-32 of seed and name instead
+    /// of name alone (see [`limit_functions`]).
+    pub sample_seed: Option<u64>,
     /// Only this discovery mode (`hinted` or `hint-free`); `None` runs both.
     pub discovery: Option<String>,
     /// Skip both false-positive measurements (recall-only iteration).
@@ -478,12 +564,14 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         document["binaries"].as_array().unwrap_or(&empty),
         &arches,
         max_functions,
+        options.sample_seed,
     )?;
     let negatives = load_targets(
         corpus,
         document["negative"].as_array().unwrap_or(&empty),
         &arches,
         max_functions,
+        options.sample_seed,
     )?;
     if targets.is_empty() {
         return Err(format!("no corpus binaries under {}", corpus.display()));
@@ -528,7 +616,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             *start,
             None,
             Some(&target.opt),
-            Some("clang"),
+            Some(compiler(&target.opt)),
             None,
             None,
             Some(context),
@@ -581,13 +669,13 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 source: &targets[*a].source,
                 addr: *a_start,
                 opt: Some(opt),
-                tool: Some("clang"),
+                tool: Some(compiler(opt)),
             },
             MergeSample {
                 source: &targets[*b].source,
                 addr: *b_start,
                 opt: Some(opt),
-                tool: Some("clang"),
+                tool: Some(compiler(opt)),
             },
         ];
         let contexts: Vec<Option<&ScanContext>> = [*a, *b]
@@ -790,7 +878,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         !options.skip_false_positives && options.discovery.as_deref() != Some(HINT_FREE);
     let hint_free_fp =
         !options.skip_false_positives && options.discovery.as_deref() != Some(HINTED);
-    let (corpus_counts, negative_counts) = if hinted_fp {
+    let (corpus_hits, negative_hits) = if hinted_fp {
         let corpus_hits = false_positive_hits(&all, corpus_targets, true);
         let negative_hits = false_positive_hits(&all, negative_targets, true);
         if let Some(path) = &options.fp_report {
@@ -799,16 +887,19 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             let both: Vec<_> = corpus_hits.iter().chain(&negative_hits).cloned().collect();
             write_fp_report(Path::new(&hinted_path), &all, &both)?;
         }
-        let (corpus_counts, corpus_scans, corpus_answers) =
-            false_positive_counts(all.len(), &corpus_hits);
-        let (negative_counts, negative_scans, negative_answers) =
-            false_positive_counts(all.len(), &negative_hits);
         let cell = identified_cell(&mut answers, HINTED);
-        cell.unrelated_scans += corpus_scans + negative_scans;
-        cell.unrelated_answers += corpus_answers + negative_answers;
-        (corpus_counts, negative_counts)
+        for hits in [&corpus_hits, &negative_hits] {
+            cell.unrelated_scans += hits.len();
+            cell.unrelated_answers += hits
+                .iter()
+                .filter(|(_, _, matches)| identified_answer(matches))
+                .count();
+        }
+        (corpus_hits, negative_hits)
     } else {
-        (vec![0; all.len()], vec![0; all.len()])
+        // Not measured: the hinted cells report zero targets and fail a
+        // baseline comparison rather than pass with an unmeasured rate.
+        (Vec::new(), Vec::new())
     };
     // Hint-free scans see every function in a stripped image, so their
     // precision is its own number: any verdict, unrelated sources and the
@@ -826,24 +917,23 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         if let Some(path) = &options.fp_report {
             write_fp_report(path, &all, &hits)?;
         }
-        let mut counts = vec![0usize; all.len()];
         let cell = identified_cell(&mut answers, HINT_FREE);
-        for (index, _, matches) in &hits {
-            counts[*index] += matches.len();
+        for (_, _, matches) in &hits {
             cell.unrelated_scans += 1;
             if identified_answer(matches) {
                 cell.unrelated_answers += 1;
             }
         }
-        false_positive_cells(&all, &counts, None)
+        false_positive_cells(&all, &hits, false, None)
     } else {
         Vec::new()
     };
     let is_strong: Vec<bool> = all.iter().map(|s| s.verdict == "strong").collect();
-    let false_positives = false_positive_cells(&all, &corpus_counts, Some(&is_strong));
-    let negative_false_positives = false_positive_cells(&all, &negative_counts, Some(&is_strong));
-    let any_false_positives = false_positive_cells(&all, &corpus_counts, None);
-    let any_negative_false_positives = false_positive_cells(&all, &negative_counts, None);
+    let false_positives = false_positive_cells(&all, &corpus_hits, true, Some(&is_strong));
+    let negative_false_positives =
+        false_positive_cells(&all, &negative_hits, true, Some(&is_strong));
+    let any_false_positives = false_positive_cells(&all, &corpus_hits, true, None);
+    let any_negative_false_positives = false_positive_cells(&all, &negative_hits, true, None);
 
     phases.done("false positives");
     let (joint, joint_false_positives) = if options.joint {
@@ -856,6 +946,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
     }
     Ok(BenchReport {
         spec_version: SPEC_VERSION.to_string(),
+        sample_seed: options.sample_seed,
         hint_free_stripped: targets.iter().all(|t| t.stripped.is_some()),
         hint_free_false_positives,
         signatures: all.len(),
@@ -967,7 +1058,7 @@ fn measure_joint(
                 *start,
                 Some(name),
                 Some(&source.opt),
-                Some("clang"),
+                Some(compiler(&source.opt)),
                 None,
                 None,
                 Some(context),
@@ -1060,21 +1151,6 @@ fn measure_joint(
     Ok((cells, false_positives))
 }
 
-/// Accepted matches per sample summed over the targets it must not match,
-/// plus the number of scans and of scans whose first match is identified.
-fn false_positive_counts(
-    samples: usize,
-    hits: &[(usize, &Target, Vec<Match>)],
-) -> (Vec<usize>, usize, usize) {
-    let mut per_sample = vec![0usize; samples];
-    let mut answers = 0;
-    for (index, _, matches) in hits {
-        per_sample[*index] += matches.len();
-        answers += usize::from(identified_answer(matches));
-    }
-    (per_sample, hits.len(), answers)
-}
-
 /// Every accepted match per `(sample, target)` pair, for reporting.
 fn false_positive_hits<'t, F>(
     samples: &[&Sample],
@@ -1163,13 +1239,30 @@ fn write_fp_report(
     std::fs::write(path, out).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// One cell per sample arch from the accepted matches of every
+/// `(sample, target)` scan; `only` keeps a subset of the samples.
 fn false_positive_cells(
     samples: &[&Sample],
-    counts: &[usize],
+    hits: &[(usize, &Target, Vec<Match>)],
+    hints: bool,
     only: Option<&[bool]>,
 ) -> Vec<FalsePositiveCell> {
+    let mut counts = vec![0usize; samples.len()];
+    // Images per arch, by identity: a negative image may share its
+    // `(arch, opt, stem)` with a corpus image.
+    let mut scanned: BTreeMap<&str, BTreeMap<*const Target, u64>> = BTreeMap::new();
+    for (index, target, matches) in hits {
+        if only.is_some_and(|keep| !keep[*index]) {
+            continue;
+        }
+        counts[*index] += matches.len();
+        scanned
+            .entry(samples[*index].arch.as_str())
+            .or_default()
+            .insert(*target as *const Target, target.scanned_bytes(hints));
+    }
     let mut cells: BTreeMap<String, FalsePositiveCell> = BTreeMap::new();
-    for (index, (sample, count)) in samples.iter().zip(counts).enumerate() {
+    for (index, (sample, count)) in samples.iter().zip(&counts).enumerate() {
         if only.is_some_and(|keep| !keep[index]) {
             continue;
         }
@@ -1180,11 +1273,19 @@ fn false_positive_cells(
                 signatures: 0,
                 signatures_with_hits: 0,
                 hits: 0,
+                targets: 0,
+                target_bytes: 0,
             });
         cell.signatures += 1;
         cell.hits += count;
         if *count > 0 {
             cell.signatures_with_hits += 1;
+        }
+    }
+    for cell in cells.values_mut() {
+        if let Some(images) = scanned.get(cell.arch.as_str()) {
+            cell.targets = images.len();
+            cell.target_bytes = images.values().sum();
         }
     }
     cells.into_values().collect()
@@ -1267,6 +1368,13 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
                 failures.push(format!("missing {label} cell {}", cell.arch));
                 continue;
             };
+            if current.targets == 0 {
+                failures.push(format!(
+                    "{label} {}: scanned 0 targets; an empty cell cannot pass",
+                    cell.arch
+                ));
+                continue;
+            }
             if current.rate() > cell.rate() + tolerance {
                 failures.push(format!(
                     "{label} {}: {:.3} > baseline {:.3} + {tolerance:.2}",
@@ -1401,7 +1509,9 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
 
 /// PLAN.md §2 (G1, G3) v1.0 goals, evaluated on a report. Informational: the gate
 /// is [`compare`]; this says how far the tool is from "done".
-pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
+/// Each goal is `(name, successes, n, goal, met)`; `met` compares the point
+/// rate, like the gate.
+pub fn targets(report: &BenchReport) -> Vec<(String, usize, usize, f64, bool)> {
     let mut out = Vec::new();
     let mut rate = |name: &str, filter: &dyn Fn(&RecallCell) -> bool, goal: f64| {
         let (hits, top, attempts) = report
@@ -1412,9 +1522,21 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
                 (h + c.hits, t + c.top_hits, a + c.attempts)
             });
         let value = ratio(hits, attempts);
-        out.push((format!("{name} (found)"), value, goal, value >= goal));
+        out.push((
+            format!("{name} (found)"),
+            hits,
+            attempts,
+            goal,
+            value >= goal,
+        ));
         let value = ratio(top, attempts);
-        out.push((format!("{name} (top-1)"), value, goal, value >= goal));
+        out.push((
+            format!("{name} (top-1)"),
+            top,
+            attempts,
+            goal,
+            value >= goal,
+        ));
     };
     // Groups: same arch (comparison quality), cross arch from one sample (the
     // goal), merged (two samples), and merged held out (an architecture
@@ -1490,13 +1612,14 @@ pub fn targets(report: &BenchReport) -> Vec<(String, f64, f64, bool)> {
             (w + c.signatures_with_hits, t + c.signatures)
         });
         let value = ratio(with, total);
-        out.push((label.to_string(), value, ceiling, value <= ceiling));
+        out.push((label.to_string(), with, total, ceiling, value <= ceiling));
     }
     for cell in &report.identified {
         let value = cell.precision();
         out.push((
             format!("identified precision, {}", cell.discovery),
-            value,
+            cell.correct,
+            cell.answers + cell.unrelated_answers,
             0.98,
             value >= 0.98,
         ));
@@ -1513,6 +1636,9 @@ pub fn render(report: &BenchReport) -> String {
         "signatures: {}  refused: {}  merged pairs refused: {}",
         report.signatures, report.refused, report.merged_refused
     );
+    if let Some(seed) = report.sample_seed {
+        let _ = writeln!(text, "sample seed: {seed}");
+    }
     for (arch, counts) in &report.verdicts {
         let line: Vec<String> = counts.iter().map(|(v, n)| format!("{v}={n}")).collect();
         let _ = writeln!(text, "  {arch}: {}", line.join(" "));
@@ -1529,14 +1655,12 @@ pub fn render(report: &BenchReport) -> String {
             let same_build = cell.source_opt == cell.target_opt;
             let _ = writeln!(
                 text,
-                "  {} {}->{}: {}/{} = {:.3}  top-1 {:.3}{}",
+                "  {} {}->{}: {}  top-1 {}{}",
                 cell.arch,
                 cell.source_opt,
                 cell.target_opt,
-                cell.hits,
-                cell.attempts,
-                cell.rate(),
-                cell.top_rate(),
+                rate_text(cell.hits, cell.attempts),
+                rate_text(cell.top_hits, cell.attempts),
                 if same_build { "  (same build)" } else { "" }
             );
             let bucket = if same_build { &mut same } else { &mut cross };
@@ -1545,13 +1669,9 @@ pub fn render(report: &BenchReport) -> String {
         }
         let _ = writeln!(
             text,
-            "  total same build: {}/{} = {:.3}\n  total cross build: {}/{} = {:.3}",
-            same.0,
-            same.1,
-            ratio(same.0, same.1),
-            cross.0,
-            cross.1,
-            ratio(cross.0, cross.1)
+            "  total same build: {}\n  total cross build: {}",
+            rate_text(same.0, same.1),
+            rate_text(cross.0, cross.1)
         );
     }
     for (label, cells) in [
@@ -1580,12 +1700,13 @@ pub fn render(report: &BenchReport) -> String {
         for cell in cells {
             let _ = writeln!(
                 text,
-                "  {}: {}/{} = {:.3}, total hits {}",
+                // KiB, not MiB: toy-corpus images are a few KiB each.
+                "  {}: {}, total hits {}, {} targets ({} KiB)",
                 cell.arch,
-                cell.signatures_with_hits,
-                cell.signatures,
-                cell.rate(),
-                cell.hits
+                rate_text(cell.signatures_with_hits, cell.signatures),
+                cell.hits,
+                cell.targets,
+                cell.target_bytes.div_ceil(1024)
             );
         }
     }
@@ -1599,17 +1720,16 @@ pub fn render(report: &BenchReport) -> String {
     for cell in &report.identified {
         let _ = writeln!(
             text,
-            "  {}: precision {}/{} = {:.3} ({} wrong where the function is, {} where it is not); \
-             abstention {}/{} = {:.3}",
+            "  {}: precision {} ({} wrong where the function is, {} where it is not); \
+             abstention {}",
             cell.discovery,
-            cell.correct,
-            cell.answers + cell.unrelated_answers,
-            cell.precision(),
+            rate_text(cell.correct, cell.answers + cell.unrelated_answers),
             cell.answers - cell.correct,
             cell.unrelated_answers,
-            cell.unrelated_scans - cell.unrelated_answers,
-            cell.unrelated_scans,
-            cell.abstention()
+            rate_text(
+                cell.unrelated_scans - cell.unrelated_answers,
+                cell.unrelated_scans
+            )
         );
     }
     for discovery in [HINTED, HINT_FREE] {
@@ -1628,21 +1748,20 @@ pub fn render(report: &BenchReport) -> String {
         for cell in cells {
             let _ = writeln!(
                 text,
-                "  {} / {}: {}/{} = {:.3}",
+                "  {} / {}: {}",
                 cell.library,
                 cell.row,
-                cell.top_hits,
-                cell.attempts,
-                cell.top_rate()
+                rate_text(cell.top_hits, cell.attempts)
             );
         }
     }
     let _ = writeln!(text, "\nv1.0 goals (PLAN.md §2)");
-    for (name, value, goal, met) in targets(report) {
+    for (name, successes, n, goal, met) in targets(report) {
         let _ = writeln!(
             text,
-            "  [{}] {name}: {value:.3} (target {}{goal:.2})",
+            "  [{}] {name}: {} (target {}{goal:.2})",
             if met { "met" } else { "   " },
+            rate_text(successes, n),
             if name.contains("FP rate") { "<=" } else { ">=" }
         );
     }
@@ -1678,18 +1797,18 @@ pub fn render(report: &BenchReport) -> String {
         for (group, (attempts, alone, joint)) in groups {
             let _ = writeln!(
                 text,
-                "  {group}: {:.3} -> {:.3} ({alone} -> {joint} of {attempts})",
-                ratio(alone, attempts),
-                ratio(joint, attempts)
+                "  {group}: {} -> {}",
+                rate_text(alone, attempts),
+                rate_text(joint, attempts)
             );
         }
         for cell in &report.joint_false_positives {
             let _ = writeln!(
                 text,
-                "  {} signatures hitting other libraries: {:.3} -> {:.3}",
+                "  {} signatures hitting other libraries: {} -> {}",
                 cell.library,
-                ratio(cell.independent_with_hits, cell.signatures),
-                ratio(cell.joint_with_hits, cell.signatures)
+                rate_text(cell.independent_with_hits, cell.signatures),
+                rate_text(cell.joint_with_hits, cell.signatures)
             );
         }
     }
@@ -1781,7 +1900,42 @@ mod tests {
         baseline.identified.clear();
         baseline.library_recall.clear();
         baseline.cost = None;
+        // A run compared against it scanned targets in every FP cell.
+        for cell in fp_cells(&mut baseline) {
+            cell.targets = 1;
+        }
         baseline
+    }
+
+    fn fp_cells(report: &mut BenchReport) -> impl Iterator<Item = &mut FalsePositiveCell> {
+        [
+            &mut report.false_positives,
+            &mut report.negative_false_positives,
+            &mut report.any_false_positives,
+            &mut report.any_negative_false_positives,
+            &mut report.hint_free_false_positives,
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    #[test]
+    fn baselines_without_target_counts_load() {
+        let mut baseline: BenchReport =
+            serde_json::from_str(include_str!("../../tests/baseline/native-real-bench.json"))
+                .expect("baseline loads");
+        assert!(fp_cells(&mut baseline).all(|cell| cell.targets == 0));
+    }
+
+    #[test]
+    fn empty_false_positive_cells_fail() {
+        let baseline = old_baseline();
+        let mut current = baseline.clone();
+        // A zero rate from a cell that scanned nothing is not a measurement.
+        current.negative_false_positives[0].targets = 0;
+        let failures = compare(&baseline, &current, DEFAULT_TOLERANCE);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("scanned 0 targets"), "{failures:?}");
     }
 
     fn answers(discovery: &str, correct: usize, unrelated_answers: usize) -> IdentifiedCell {
@@ -1867,6 +2021,45 @@ mod tests {
         let failures = compare(&baseline, &current, DEFAULT_TOLERANCE);
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].starts_with("library top-1 recall"));
+    }
+
+    #[test]
+    fn wilson_intervals_match_hand_computed_values() {
+        // Worked by hand from Wilson (1927): at 0/n the upper bound is
+        // z^2 / (n + z^2), which a normal-approximation interval would give as 0.
+        let close = |(low, high): (f64, f64), want: (f64, f64)| {
+            (low - want.0).abs() < 5e-4 && (high - want.1).abs() < 5e-4
+        };
+        assert!(close(wilson(0, 10), (0.0, 0.2775)));
+        assert!(close(wilson(5, 10), (0.2366, 0.7634)));
+        assert!(close(wilson(10, 10), (0.7225, 1.0)));
+        assert_eq!(wilson(0, 0), (0.0, 1.0));
+        assert_eq!(rate_text(5, 10), "5/10 = 0.500 [0.237, 0.763]");
+    }
+
+    #[test]
+    fn sample_seed_changes_only_the_ranking() {
+        let functions: BTreeMap<String, u64> = (0..64u64)
+            .map(|index| (format!("function_{index}"), index))
+            .collect();
+        let unseeded = limit_functions(functions.clone(), 8, None);
+        // No seed: the name-only CRC ranking every saved baseline used.
+        let mut by_name: Vec<&String> = functions.keys().collect();
+        by_name.sort_by_key(|name| (crc32fast::hash(name.as_bytes()), *name));
+        let expected: BTreeSet<&String> = by_name.into_iter().take(8).collect();
+        assert_eq!(unseeded.keys().collect::<BTreeSet<_>>(), expected);
+        let seeded = limit_functions(functions.clone(), 8, Some(7));
+        assert_eq!(seeded.len(), 8);
+        assert_ne!(seeded, unseeded);
+        assert_eq!(seeded, limit_functions(functions.clone(), 8, Some(7)));
+        assert_ne!(seeded, limit_functions(functions, 8, Some(8)));
+    }
+
+    #[test]
+    fn compiler_comes_from_the_build_directory() {
+        assert_eq!(compiler("gcc-O2"), "gcc");
+        assert_eq!(compiler("clang-Os"), "clang");
+        assert_eq!(compiler("O0"), "clang");
     }
 
     #[test]
