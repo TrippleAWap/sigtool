@@ -270,6 +270,29 @@ class MatchRowTests(unittest.TestCase):
         self.assertEqual(rows[0].ea, 0x140000200)
         self.assertEqual(rows[0].cells, ("0x140000200", "0.912", "identified", "inflate", "2"))
 
+    def test_label_is_the_idb_name_when_meaningful(self):
+        matches = [
+            {"rva": "0x200", "evidence": "identified", "label": "inflate"},
+            {"rva": "0x300", "evidence": "candidate", "label": None},
+            {"rva": "0x400", "evidence": "candidate", "label": "deflate"},
+        ]
+        names = {0x1200: "my_inflate", 0x1300: "sub_1300", 0x1400: "sub_1400"}
+        rows = plugin.match_rows(matches, 0x1000, names.get)
+        self.assertEqual([row.cells[3] for row in rows], ["my_inflate", "sub_1300", "deflate"])
+
+    def test_jump_only_to_an_identified_best_match(self):
+        def rows(*evidence):
+            return [plugin.Row(0x10 * i, ("", "", e, "", "")) for i, e in enumerate(evidence)]
+
+        self.assertEqual(plugin.locate_actions([], True, True), (False, False))
+        self.assertEqual(plugin.locate_actions(rows("identified"), True, False), (True, False))
+        self.assertEqual(plugin.locate_actions(rows("identified"), False, True), (False, True))
+        # A guess is never jumped to, and is listed even with listing off.
+        for evidence in ("candidate", "shape-only"):
+            self.assertEqual(
+                plugin.locate_actions(rows(evidence, "identified"), True, False), (False, True)
+            )
+
 
 class InputFileTests(unittest.TestCase):
     def setUp(self):

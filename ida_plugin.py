@@ -693,11 +693,16 @@ class Row:
     cells: tuple[str, ...]
 
 
-def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
+def match_rows(
+    matches: Iterable[dict], base: int, current_name: Callable[[int], str] | None = None
+) -> list[Row]:
     """Chooser rows for ``locate --json`` matches, best first.
 
     A match maps back through its ``rva`` (the IDB may be rebased); one
     without a module has no ``rva`` and cannot be placed, so it is dropped.
+    The label is the IDB's name at the match (``current_name``, given the
+    address) when it is a meaningful one: the CLI only knows the image's
+    symbols, none for a stripped or rebuilt image. Otherwise the CLI's label.
     """
     rows = []
     for match in matches:
@@ -705,6 +710,8 @@ def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
         if rva is None:
             continue
         ea = base + int(str(rva), 16)
+        name = current_name(ea) if current_name is not None else ""
+        label = name if is_meaningful_name(name) else str(match.get("label") or name or "")
         rows.append(
             Row(
                 ea=ea,
@@ -712,12 +719,25 @@ def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
                     f"{ea:#x}",
                     f"{float(match.get('score') or 0.0):.3f}",
                     str(match.get("evidence") or ""),
-                    str(match.get("label") or ""),
+                    label,
                     str(len(match.get("matched") or [])),
                 ),
             )
         )
     return rows
+
+
+def locate_actions(rows: list[Row], auto_jump: bool, list_matches: bool) -> tuple[bool, bool]:
+    """Whether to jump to the best locate row, and whether to list the rows.
+
+    Only an ``identified`` best match is an answer worth landing on; a
+    ``candidate`` or ``shape-only`` one is listed for review instead, even
+    when listing is off, so a guess is never the place the cursor ends up.
+    """
+    if not rows:
+        return False, False
+    trusted = rows[0].cells[2] in ACCEPTED_EVIDENCE
+    return auto_jump and trusted, list_matches or not trusted
 
 
 # -- CLI glue -----------------------------------------------------------------
@@ -1429,6 +1449,11 @@ class LocateHandler(_Handler):
                     "--json",
                     str(output),
                     "--yes",
+                    # As apply-names: the result must not depend on whether
+                    # the input file (with its symbols) sits beside the IDB,
+                    # which `auto` would let pick hinted discovery.
+                    "--discovery",
+                    "hint-free",
                 ],
                 f"sigtool: locating the signature from {source}",
                 ok_codes=(0, 1),
@@ -1437,7 +1462,9 @@ class LocateHandler(_Handler):
         _echo_cli_lines(stderr)
         name = str(result.get("signature") or Path(signature).stem)
         truncation = describe_truncation(result)
-        rows = match_rows(result.get("matches", []), int(ida_nalt.get_imagebase()))
+        rows = match_rows(
+            result.get("matches", []), int(ida_nalt.get_imagebase()), ida_name.get_ea_name
+        )
         if not rows:
             ida_kernwin.msg(f"sigtool: no match for {name} (from {source}) in this IDB\n")
             note = (
@@ -1450,7 +1477,13 @@ class LocateHandler(_Handler):
         ida_kernwin.msg(f"sigtool: {name} (from {source}): {len(rows)} match(es)\n")
         for row in rows:
             ida_kernwin.msg(f"sigtool:   {' '.join(row.cells)}\n")
-        if _setting(SET_LIST_MATCHES):
+        jump, listed = locate_actions(rows, _setting(SET_AUTO_JUMP), _setting(SET_LIST_MATCHES))
+        if not jump and _setting(SET_AUTO_JUMP):
+            ida_kernwin.msg(
+                f"sigtool: not jumping: the best match is {rows[0].cells[2]}, not identified "
+                "(review the list)\n"
+            )
+        if listed:
             show_results(
                 f"sigtool: matches for {name}" + (f" ({truncation})" if truncation else ""),
                 [
@@ -1462,7 +1495,7 @@ class LocateHandler(_Handler):
                 ],
                 rows,
             )
-        if _setting(SET_AUTO_JUMP):
+        if jump:
             ida_kernwin.jumpto(rows[0].ea)
 
 
