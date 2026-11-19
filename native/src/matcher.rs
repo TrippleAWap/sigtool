@@ -928,6 +928,23 @@ impl ScanContext {
         found
     }
 
+    /// `(size in bytes, direct callees)` of each direct caller of the
+    /// function at `start`. Diagnostic (`bench --fp-report`): a thin wrapper
+    /// caller is the one function a signature of the wrapper, signed where
+    /// the callee was inlined into it, can also mean.
+    pub fn caller_shapes<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> Vec<(u64, usize)> {
+        self.callers_of(source, start, hints)
+            .into_iter()
+            .filter_map(|caller| self.features.get_or_recover(source, caller, hints))
+            .map(|caller| (caller.end.saturating_sub(caller.start), caller.calls.len()))
+            .collect()
+    }
+
     /// Identifying keys of the function at `start`'s call-graph neighbours:
     /// `out:` its direct callees, `in:` its callers, `out2:`/`in2:` one hop
     /// further. Strings and distinctive constants survive stripping and

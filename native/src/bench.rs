@@ -917,6 +917,15 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 // Whether the first match is an `identified` answer, so the
                 // precision of a label rule can be simulated offline.
                 "identified": answer,
+                // The first match's direct callers as (bytes, callees), for
+                // simulating a thin-wrapper label rule.
+                "first_callers": matches.first().map(|first| {
+                    target.scan_source(false).1.caller_shapes(
+                        target.scan_source(false).0,
+                        first.address,
+                        false,
+                    )
+                }),
                 "matches": found,
             });
             let sink = if *hints { &mut out_hinted } else { &mut out };
