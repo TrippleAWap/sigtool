@@ -922,11 +922,8 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
                 // The first match's direct callers as (bytes, callees), for
                 // simulating a thin-wrapper label rule.
                 "first_callers": matches.first().map(|first| {
-                    target.scan_source(false).1.caller_shapes(
-                        target.scan_source(false).0,
-                        first.address,
-                        false,
-                    )
+                    let (source, context) = target.scan_source(*hints);
+                    context.caller_shapes(source, first.address, *hints)
                 }),
                 "matches": found,
             });
@@ -1546,6 +1543,14 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
         failures.push(format!(
             "spec version {} differs from baseline {}; re-save the baseline",
             current.spec_version, baseline.spec_version
+        ));
+    }
+    // A different seed draws different functions: its cells measure another
+    // sample, not a change to the same one.
+    if baseline.sample_seed != current.sample_seed {
+        failures.push(format!(
+            "sample seed {:?} differs from baseline {:?}; compare runs drawn from the same sample",
+            current.sample_seed, baseline.sample_seed
         ));
     }
     if current.refused > baseline.refused {
