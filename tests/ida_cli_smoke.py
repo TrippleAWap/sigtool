@@ -731,10 +731,9 @@ def main() -> int:
         plugin.ApplyNamesHandler(str(db)).run()
         check(not idb.answers, "apply-names takes the menu's DB without a dialog")
         check("truncated" in budget_reads[-1], "apply-names reads the scan's exhausted budgets")
-        if plugin._supports("scan", "--progress"):
-            check(bool(progress_seen), f"apply-names saw scan progress ({progress_seen[-1:]})")
-        else:
-            print("skip this CLI has no scan --progress (older than the plugin)")
+        # The plugin ships with this CLI, so the newer scan flags must be there.
+        check(plugin._supports("scan", "--progress"), "the CLI offers scan --progress")
+        check(bool(progress_seen), f"apply-names saw scan progress ({progress_seen[-1:]})")
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
         check(
             from_idb == renamed,
@@ -760,6 +759,12 @@ def main() -> int:
             rows = [row for row in unsure if row[3] == kind]
             good = sum(1 for _i, ea, name, _k in rows if apply_truth.get(ea, ("",))[0] == name)
             print(f"     review rows ({kind}): {len(rows)}, {good} right by ground truth")
+        check(
+            all(cells[6].isdigit() for cells in review.items)
+            and all(review.items[index][5] for index, *_rest in unsure),
+            "every proposed rename shows its matched count, and every unsure one "
+            "why the CLI withheld it",
+        )
         check(
             not any(index in review.deflt for index, *_rest in unsure)
             and not any(renamed.get(ea) == name for _i, ea, name, _k in unsure),
