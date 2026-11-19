@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -79,6 +80,7 @@ class FakeIdb:
         self.registry: dict = {}
         self.clipboard = ""
         self.messages: list[str] = []
+        self.prompts: list[str] = []
         # `user_cancelled` answers True from this poll on (None: never).
         self.cancel_after: int | None = None
         self.polls = 0
@@ -93,6 +95,7 @@ class FakeIdb:
     def next_answer(self, prompt: str):
         if not self.answers:
             raise AssertionError(f"unexpected dialog: {prompt}")
+        self.prompts.append(prompt)
         return self.answers.popleft()
 
 
@@ -679,6 +682,35 @@ def main() -> int:
         check(
             idb.choosers[-1].title.startswith("sigtool: renamed"),
             "renames are listed in a results chooser",
+        )
+
+        # Sign-all from the menu in this IDB: the field shows the DB just
+        # applied (the other IDB's), but signing writes this IDB's own DB.
+        reference_db = db.read_bytes()
+        shown = []
+        sign_all = [row[0] for row in plugin.MenuForm.CHOICES].index("rSignAll")
+        plugin.show_menu = lambda _choice, field: shown.append(field) or (sign_all, field)
+        plugin.MenuHandler().run()
+        own_db = Path(idb.idb_path).parent / "sigtool" / f"{apply_image.name}.db"
+        check(
+            shown == [str(db)]
+            and not idb.answers
+            and own_db.exists()
+            and db.read_bytes() == reference_db,
+            "menu sign-all writes this IDB's own DB and leaves the applied DB alone",
+        )
+        # Pointed at the other IDB's DB, it asks first, naming its count; No
+        # keeps the DB.
+        signed = int(re.match(r"signed (\d+) ", summary).group(1))
+        idb.answer(0)
+        plugin.SignAllHandler(str(db)).activate(None)
+        check(
+            not idb.answers
+            and f"holds {signed} signatures" in idb.prompts[-1]
+            and str(db) in idb.prompts[-1]
+            and db.read_bytes() == reference_db
+            and idb.messages[-1] == "sigtool: cancelled\n",
+            "replacing another IDB's DB asks first, and No keeps it",
         )
     return 0
 

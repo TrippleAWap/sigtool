@@ -38,9 +38,11 @@ A file dialog asks for the input file only when neither works (an IDB of
 another format).
 
 Ctrl-Alt-G (or Edit > Plugins > sigtool) opens the action menu, laid out
-like IDA-Fusion's: one radio row per action, the signatures DB that sign-all
-writes and apply-names reads, and "Configure settings", whose checkboxes are
-kept in IDA's registry. The menu remembers the last action and DB. By
+like IDA-Fusion's: one radio row per action, the signatures DB apply-names
+reads, and "Configure settings", whose checkboxes are kept in IDA's
+registry. The menu remembers the last action and the last DB applied or
+signed; sign-all writes this IDB's own DB unless another path is typed in,
+and asks before replacing a DB that is not this IDB's own. By
 default nothing asks for a file: a new signature is copied to the clipboard
 and saved as ``sigtool/<function>.yaml`` beside the IDB, DBs go to the same
 folder, locate takes the signature on the clipboard, and the best match is
@@ -366,6 +368,26 @@ def output_path(idb_path: str, name: str, suffix: str) -> str:
     """Where an output named ``name`` goes without asking: ``sigtool/`` beside the IDB."""
     folder = os.path.join(os.path.dirname(idb_path) or os.getcwd(), "sigtool")
     return os.path.join(folder, safe_file_name(name) + suffix)
+
+
+def own_db_paths(idb_path: str, stem: str) -> tuple[str, str]:
+    """This IDB's own DBs: sign-all's, and generate-on-selection's."""
+    return output_path(idb_path, stem, ".db"), output_path(idb_path, f"{stem}.selection", ".db")
+
+
+def signing_db_path(field: str, shown: str, idb_path: str, stem: str, selection: bool) -> str:
+    """Where sign-all (``selection`` false) or generate on a selection, run
+    from the menu, writes its DB.
+
+    The menu's DB field starts as ``shown``: the DB apply-names last read,
+    which may be another IDB's reference DB, and signing replaces a DB
+    outright. So signing goes to this IDB's own DB unless the user typed
+    another path into the field.
+    """
+    typed = field.strip()
+    if typed and typed != shown.strip():
+        return typed
+    return own_db_paths(idb_path, stem)[1 if selection else 0]
 
 
 def _basename(path: str) -> str:
@@ -1320,6 +1342,40 @@ def _db_path(name: str, what: str, given: str | None = None) -> str | None:
     )
 
 
+def _db_signature_count(path: str) -> int | None:
+    """How many signatures the DB at ``path`` holds (``db info``), or ``None``
+    when it is not a DB this CLI reads."""
+    try:
+        result = subprocess.run(
+            [_native(), "db", "info", path, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return int(json.loads(result.stdout)["signatures"]) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return None
+
+
+def _confirm_replace(path: str, what: str) -> None:
+    """Ask before ``db build`` replaces a DB that is not this IDB's own."""
+    own = {
+        os.path.normcase(os.path.abspath(item)) for item in own_db_paths(_idb_path(), _image_stem())
+    }
+    if not os.path.exists(path) or os.path.normcase(os.path.abspath(path)) in own:
+        return
+    count = _db_signature_count(path)
+    holds = f"holds {count} signatures" if count is not None else "is not a DB this sigtool reads"
+    answer = ida_kernwin.ask_yn(
+        0,
+        f"HIDECANCEL\n{path} already exists and {holds}; it is not this IDB's own DB.\n\n"
+        f"Replace it with the {what}?",
+    )
+    if answer != 1:
+        raise SigtoolCancelled
+
+
 def _sign_to_db(
     image: str, functions: list[dict[str, str]], what: str, name: str, db: str | None = None
 ) -> None:
@@ -1327,6 +1383,7 @@ def _sign_to_db(
     path = _db_path(name, what, db)
     if not path:
         return
+    _confirm_replace(path, what)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         listing = Path(temp) / "functions.json"
@@ -1354,7 +1411,8 @@ def _sign_to_db(
         if line.startswith("skipped "):
             ida_kernwin.msg(f"sigtool: {line}\n")
     _last_paths["db"] = path
-    _remember("db", path)
+    # The DB just signed is the one to apply next, in this IDB or another.
+    _remember("apply_db", path)
     summary = summarize_build(report)
     ida_kernwin.msg(f"sigtool: {summary.splitlines()[0]}; wrote {path}\n")
     ida_kernwin.info(f"{summary}\n\nDB: {path}")
@@ -1665,7 +1723,7 @@ class ApplyNamesHandler(_Handler):
         if not db:
             return
         _last_paths["db"] = db
-        _remember("db", db)
+        _remember("apply_db", db)
         image = _input_file()
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "hits.json"
@@ -1775,7 +1833,7 @@ class ApplyNamesHandler(_Handler):
 
 class MenuForm(ida_kernwin.Form):
     """The action menu (IDA-Fusion style): one radio row per action, and the
-    signatures DB that sign-all writes and apply-names reads."""
+    signatures DB that apply-names reads (sign-all writes it only when typed in)."""
 
     # (control name, label, hint); the radio index is the position here.
     CHOICES = (
@@ -1816,8 +1874,8 @@ class MenuForm(ida_kernwin.Form):
                 "",
                 *rows,
                 "",
-                "<#Written by sign-all and generate-on-selection, read by apply-names#"
-                "Signatures DB:{iDb}>",
+                "<#Read by apply-names. Sign-all writes this IDB's own DB "
+                "unless you enter another path here#Signatures DB:{iDb}>",
                 "",
             ]
         )
@@ -1877,26 +1935,26 @@ class MenuHandler(_Handler):
 
     def run(self, ctx=None) -> None:
         choice = int(_remembered("choice", "0") or 0)
-        db = _remembered("db", "")
-        if not db:
-            db = output_path(_idb_path(), _image_stem(), ".db")
+        # The field shows the DB to apply; apply-names remembers it, the
+        # menu does not, so a path typed for signing does not become it.
+        shown = _remembered("apply_db", "") or own_db_paths(_idb_path(), _image_stem())[0]
+        db = shown
         while True:
             picked = show_menu(choice, db)
             if picked is None:
                 return
             choice, db = picked
             _remember("choice", str(choice))
-            if db:
-                _remember("db", db)
             name = MenuForm.CHOICES[choice][0]
             if name != "rSettings":
                 break
             show_settings()
+        idb, stem = _idb_path(), _image_stem()
         handlers = {
-            "rGen": lambda: GenerateHandler(db),
+            "rGen": lambda: GenerateHandler(signing_db_path(db, shown, idb, stem, True)),
             "rMerge": MergeHandler,
             "rLocate": LocateHandler,
-            "rSignAll": lambda: SignAllHandler(db),
+            "rSignAll": lambda: SignAllHandler(signing_db_path(db, shown, idb, stem, False)),
             "rApply": lambda: ApplyNamesHandler(db),
         }
         # The menu acts on the cursor, as the hotkey's context is no view.

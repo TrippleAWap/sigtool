@@ -490,6 +490,48 @@ class MenuHelperTests(unittest.TestCase):
             str(Path("work") / "sigtool" / "deflate_int_run.yaml"),
         )
 
+    def test_signing_goes_to_this_idbs_own_db_unless_another_is_typed(self):
+        idb = str(Path("b") / "libb.so.i64")
+        own, selection = plugin.own_db_paths(idb, "libb.so")
+        self.assertEqual(own, str(Path("b") / "sigtool" / "libb.so.db"))
+        self.assertEqual(selection, str(Path("b") / "sigtool" / "libb.so.selection.db"))
+        other = str(Path("a") / "sigtool" / "liba.so.db")
+        # The field still shows the DB applied last (another IDB's): not it.
+        self.assertEqual(plugin.signing_db_path(other, other, idb, "libb.so", False), own)
+        self.assertEqual(plugin.signing_db_path(other, other, idb, "libb.so", True), selection)
+        # This IDB's own DB shown by default: a selection still gets its own.
+        self.assertEqual(plugin.signing_db_path(own, own, idb, "libb.so", True), selection)
+        self.assertEqual(plugin.signing_db_path("", other, idb, "libb.so", False), own)
+        typed = str(Path("c") / "new.db")
+        self.assertEqual(plugin.signing_db_path(f" {typed} ", other, idb, "libb.so", False), typed)
+
+    def test_replacing_another_idbs_db_asks_first(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        idb = str(Path(temp.name) / "b" / "libb.so.i64")
+        own = Path(plugin.own_db_paths(idb, "libb.so")[0])
+        own.parent.mkdir(parents=True)
+        own.write_bytes(b"own")
+        other = Path(temp.name) / "liba.so.db"
+        other.write_bytes(b"other")
+        asked = []
+        kernwin = plugin.ida_kernwin
+        with (
+            mock.patch.object(plugin, "_idb_path", lambda: idb),
+            mock.patch.object(plugin, "_image_stem", lambda: "libb.so"),
+            mock.patch.object(plugin, "_db_signature_count", lambda _path: 120),
+            mock.patch.object(
+                kernwin, "ask_yn", lambda _d, text: asked.append(text) or 0, create=True
+            ),
+        ):
+            plugin._confirm_replace(str(own), "12 named functions")
+            plugin._confirm_replace(str(Path(temp.name) / "new.db"), "12 named functions")
+            self.assertEqual(asked, [])
+            with self.assertRaises(plugin.SigtoolCancelled):
+                plugin._confirm_replace(str(other), "12 named functions")
+        self.assertIn("holds 120 signatures", asked[0])
+        self.assertIn(str(other), asked[0])
+
     def test_long_names_are_cut_and_keep_a_hash(self):
         idb = str(Path("work") / "libz.so.i64")
         first = plugin.output_path(idb, "_ZN" + "a" * 300 + "Ev", ".merged.yaml")
