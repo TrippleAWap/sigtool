@@ -533,13 +533,13 @@ def main() -> int:
 
         # Explain: at the cursor (asking for the signature file, as the
         # clipboard holds none), then from the locate list's first row.
-        idb.screen_ea = by_name[target] + 1
+        idb.screen_ea = by_name[target] + shift + 1
         idb.answer(str(yaml))
         plugin.ExplainHandler().run()
         explained = idb.infos[-1] if idb.infos else ""
         check(
             not idb.answers
-            and explained.startswith(f"{target} at {by_name[target]:#x}")
+            and explained.startswith(f"{target} at {by_name[target] + shift:#x}")
             and "\ngates:\n" in explained
             and "\nmatched (" in explained,
             f"explain at the cursor shows the gates ({explained.splitlines()[0]})",
