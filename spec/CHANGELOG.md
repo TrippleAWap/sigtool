@@ -1,5 +1,24 @@
 # Spec changelog
 
+## v7 — import callees without their module
+
+`SPEC_VERSION` is `7`. `callee` records of PE imports (and of calls into
+another module of a process) change from `dll!name` to `*!name`, so v6
+documents and DBs are refused (rule 16) and must be regenerated or rebuilt.
+
+* ELF never records the library that provides an import, so its imports were
+  already `*!memcpy`; a PE import named its DLL (`ucrtbase!memcpy`), and an
+  ELF signature and a PE target never shared an import callee (0 of 24 pairs
+  per arch on the mixed tier). The module is dropped in every format; labels
+  and provenance keep `dll!name`.
+* Mixed ELF/PE tier (`corpus/real.py --pe`, `corpus/build-pe-mixed`,
+  `--max-functions 4 --joint`), hint-free top-1: same arch other compiler
+  (ELF clang <-> PE clang, same level) 0.633 -> 0.667, merged other compiler
+  0.648 -> 0.686, cross arch other compiler 0.379 -> 0.400; 34 cells up, none
+  down; joint top-1 4534 -> 4591; every FP rate unchanged; identified precision
+  hint-free 0.938 -> 0.939. PE-only tier and real corpus unchanged apart from
+  the spec version (all their imports were already one form per corpus).
+
 ## v6 — real-world targets
 
 `SPEC_VERSION` is `6`. x86-64 `const` records change (immediates of

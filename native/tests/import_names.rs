@@ -148,6 +148,9 @@ fn elf_and_pe_imports_give_the_same_callee_key() {
     let elf = callees(&dir.join("libwrap.so"), &elf_rva);
     let pe = callees(&dir.join("wrap.dll"), &pe_rva);
     std::fs::remove_dir_all(&dir).ok();
-    assert!(elf.contains(&"*!external_helper".to_string()), "ELF: {elf:?}");
+    assert!(
+        elf.contains(&"*!external_helper".to_string()),
+        "ELF: {elf:?}"
+    );
     assert_eq!(elf, pe, "ELF {elf:?} vs PE {pe:?}");
 }
