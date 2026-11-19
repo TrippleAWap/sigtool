@@ -12,10 +12,15 @@ a licensed IDA, see AGENTS.md).
     python tests/ida_cli_smoke.py --corpus corpus/build-real --arch arm64 \\
         --library lz4 --sign clang-O2 --apply gcc-Os
 
+    python tests/ida_cli_smoke.py --corpus corpus/build-real --rebase 0x10000000
+
 Steps: sign one function (generate, then merge it with another arch's build), locate
-it, sign every ground-truth function of the ``--sign`` build into a DB, and
-apply the DB to the stripped ``--apply`` build. Exit 0 when every step's
-assertion holds; the renames' precision against ground truth is printed.
+it, sign every ground-truth function of the ``--sign`` build into a DB (and
+cancel one such run), sign and locate from the IDB alone (no input file, one
+patched byte), and apply the DB to the stripped ``--apply`` build, from the IDB
+alone and from the file. ``--rebase`` moves every IDB address by that much, as
+IDA's rebase does. Exit 0 when every step's assertion holds; the renames'
+precision against ground truth is printed.
 """
 
 from __future__ import annotations
@@ -40,17 +45,30 @@ BADADDR = 0xFFFFFFFFFFFFFFFF
 class FakeIdb:
     """One IDB: function starts and sizes, names, comments, and the UI log."""
 
-    def __init__(self, image: Path, functions: dict[int, tuple[str | None, int]]) -> None:
+    def __init__(
+        self, image: Path, functions: dict[int, tuple[str | None, int]], delta: int = 0
+    ) -> None:
         self.image = image
         # Where IDA recorded the input file and where the IDB lives; a moved
         # IDB records a path that no longer exists.
         self.recorded = str(image)
         self.idb_path = str(image) + ".i64"
-        self.sha256 = hashlib.sha256(image.read_bytes()).digest()
-        self.size = image.stat().st_size
-        self.functions = functions
-        self.code = executable_ranges(image)
-        self.names = {ea: name for ea, (name, _size) in functions.items() if name}
+        self.content = image.read_bytes()
+        self.sha256 = hashlib.sha256(self.content).digest()
+        self.size = len(self.content)
+        # A rebased IDB (an Android library, a process image) maps the file
+        # `delta` above its own addresses; `functions` are at file addresses.
+        self.delta = delta
+        self.functions = {ea + delta: row for ea, row in functions.items()}
+        self.code = [(low + delta, high + delta) for low, high in executable_ranges(image)]
+        self.sections = [
+            (name, start + delta, end + delta, offset, perm)
+            for name, start, end, offset, perm in elf_sections(image)
+        ]
+        self.names = {ea: name for ea, (name, _size) in self.functions.items() if name}
+        # Bytes patched in the IDB: address -> the file's original value (the
+        # IDB holds it inverted).
+        self.patched: dict[int, int] = {}
         self.comments: dict[int, str] = {}
         self.answers: deque = deque()
         self.screen_ea = 0
@@ -60,6 +78,14 @@ class FakeIdb:
         self.choosers: list = []
         self.registry: dict = {}
         self.clipboard = ""
+        self.messages: list[str] = []
+        # `user_cancelled` answers True from this poll on (None: never).
+        self.cancel_after: int | None = None
+        self.polls = 0
+
+    def user_cancelled(self) -> bool:
+        self.polls += 1
+        return self.cancel_after is not None and self.polls >= self.cancel_after
 
     def answer(self, *values) -> None:
         self.answers.extend(values)
@@ -89,7 +115,7 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin.BWN_DISASM, kernwin.BWN_FUNCS, kernwin.BWN_PSEUDOCODE = 27, 3, 46
     kernwin.action_handler_t = type("action_handler_t", (), {})
     kernwin.UI_Hooks = type("UI_Hooks", (), {})
-    kernwin.msg = lambda text: sys.stdout.write(f"  [ida] {text}")
+    kernwin.msg = lambda text: idb.messages.append(text) or sys.stdout.write(f"  [ida] {text}")
     kernwin.info = lambda text: idb.infos.append(text)
     kernwin.warning = lambda text: idb.warnings.append(text)
     kernwin.ask_file = lambda _save, _mask, prompt: idb.next_answer(prompt)
@@ -97,7 +123,7 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin.ask_str = lambda _default, _hist, prompt: idb.next_answer(prompt)
     kernwin.show_wait_box = kernwin.replace_wait_box = lambda _text: None
     kernwin.hide_wait_box = lambda: None
-    kernwin.user_cancelled = lambda: False
+    kernwin.user_cancelled = lambda: idb.user_cancelled()
     kernwin.get_screen_ea = lambda: idb.screen_ea
     kernwin.jumpto = lambda ea: idb.jumps.append(ea) or True
     kernwin.refresh_idaview_anyway = lambda: None
@@ -139,7 +165,7 @@ def install_fakes(idb: FakeIdb) -> None:
     nalt.retrieve_input_file_sha256 = lambda: idb.sha256
     nalt.retrieve_input_file_size = lambda: idb.size
     nalt.set_root_filename = lambda path: setattr(idb, "recorded", path)
-    nalt.get_imagebase = lambda: 0
+    nalt.get_imagebase = lambda: idb.delta
 
     loader = module("ida_loader")
     loader.PATH_TYPE_IDB = 1
@@ -193,23 +219,20 @@ def install_fakes(idb: FakeIdb) -> None:
 
     # Segments as IDA's ELF loader makes them: one per allocated section, at
     # its file offset (none for `.bss`), with the file's bytes. The image's
-    # path stands in for the IDB's contents, so it is read even when the
+    # bytes stand in for the IDB's contents, so they are read even when the
     # "input file" has moved away.
-    sections = elf_sections(idb.image)
-
     class Seg:
         def __init__(self, row) -> None:
             self.name, self.start_ea, self.end_ea, self.offset, self.perm = row
             self.type = 0
 
     def segment_at(ea: int):
-        return next((Seg(row) for row in sections if row[1] <= ea < row[2]), None)
+        return next((Seg(row) for row in idb.sections if row[1] <= ea < row[2]), None)
 
     def file_offset(ea: int) -> int:
         seg = segment_at(ea)
         return -1 if seg is None or seg.offset is None else seg.offset + ea - seg.start_ea
 
-    content = idb.image.read_bytes()
     segment = module("ida_segment")
     segment.SEG_XTRN = 1
     segment.SEGPERM_EXEC, segment.SEGPERM_WRITE = 1, 2
@@ -219,14 +242,28 @@ def install_fakes(idb: FakeIdb) -> None:
 
     def get_bytes(ea: int, size: int):
         offset = file_offset(ea)
-        return None if offset < 0 else content[offset : offset + size]
+        if offset < 0:
+            return None
+        data = bytearray(idb.content[offset : offset + size])
+        for at, original in idb.patched.items():
+            if ea <= at < ea + len(data):
+                data[at - ea] = original ^ 0xFF
+        return bytes(data)
+
+    def visit_patched_bytes(start: int, end: int, callback) -> int:
+        for at, original in sorted(idb.patched.items()):
+            if start <= at < end:
+                result = callback(at, file_offset(at), original, original ^ 0xFF)
+                if result:
+                    return result
+        return 0
 
     bytes_.get_bytes = get_bytes
-    bytes_.visit_patched_bytes = lambda _start, _end, _callback: 0
+    bytes_.visit_patched_bytes = visit_patched_bytes
 
     idautils = module("idautils")
     idautils.Functions = lambda: sorted(idb.functions)
-    idautils.Segments = lambda: [row[1] for row in sections]
+    idautils.Segments = lambda: [row[1] for row in idb.sections]
 
     def no_pe_header():
         raise RuntimeError("not a PE database")
@@ -389,6 +426,12 @@ def main() -> int:
     # RVA parse renames almost nothing right), not the matcher's precision
     # target: that is measured by the real-corpus bench.
     parser.add_argument("--min-precision", type=float, default=0.8)
+    parser.add_argument(
+        "--rebase",
+        type=lambda text: int(text, 0),
+        default=0,
+        help="model IDBs rebased by this much (IDA's Edit > Segments > Rebase program)",
+    )
     args = parser.parse_args()
 
     native = args.native or ROOT / "native" / "target" / "release" / (
@@ -404,7 +447,8 @@ def main() -> int:
     sign_image = args.corpus / sign_rel
     apply_image = args.corpus / "stripped" / apply_rel
 
-    idb = FakeIdb(sign_image, dict(sign_truth))
+    shift = args.rebase
+    idb = FakeIdb(sign_image, dict(sign_truth), shift)
     install_fakes(idb)
     sys.path.insert(0, str(ROOT))
     import ida_plugin as plugin
@@ -420,6 +464,8 @@ def main() -> int:
         key=lambda name: sign_truth[by_name[name]][1],
     )
     print(f"native {native}\nsign   {sign_image}\napply  {apply_image}\nfunction {target}")
+    if shift:
+        print(f"rebase {shift:#x}")
 
     with tempfile.TemporaryDirectory() as temp_name:
         temp = Path(temp_name)
@@ -428,7 +474,7 @@ def main() -> int:
         outputs = temp / "sigtool"
         yaml = outputs / f"{target}.yaml"
         merged = outputs / f"{target}.merged.yaml"
-        idb.screen_ea = by_name[target] + 1
+        idb.screen_ea = by_name[target] + shift + 1
         plugin.GenerateHandler().run()
         check(
             yaml.exists() and "spec_version:" in yaml.read_text(),
@@ -456,8 +502,8 @@ def main() -> int:
         check(
             not idb.answers
             and bool(rows)
-            and rows[0].ea == by_name[target]
-            and idb.jumps[-1] == by_name[target],
+            and rows[0].ea == by_name[target] + shift
+            and idb.jumps[-1] == by_name[target] + shift,
             f"locate takes the clipboard, lists {target} first, and jumps ({len(rows)} rows)",
         )
         idb.clipboard = "not a signature"
@@ -484,6 +530,31 @@ def main() -> int:
             "generate on a Functions-view selection signs those rows into the menu's DB",
         )
 
+        # Cancel in the wait box kills the CLI before it writes anything.
+        cancelled_db = temp / "cancelled.db"
+        started: list[subprocess.Popen] = []
+        popen = subprocess.Popen
+
+        class Recorded(popen):
+            def __init__(self, *rest, **named) -> None:
+                super().__init__(*rest, **named)
+                started.append(self)
+
+        idb.cancel_after = idb.polls + 2
+        subprocess.Popen = Recorded
+        try:
+            plugin.SignAllHandler(str(cancelled_db)).activate(None)
+        finally:
+            subprocess.Popen = popen
+            idb.cancel_after = None
+        check(
+            bool(started)
+            and all(process.poll() is not None for process in started)
+            and "sigtool: cancelled\n" in idb.messages
+            and not cancelled_db.exists(),
+            "cancel kills the CLI, logs the cancel, and leaves no DB",
+        )
+
         # A moved IDB: the recorded path is gone, the binary sits beside the
         # IDB. It is found by hash without a dialog and recorded in the IDB.
         moved = temp / "moved"
@@ -506,8 +577,19 @@ def main() -> int:
         plugin._verified_inputs.clear()
         relocated.unlink()
         # With no matching file anywhere, the image is rebuilt from the IDB,
-        # without a dialog, and signs like the stripped copy of the binary.
-        plugin.GenerateHandler().run()
+        # without a dialog, and signs like the stripped copy of the binary,
+        # even with a byte of the function patched in the IDB.
+        patched_ea = by_name[target] + shift + 1
+        original = idb.content[plugin.ida_loader.get_fileregion_offset(patched_ea)]
+        idb.patched[patched_ea] = original
+        check(
+            plugin.ida_bytes.get_bytes(patched_ea, 1) != bytes([original]),
+            f"the IDB holds a patched byte at {patched_ea:#x}",
+        )
+        try:
+            plugin.GenerateHandler().run()
+        except plugin.SigtoolError as error:
+            check(False, f"generate from the IDB alone: {error}")
         reference = temp / "stripped.yaml"
         stripped_copy = args.corpus / "stripped" / sign_rel
         subprocess.run(
@@ -533,18 +615,41 @@ def main() -> int:
             and relocated.read_bytes() == reference.read_bytes(),
             "without the binary, the IDB alone signs like the stripped file (no dialog)",
         )
+        # The clipboard holds that signature; locate finds it in the IDB alone.
+        idb.jumps.clear()
+        plugin.LocateHandler().run()
+        rows = idb.choosers[-1].rows if idb.choosers else []
+        check(
+            bool(rows)
+            and rows[0].ea == by_name[target] + shift
+            and idb.jumps[-1:] == [by_name[target] + shift],
+            f"locate in the IDB alone lists {target} first and jumps to it",
+        )
 
         # The other build, stripped: only its exported functions are named.
-        exports = dynamic_functions(apply_image)
+        exports = {ea + shift: name for ea, name in dynamic_functions(apply_image).items()}
         apply_idb_functions = {
-            ea: (exports.get(ea), size) for ea, (_name, size) in apply_truth.items()
+            ea: (exports.get(ea + shift), size) for ea, (_name, size) in apply_truth.items()
         }
-        idb.__init__(apply_image, apply_idb_functions)
-        idb.idb_path = str(temp / f"{apply_image.name}.i64")
+        apply_truth = {ea + shift: row for ea, row in apply_truth.items()}
+
+        # First from the IDB alone: the renames must be the ones the file gives.
+        idb.__init__(apply_image, apply_idb_functions, shift)
+        idb.recorded = str(temp / "gone" / apply_image.name)
+        idb.idb_path = str(temp / "rebuilt-apply" / f"{apply_image.name}.i64")
+        plugin.ApplyNamesHandler(str(db)).run()
+        from_idb = {ea: name for ea, name in idb.names.items() if ea not in exports}
+
+        idb.__init__(apply_image, apply_idb_functions, shift)
+        idb.idb_path = str(temp / "apply" / f"{apply_image.name}.i64")
         # The menu hands apply-names the DB sign-all wrote: no dialog.
         plugin.ApplyNamesHandler(str(db)).run()
         check(not idb.answers, "apply-names takes the menu's DB without a dialog")
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
+        check(
+            from_idb == renamed,
+            f"apply from the IDB alone renames as from the file ({len(from_idb)} renames)",
+        )
         right = sum(1 for ea, name in renamed.items() if apply_truth.get(ea, ("",))[0] == name)
         precision = right / len(renamed) if renamed else 0.0
         print(
