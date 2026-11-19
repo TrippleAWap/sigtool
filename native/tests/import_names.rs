@@ -26,7 +26,7 @@ fn scratch() -> PathBuf {
 }
 
 fn tool(program: &str, args: &[&str], dir: &Path) {
-    let status = Command::new(program)
+    let status = common::command(program)
         .args(args)
         .current_dir(dir)
         .status()

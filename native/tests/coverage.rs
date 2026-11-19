@@ -145,7 +145,7 @@ fn pe_leaf_starts(target: &str) {
         .status()
         .expect("run clang");
     assert!(compiled.success());
-    let linked = Command::new("ld.lld")
+    let linked = common::command("ld.lld")
         .args(["-flavor", "link", "/dll", "/noentry", "/nodefaultlib"])
         .arg(format!("/out:{}", image.display()))
         .arg(format!("/map:{}", map.display()))
