@@ -43,6 +43,7 @@ use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
+use sigtool_native::identity::{identify, ImageIdentity};
 use sigtool_native::matcher::{
     evidence, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
 };
@@ -341,7 +342,14 @@ fn main() -> ExitCode {
 // -- gen ---------------------------------------------------------------------
 
 fn run_gen(args: GenArgs) -> Result<u8, CliError> {
-    let target = load_target(args.file.as_deref(), args.pid)?;
+    // A live process has no input file to hash, so its report says `null`.
+    let (target, input): (Box<dyn ByteSource>, Value) = match &args.file {
+        Some(path) => {
+            let (source, identity) = load_file_with_identity(path)?;
+            (Box::new(source), identity_value(&identity))
+        }
+        None => (load_target(None, args.pid)?, Value::Null),
+    };
     let source = target.as_ref();
     let addr = resolve_address(
         source,
@@ -379,6 +387,7 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         args.output.as_deref(),
         args.json_report.as_deref(),
         &coverage,
+        ("input", input),
     )?;
     Ok(EXIT_OK)
 }
@@ -406,6 +415,7 @@ fn write_outputs(
     output: Option<&Path>,
     json_report: Option<&Path>,
     coverage: &Coverage,
+    input: (&str, Value),
 ) -> Result<(), CliError> {
     let text = result
         .to_yaml()
@@ -429,6 +439,7 @@ fn write_outputs(
     if let Some(path) = json_report {
         let mut document = report_document(result, arch, label);
         document.insert("truncated".to_string(), coverage_value(coverage));
+        document.insert(input.0.to_string(), input.1);
         write_json(path, &document)?;
     }
     Ok(())
@@ -531,6 +542,7 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
     }
     let mut sources: Vec<FileSource> = Vec::new();
     let mut addresses: Vec<u64> = Vec::new();
+    let mut inputs: Vec<Value> = Vec::new();
     for text in &args.sample {
         // Split on the last colon so Windows drive paths keep working.
         let Some((path, addr_text)) = text.rsplit_once(':') else {
@@ -538,7 +550,8 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
                 "--sample expects FILE:ADDR, got {text:?}"
             )));
         };
-        let source = load_file(Path::new(path))?;
+        let (source, identity) = load_file_with_identity(Path::new(path))?;
+        inputs.push(identity_value(&identity));
         // `FILE:+RVA` is relative to the image base, the form a disassembler
         // with a rebased database can always supply.
         let addr = match addr_text.strip_prefix('+') {
@@ -593,6 +606,8 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
         args.output.as_deref(),
         args.json_report.as_deref(),
         &coverage,
+        // One entry per --sample, in argument order.
+        ("inputs", Value::Array(inputs)),
     )?;
     Ok(EXIT_OK)
 }
@@ -993,7 +1008,12 @@ fn sign_functions(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let entries = load_function_list(functions)?;
-    let source = load_file(image)?;
+    let functions_identity = std::fs::read(functions)
+        .map(|data| identify(&data))
+        .map_err(|error| {
+            CliError::input(format!("cannot read {}: {error}", functions.display()))
+        })?;
+    let (source, identity) = load_file_with_identity(image)?;
     let context = ScanContext::build(&source);
     // Signing self-tests hinted, so only the context's indexes apply.
     let mut coverage = Coverage::new();
@@ -1077,6 +1097,22 @@ fn sign_functions(
         document.insert("failed".to_string(), Value::Number(failed.into()));
         document.insert("functions".to_string(), Value::Array(rows));
         document.insert("truncated".to_string(), coverage_value(&coverage));
+        document.insert("input".to_string(), identity_value(&identity));
+        // The list is part of what was built: the same image signed from
+        // another list is another DB.
+        let mut list: BTreeMap<String, Value> = BTreeMap::new();
+        list.insert(
+            "sha256".to_string(),
+            Value::String(functions_identity.sha256_hex()),
+        );
+        list.insert(
+            "size".to_string(),
+            Value::Number(functions_identity.size.into()),
+        );
+        document.insert(
+            "functions_list".to_string(),
+            Value::Object(list.into_iter().collect()),
+        );
         write_json(path, &document)?;
     }
     warn_coverage(&coverage);
@@ -1111,6 +1147,47 @@ fn load_file(path: &Path) -> Result<FileSource, CliError> {
         )));
     }
     FileSource::from_path(path).map_err(classify_source_error)
+}
+
+/// Open an image and identify it from the same bytes, so the reported hash
+/// is of exactly what was signed. The module is named as
+/// [`FileSource::from_path`] names it.
+fn load_file_with_identity(path: &Path) -> Result<(FileSource, ImageIdentity), CliError> {
+    if !path.is_file() {
+        return Err(CliError::input(format!(
+            "no such image file: {}",
+            path.display()
+        )));
+    }
+    let data = std::fs::read(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?;
+    let source = FileSource::from_bytes(&data, &file_name(path)).map_err(classify_source_error)?;
+    Ok((source, identify(&data)))
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image")
+        .to_string()
+}
+
+/// The `input` JSON field of a report: `{"sha256", "size"}` plus
+/// `"build_id"` (ELF GNU build-id note) or `"pdb_guid"` and `"pdb_age"` (PE
+/// CodeView record) when the image carries one. Reports only: signatures and
+/// DBs never hold per-file data.
+fn identity_value(identity: &ImageIdentity) -> Value {
+    let mut object: BTreeMap<String, Value> = BTreeMap::new();
+    object.insert("sha256".to_string(), Value::String(identity.sha256_hex()));
+    object.insert("size".to_string(), Value::Number(identity.size.into()));
+    if let Some(build_id) = &identity.build_id {
+        object.insert("build_id".to_string(), Value::String(build_id.clone()));
+    }
+    if let Some(pdb) = &identity.pdb {
+        object.insert("pdb_guid".to_string(), Value::String(pdb.guid.clone()));
+        object.insert("pdb_age".to_string(), Value::Number(pdb.age.into()));
+    }
+    Value::Object(object.into_iter().collect())
 }
 
 /// Open the `--file` image or the `--pid` process (clap enforces exactly one).
