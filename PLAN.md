@@ -960,8 +960,17 @@ As of 2026-11-19, `real-world` branch, spec v6.
     0.960 -> 0.982; hint-free any-verdict FP 0.076 -> 0.090. Mixed tier: 31
     cells up, none down, identified precision 0.939 -> 0.984, joint top-1
     4591 -> 4734. Real corpus identical.
+- Wrapped label (2026-11-19, `real-world`, labels only): an identified-looking
+  first match whose function's sole caller calls nothing else is a
+  `candidate`, unless the signature itself has exactly one caller (SPEC.md §8,
+  *wrapped*). Simulated on the `--world` recall log first (new
+  `first_callers` field). `--world` identified precision hint-free 0.972 ->
+  0.988, hinted 0.976 -> 0.997 (G3 met on that tier), correct answers, top-1
+  and FP unchanged; real corpus identical. 35 `LZ4_loadDict` answers at
+  `LZ4_loadDict_internal` (a tail call the caller index does not record)
+  remain.
 - Next: the live-process scan path (RW3: candidates from a per-module
   indexed context; it finds 0.010 top-1 today), the remaining PE findings
-  (hinted PE has no function list, import thunks counted as starts), identified precision on the real-world tier (0.972) and in hosts
-  (0.0025 per signature per MB), RW4 distro packages and C++, and
+  (hinted PE has no function list, import thunks counted as starts), identified answers in hosts without the function (0.0025 per signature per
+  MB), RW4 distro packages and C++, and
   pointer-width-dependent constants (M10).

@@ -13,7 +13,9 @@ documents and DBs are refused (rule 16) and must be regenerated or rebuilt.
   and provenance keep `dll!name`.
 * Label rule, no version change (labels are not part of the document): a
   first match whose function's sole direct caller calls nothing else is a
-  `candidate` (SPEC.md §8, *wrapped*). Simulated first on the `--world`
+  `candidate` unless the signature itself has exactly one `in:` link (SPEC.md
+  §8, *wrapped*; without that exception a static helper called from one
+  place, signed where it was not inlined, lost its label in two CLI tests). Simulated first on the `--world`
   tier's recall log (`--fp-report`, which now records the first match's
   callers): 104 wrong identified answers had that shape and no correct one
   (`lua_next` answered at `luaH_next`, signed from builds that inlined it).
