@@ -42,7 +42,7 @@ pub fn scan_all<S: ByteSource + ?Sized>(
     signatures: &[Signature],
     hints: bool,
 ) -> Vec<Vec<Match>> {
-    scan_all_with(source, context, signatures, hints, None)
+    scan_all_with(source, context, signatures, hints, None, None)
 }
 
 /// One phase of a whole-image scan, as a progress hook sees it.
@@ -78,15 +78,17 @@ impl ScanPhase {
 /// (calls never overlap).
 pub type ScanProgress<'a> = &'a (dyn Fn(ScanPhase, usize, usize) + Sync);
 
-/// [`scan_all`] with an optional progress hook. The hook only observes: the
-/// matches are the same with or without it. The library never prints; a
-/// front-end decides what to show (`scan --progress`).
+/// [`scan_all`] with an optional progress hook, and a [`Coverage`] that
+/// records a module group joint resolution skipped as too large. Neither
+/// changes the matches. The library never prints; a front-end decides what
+/// to show (`scan --progress`).
 pub fn scan_all_with<S: ByteSource + ?Sized>(
     source: &S,
     context: &ScanContext,
     signatures: &[Signature],
     hints: bool,
     progress: Option<ScanProgress<'_>>,
+    coverage: Option<&mut Coverage>,
 ) -> Vec<Vec<Match>> {
     let total = signatures.len();
     let report = |phase: ScanPhase, done: usize| {
@@ -115,7 +117,10 @@ pub fn scan_all_with<S: ByteSource + ?Sized>(
     });
     if !hints {
         report(ScanPhase::Joint, 0);
-        crate::joint::resolve(source, context, signatures, &mut all, false);
+        let skipped = crate::joint::resolve(source, context, signatures, &mut all, false);
+        if let Some(coverage) = coverage {
+            coverage.add_joint(skipped);
+        }
     }
     all
 }
@@ -131,7 +136,7 @@ pub fn scan_all_with<S: ByteSource + ?Sized>(
 /// `source.modules()`, keeps each module's context for a caller that scans
 /// the same source again (the bench); without it each module's context is
 /// dropped before the next is built, so a process holds one at a time.
-/// Every module's budgets go to `coverage`.
+/// Every module's budgets go to `coverage`, joint resolution's among them.
 pub fn scan_modules<S: ByteSource + ?Sized>(
     source: &S,
     signatures: &[Signature],
@@ -160,7 +165,14 @@ pub fn scan_modules<S: ByteSource + ?Sized>(
         };
         coverage.add_context(context);
         coverage.add_source(&view, false);
-        per_module.push(scan_all(&view, context, signatures, false));
+        per_module.push(scan_all_with(
+            &view,
+            context,
+            signatures,
+            false,
+            None,
+            Some(&mut *coverage),
+        ));
     }
     let mut lists: Vec<Vec<Vec<Match>>> = signatures.iter().map(|_| Vec::new()).collect();
     for module in per_module {

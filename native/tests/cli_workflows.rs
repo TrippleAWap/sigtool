@@ -710,3 +710,86 @@ fn scan_progress_reports_phases_without_changing_the_result() {
         .collect();
     assert_eq!(rest, plain.lines().collect::<Vec<_>>(), "{reported}");
 }
+
+/// A module group above the pair cap is left as scanned and reported, not
+/// dropped silently: under a cap of one pair joint resolution changes no
+/// match of the chain and returns the group's pairs, which a coverage turns
+/// into a `joint_pairs` entry; under the real cap it runs and reports
+/// nothing.
+#[test]
+fn joint_resolution_reports_a_group_past_the_pair_cap() {
+    use sigtool_native::coverage::{Budget, Coverage};
+    use sigtool_native::db::MappedDb;
+    use sigtool_native::elf::FileSource;
+    use sigtool_native::joint::{resolve_bounded, universe, SkippedGroup, MAX_PAIRS};
+    use sigtool_native::matcher::{scan_in, ScanContext};
+    use sigtool_native::scanner::scan_all_with;
+
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
+        return;
+    }
+    let dir = scratch("joint-cap");
+    let image = build_shared(&dir, "x86_64-linux-gnu", "libchain");
+    let functions = function_list(&dir, &image);
+    let db = dir.join("chain.db");
+    build_db(&image, &functions, &db, None);
+    let mapped = MappedDb::open(&db).expect("open DB");
+    let view = mapped.view().expect("DB view");
+    let signatures: Vec<_> = (0..view.len())
+        .map(|index| view.signature(index).expect("signature"))
+        .collect();
+    let source = FileSource::from_path(&image).expect("load image");
+    std::fs::remove_dir_all(&dir).ok();
+    let context = ScanContext::build(&source);
+
+    let scanned: Vec<_> = signatures
+        .iter()
+        .map(|signature| scan_in(&source, signature, &context, false))
+        .collect();
+    let pairs = signatures.len() * universe(&source, &context, false).len();
+    let mut capped = scanned.clone();
+    let skipped = resolve_bounded(&source, &context, &signatures, &mut capped, false, 1);
+    assert_eq!(skipped, Some(SkippedGroup { pairs, limit: 1 }));
+    assert_eq!(
+        capped, scanned,
+        "a skipped group must keep its scanned matches"
+    );
+    let mut coverage = Coverage::new();
+    coverage.add_joint(skipped);
+    let entry = &coverage.exhausted()[0];
+    assert_eq!(entry.budget, Budget::JointPairs);
+    assert_eq!(entry.budget.key(), "joint_pairs");
+    assert_eq!((entry.limit, entry.count), (1, Some(pairs)));
+    assert!(entry.warning().contains("joint resolution skipped"));
+
+    let mut resolved = scanned.clone();
+    let skipped = resolve_bounded(
+        &source,
+        &context,
+        &signatures,
+        &mut resolved,
+        false,
+        MAX_PAIRS,
+    );
+    assert_eq!(skipped, None);
+    assert_ne!(
+        resolved, scanned,
+        "joint resolution placed nothing in the chain"
+    );
+    let mut coverage = Coverage::new();
+    scan_all_with(
+        &source,
+        &context,
+        &signatures,
+        false,
+        None,
+        Some(&mut coverage),
+    );
+    assert!(
+        coverage
+            .exhausted()
+            .iter()
+            .all(|entry| entry.budget != Budget::JointPairs),
+        "{coverage:?}"
+    );
+}

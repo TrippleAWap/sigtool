@@ -31,6 +31,9 @@ pub enum Budget {
     UnwindCandidates,
     /// Candidate recoveries one runtime-scanner pass may spend.
     Recoveries,
+    /// (signature, function) pairs joint resolution weighs per module group
+    /// ([`crate::joint::MAX_PAIRS`]); a larger group is left as scanned.
+    JointPairs,
 }
 
 impl Budget {
@@ -43,6 +46,7 @@ impl Budget {
             Budget::Discovery => "discovery",
             Budget::UnwindCandidates => "unwind_candidates",
             Budget::Recoveries => "recoveries",
+            Budget::JointPairs => "joint_pairs",
         }
     }
 }
@@ -52,11 +56,13 @@ impl Budget {
 pub struct Exhausted {
     pub budget: Budget,
     /// The cap, in the budget's unit: bytes for [`Budget::StartSweep`],
-    /// instructions for the indexes, entries or candidates otherwise.
+    /// instructions for the indexes, pairs for [`Budget::JointPairs`],
+    /// entries or candidates otherwise.
     pub limit: usize,
     /// What the pass counted, in the same unit, when it keeps a count:
-    /// instructions indexed, entries kept, or (for
-    /// [`Budget::UnwindCandidates`]) unwind entries available. `None` when
+    /// instructions indexed, entries kept, (for [`Budget::UnwindCandidates`])
+    /// unwind entries available, or (for [`Budget::JointPairs`]) the pairs
+    /// of the largest group skipped. `None` when
     /// the pass does not record one.
     pub count: Option<usize>,
 }
@@ -104,6 +110,11 @@ impl Exhausted {
             Budget::Recoveries => format!(
                 "warning: scan pass spent its budget of {} candidate recoveries; \
                  signatures scanned after that may be missing matches",
+                self.limit
+            ),
+            Budget::JointPairs => format!(
+                "warning: joint resolution skipped a module's {count} signature-function \
+                 pairs (cap {}); its signatures keep their single-signature matches",
                 self.limit
             ),
         }
@@ -210,6 +221,17 @@ impl Coverage {
                 budget: Budget::UnwindCandidates,
                 limit: MAX_UNWIND_CANDIDATES,
                 count: Some(entries),
+            });
+        }
+    }
+
+    /// A module group joint resolution skipped as too large.
+    pub fn add_joint(&mut self, skipped: Option<crate::joint::SkippedGroup>) {
+        if let Some(skipped) = skipped {
+            self.push(Exhausted {
+                budget: Budget::JointPairs,
+                limit: skipped.limit,
+                count: Some(skipped.pairs),
             });
         }
     }

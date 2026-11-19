@@ -1195,7 +1195,14 @@ fn scan_source(
         let context = ScanContext::build(source);
         coverage.add_context(&context);
         coverage.add_source(source, hints);
-        let all = scan_all_with(source, &context, signatures, hints, hook);
+        let all = scan_all_with(
+            source,
+            &context,
+            signatures,
+            hints,
+            hook,
+            Some(&mut coverage),
+        );
         scan_hits(source, signatures, all)?
     } else if !hints {
         // A process one module at a time (see `run_locate`).

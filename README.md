@@ -279,10 +279,12 @@ milestones toward them.
   about 1.3 MB; held-out zstd at `-O0` reaches about 2.1 MB. Scans have
   fixed budgets: 4M indexed instructions (and 4M decoded for hint-free
   discovery), 65,536 unwind candidates, and a 128 MiB start-sweep byte
-  budget. Larger images can run out of one; when that happens the CLI prints
-  a warning on stderr and lists the budget in the `truncated` field of its
-  JSON output (`locate --json`, `scan --json`, `gen`/`merge --json-report`,
-  `db build --report`).
+  budget; hint-free joint resolution weighs at most 2^26 (signature,
+  function) pairs per module and leaves a larger module's signatures as
+  scanned alone (`joint_pairs`). Larger images can run out of one; when
+  that happens the CLI prints a warning on stderr and lists the budget in
+  the `truncated` field of its JSON output (`locate --json`, `scan --json`,
+  `gen`/`merge --json-report`, `db build --report`).
 - **Held-out false positives** were last measured at spec v4 (2026-11-16:
   strong FP 0.113) and predate the later rule changes.
 - **IDA plugin:** tested only against stubbed IDA modules
