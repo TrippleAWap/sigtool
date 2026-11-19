@@ -68,10 +68,14 @@ cargo run --release -- gen --file IMAGE --addr A          # or --rva R (from the
 cargo run --release -- gen --pid P --addr A               # or --module M --rva R; live Windows process, read-only
 cargo run --release -- locate --signature S.yaml --file IMAGE --json M.json   # or --pid P; --discovery auto|hinted|hint-free
 cargo run --release -- scan --file IMAGE --signature S.yaml   # or --db signatures.db, --pid P
+cargo run --release -- scan --path DIR --recursive --db signatures.db --jsonl OUT.jsonl
+                                    # batch: one sorted JSON line per file; exit 0 once every file has one
 cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:+RVA --name N
 cargo run --release -- db build --signature S.yaml --output signatures.db
 cargo run --release -- db build --file IMAGE --functions F.json --report R.json --output signatures.db
                                     # sign a [{"rva", "name"}] list in one run (the IDA plugin's sign-all)
+cargo run --release -- db info signatures.db              # spec, counts by confidence and arch (--json)
+cargo run --release -- db list signatures.db --json       # name, signature id, arches, confidence; sorted
 cargo run --release -- bench --baseline ../tests/baseline/native-bench.json       # toy corpus gate
 cargo run --release -- bench --save-baseline ../tests/baseline/native-bench.json  # intentional improvement
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --joint \

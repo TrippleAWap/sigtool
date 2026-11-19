@@ -33,13 +33,43 @@ sigtool-native merge --sample x64/libfoo.so:0x12340 --sample arm64/libfoo.so:+0x
 sigtool-native locate --signature fn.yaml --file other/libfoo.so --json matches.json
 sigtool-native locate --signature fn.yaml --file stripped.so --discovery hint-free  # default auto
 sigtool-native scan --file image.so --db signatures.db
+sigtool-native scan --path firmware/ --recursive --db signatures.db --jsonl hits.jsonl  # batch
 sigtool-native db build --signature fn.yaml --output signatures.db
+sigtool-native db build --file libfoo.so --functions names.json --report built.json --output signatures.db
+sigtool-native db info signatures.db         # spec version, counts by confidence and arch
+sigtool-native db list signatures.db --json  # name, signature id, arches, confidence
 ```
 
 The YAML signature goes to stdout (or `--output`), the quality report to
 stderr (`--json-report` for JSON). Exit codes: `0` success, `1` locate found
 nothing, `2` usage or input error, `3` unsupported architecture or target
 (including 32-bit and WOW64 processes), `4` self-test failure.
+
+Reports (`gen --json-report`, `merge --json-report`, `db build --report`)
+record each input image as `input` (`inputs`, one per sample, for merge): its
+`sha256`, `size`, and the ELF GNU `build_id` or the PE `pdb_guid` and
+`pdb_age` when the image carries one. `db build --report` also records the
+`--functions` list's `sha256` and `size` as `functions_list`. Signatures and
+DBs never hold any of this, so they stay byte-identical across copies of an
+image. `gen --pid` reports `input: null`.
+
+`scan --path DIR --jsonl OUT` loads the signatures once and scans every
+regular file in `DIR` (`--recursive` for subdirectories; symlinks and special
+files are skipped, and so is `OUT` itself). It writes one JSON object per
+file, sorted by the `/`-separated relative path: `path`, `sha256`, `size`,
+`arch`, `discovery`, `status`, `error`, `truncated`, and `hits` as `scan
+--json` writes them. `status` is `ok`, `unsupported` (not ELF or PE, or an
+unsupported architecture), `error` (unreadable or malformed; a subdirectory
+that cannot be listed also gets an `error` line), or `budget-exhausted` (a
+scan work budget ran out, listed in `truncated`; never a timeout). A file's
+status does not change the exit code: the run exits `0` when every file got a
+line, hits or not, and `2` when `DIR`, the signatures, or `OUT` cannot be
+used. The output is byte-identical across runs and thread counts.
+
+A DB or signature written for another spec version is refused (exit `2`), and
+the error says how to rebuild: `db build --file IMAGE --functions F.json`
+re-signs a DB's functions from their image, and `gen` or `merge` regenerates
+a signature.
 
 Hint-free discovery uses only what survives `strip --strip-all`: unwind
 tables (`.eh_frame`, `.ARM.exidx`, `.pdata`), function starts synthesized from
