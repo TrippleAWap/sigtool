@@ -192,6 +192,56 @@ class RenameBlockerTests(unittest.TestCase):
             self.assertIn("could not create", reason)
 
 
+class CursorTests(unittest.TestCase):
+    """Which address a single-function generate or merge signs."""
+
+    def start(self, ea, function=None, code=False, answer=1, created=None):
+        asked, added = [], []
+
+        def add_func(at):
+            added.append(at)
+            return created is not None
+
+        def get_func(at):
+            if function is not None:
+                return types.SimpleNamespace(start_ea=function)
+            if added and created is not None:
+                return types.SimpleNamespace(start_ea=created)
+            return None
+
+        with (
+            mock.patch.object(plugin.ida_funcs, "get_func", get_func, create=True),
+            mock.patch.object(plugin.ida_funcs, "add_func", add_func, create=True),
+            mock.patch.object(plugin.ida_bytes, "get_flags", lambda at: at, create=True),
+            mock.patch.object(plugin.ida_bytes, "is_code", lambda _flags: code, create=True),
+            mock.patch.object(
+                plugin.ida_kernwin,
+                "ask_yn",
+                lambda _default, text: asked.append(text) or answer,
+                create=True,
+            ),
+            mock.patch.object(plugin.ida_kernwin, "msg", lambda _text: None, create=True),
+        ):
+            return plugin._signable_start(ea), asked, added
+
+    def test_a_cursor_in_a_function_signs_its_start(self):
+        self.assertEqual(self.start(0x1234, function=0x1200), (0x1200, [], []))
+
+    def test_a_cursor_on_data_is_refused(self):
+        with self.assertRaises(plugin.SigtoolError) as caught:
+            self.start(0x5000)
+        self.assertIn("0x5000 is not code", str(caught.exception))
+
+    def test_code_outside_a_function_asks_before_creating_one(self):
+        start, asked, added = self.start(0x3000, code=True, created=0x3000)
+        self.assertEqual((start, added), (0x3000, [0x3000]))
+        self.assertIn("outside any function", asked[0])
+        with self.assertRaises(plugin.SigtoolCancelled):
+            self.start(0x3000, code=True, answer=0)
+        # IDA refusing to make a function still signs the code, as confirmed.
+        self.assertEqual(self.start(0x3000, code=True)[0], 0x3000)
+
+
 class ProvenanceTests(unittest.TestCase):
     def proposal(self):
         return plugin.Proposal(0x200, "inflate", 0.91234, "identified", "sub_200", "abc123")

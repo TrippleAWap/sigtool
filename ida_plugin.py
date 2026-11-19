@@ -1210,6 +1210,34 @@ def _add_function(ea: int, base: int) -> int | None:
     return None if function is None else int(function.start_ea) - base
 
 
+def _signable_start(ea: int) -> int:
+    """Where to sign for a cursor at ``ea``: the function holding it, else code
+    there once the user agrees to make it a function.
+
+    The CLI signs whatever bytes it is pointed at, so a cursor on data would
+    give a signature of noise that still passes its own self-test.
+    """
+    function = ida_funcs.get_func(ea)
+    if function is not None:
+        return int(function.start_ea)
+    if not ida_bytes.is_code(ida_bytes.get_flags(ea)):
+        raise SigtoolError(f"{ea:#x} is not code; put the cursor in a function to sign it")
+    answer = ida_kernwin.ask_yn(
+        1,
+        f"HIDECANCEL\n{ea:#x} is code outside any function.\n\n"
+        "Create a function there and sign it?",
+    )
+    if answer != 1:
+        raise SigtoolCancelled
+    start = _add_function(ea, 0)
+    if start is None:
+        # Code IDA will not make a function of (a tail it already assigned,
+        # say) is still signed from the cursor, as asked.
+        ida_kernwin.msg(f"sigtool: IDA could not create a function at {ea:#x}; signing from it\n")
+        return ea
+    return start
+
+
 def _unsignable(ea: int) -> str | None:
     """Why the function at ``ea`` is not worth signing, or ``None``."""
     function = ida_funcs.get_func(ea)
@@ -1342,6 +1370,8 @@ class GenerateHandler(_Handler):
 
     def run(self, ctx=None) -> None:
         starts = _target_functions(ctx)
+        if len(starts) == 1:
+            starts = [_signable_start(starts[0])]
         image = _input_file()
         if len(starts) > 1:
             functions, skipped = _function_entries(starts)
@@ -1368,7 +1398,7 @@ class MergeHandler(_Handler):
     """Sign the function together with other builds of it into one signature."""
 
     def run(self, ctx=None) -> None:
-        ea = _target_functions(ctx)[0]
+        ea = _signable_start(_target_functions(ctx)[0])
         image = _input_file()
         label = _function_label(ea)
         samples = [f"{image}:+{_rva(ea):#x}"]
