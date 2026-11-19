@@ -55,7 +55,7 @@ use sigtool_native::matcher::{
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
-use sigtool_native::scanner::{ScanHit, SignatureScanner};
+use sigtool_native::scanner::{scan_all, scan_modules, ScanHit, SignatureScanner};
 use sigtool_native::sigfile::Signature;
 use sigtool_native::source::{ByteSource, Module};
 
@@ -180,9 +180,13 @@ struct LocateArgs {
     /// Discovery mode: `hinted` uses the image's symbols and function bounds;
     /// `hint-free` uses only what survives stripping (unwind tables, dynamic
     /// symbols, relocations, code); `auto` picks hint-free for image files
-    /// without `.symtab` function symbols (stripped ELF, PE)
+    /// without `.symtab` function symbols (stripped ELF, PE) and for live
+    /// processes, which it scans one module at a time
     #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
     discovery: String,
+    /// With --pid, scan only this module (name or file name, as `gen --module`)
+    #[arg(long, value_name = "NAME", requires = "pid")]
+    module: Option<String>,
     /// Explain the verdict on the best match (or on --expect): matched and
     /// missed features, neighbour keys, and the gate that decided
     #[arg(long, conflicts_with = "pid")]
@@ -234,9 +238,13 @@ struct ScanArgs {
     /// Discovery mode: `hinted` uses the image's symbols and function bounds;
     /// `hint-free` uses only what survives stripping (unwind tables, dynamic
     /// symbols, relocations, code); `auto` picks hint-free for image files
-    /// without `.symtab` function symbols (stripped ELF, PE)
+    /// without `.symtab` function symbols (stripped ELF, PE) and for live
+    /// processes, which it scans one module at a time
     #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
     discovery: String,
+    /// With --pid, scan only this module (name or file name, as `gen --module`)
+    #[arg(long, value_name = "NAME", requires = "pid")]
+    module: Option<String>,
 }
 
 #[derive(Args)]
@@ -344,8 +352,8 @@ struct BenchArgs {
     #[arg(long = "joint-report", requires = "joint")]
     joint_report: Option<PathBuf>,
     /// Also scan every stripped target the way `scan --pid` scans a live
-    /// process (no symbol starts, unwind bounds as hints, the incremental
-    /// scanner) and report it as discovery `process`
+    /// process (no symbol starts, only the unwind table's own entries,
+    /// hint-free per module) and report it as discovery `process`
     #[arg(long = "process-like")]
     process_like: bool,
     /// Allowed recall drop / false-positive increase
@@ -703,14 +711,23 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
         if hints { "hinted" } else { "hint-free" }
     );
     // A file is scanned the way the bench measures it, with the image's
-    // indexes and every trust floor, in both modes. A live process builds
-    // no whole-process index (hundreds of modules); its hinted scan starts
-    // from anchor hits and gets the same hinted floors.
+    // indexes and every trust floor, in both modes. A live process is
+    // scanned hint-free one module at a time, each module with its own
+    // indexes (`bench --process-like` measures this path). A forced hinted
+    // process scan builds no index; it starts from anchor hits and gets the
+    // hinted floors.
+    let only = only_module(source, args.module.as_deref())?;
     let mut coverage = Coverage::new();
     let mut context = None;
-    let matches = if hints && args.pid.is_some() {
+    let matches = if args.pid.is_some() && !hints {
+        let signatures = std::slice::from_ref(&signature);
+        let mut found = scan_modules(source, signatures, only, None, &mut coverage);
+        found.pop().unwrap_or_default()
+    } else if hints && args.pid.is_some() {
         let found = scan(source, &signature, None, 256, true, None);
-        hinted_floors(source, &signature, found)
+        let mut found = hinted_floors(source, &signature, found);
+        found.retain(|matched| in_module(source, only, matched.address));
+        found
     } else {
         let built = context.insert(ScanContext::build(source));
         coverage.add_context(built);
@@ -1114,7 +1131,8 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     let source = target.as_ref();
 
     let hints = use_hints(source, &args.discovery);
-    let (hits, coverage) = scan_source(source, &signatures, hints, args.pid.is_some())?;
+    let only = only_module(source, args.module.as_deref())?;
+    let (hits, coverage) = scan_source(source, &signatures, hints, args.pid.is_some(), only)?;
     warn_coverage(&coverage);
 
     if let Some(path) = &args.json {
@@ -1143,30 +1161,54 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
 }
 
 /// One `scan` of one target, the same for `--file`, `--pid` and each file of
-/// `--path`.
+/// `--path`. `only` (a module base, `--module`) applies to `--pid`.
 fn scan_source(
     source: &dyn ByteSource,
     signatures: &[Signature],
     hints: bool,
     live: bool,
+    only: Option<u64>,
 ) -> Result<(Vec<ScanHit>, Coverage), CliError> {
     let mut coverage = Coverage::new();
-    let hits = if hints && !live {
-        // Files get the bench's path (see `run_locate`); only a live process
-        // uses the incremental scanner.
-        indexed_hits(source, signatures, &mut coverage, true)?
-    } else if hints {
+    let hits = if !live {
+        // Files get the bench's path (see `run_locate`).
+        let context = ScanContext::build(source);
+        coverage.add_context(&context);
+        coverage.add_source(source, hints);
+        let all = scan_all(source, &context, signatures, hints);
+        scan_hits(source, signatures, all)?
+    } else if !hints {
+        // A process one module at a time (see `run_locate`).
+        let all = scan_modules(source, signatures, only, None, &mut coverage);
+        scan_hits(source, signatures, all)?
+    } else {
+        // Only a forced hinted process scan uses the incremental scanner.
         let mut scanner = SignatureScanner::new(source, signatures.to_vec(), None, None)
             .map_err(|error| CliError::input(error.to_string()))?;
         let report = scanner.scan_pass();
         // The scanner's own reference index is not passed to its matcher,
         // so only the recovery budget can drop its matches.
         coverage.add_scan_report(&report, DEFAULT_MAX_RECOVERIES);
-        report.hits
-    } else {
-        indexed_hits(source, signatures, &mut coverage, false)?
+        let mut hits = report.hits;
+        hits.retain(|hit| in_module(source, only, hit.address));
+        hits
     };
     Ok((hits, coverage))
+}
+
+/// The base of the module `--module` names, checked against the target.
+fn only_module(source: &dyn ByteSource, name: Option<&str>) -> Result<Option<u64>, CliError> {
+    name.map(|name| find_module(source, Some(name)).map(|module| module.base))
+        .transpose()
+}
+
+/// Whether `address` lies in the module with base `only` (always, without one).
+fn in_module(source: &dyn ByteSource, only: Option<u64>, address: u64) -> bool {
+    only.is_none_or(|base| {
+        source
+            .module_for(address)
+            .is_some_and(|module| module.base == base)
+    })
 }
 
 // -- batch scan --------------------------------------------------------------
@@ -1376,7 +1418,7 @@ fn batch_line(
         let source =
             FileSource::from_bytes(&data, &file_name(path)).map_err(classify_source_error)?;
         let hints = use_hints(&source, discovery);
-        let (hits, coverage) = scan_source(&source, signatures, hints, false)?;
+        let (hits, coverage) = scan_source(&source, signatures, hints, false, None)?;
         let mut document = scan_document(&source, &hits);
         Ok::<_, CliError>((
             source.arch().as_str().to_string(),
@@ -1433,30 +1475,13 @@ fn use_hints(source: &dyn ByteSource, discovery: &str) -> bool {
     }
 }
 
-/// Every signature against one shared hint-free context, best match first
-/// per signature, in signature order. Signatures from one module are then
-/// resolved jointly through their call-graph links.
-fn indexed_hits(
+/// Hit rows from [`scan_all`] or [`scan_modules`] (best match first per
+/// signature, in signature order).
+fn scan_hits(
     source: &dyn ByteSource,
     signatures: &[Signature],
-    coverage: &mut Coverage,
-    hints: bool,
+    all: Vec<Vec<Match>>,
 ) -> Result<Vec<ScanHit>, CliError> {
-    let context = ScanContext::build(source);
-    coverage.add_context(&context);
-    coverage.add_source(source, hints);
-    // Signatures share only the context's caches, so they scan in parallel;
-    // results keep signature order.
-    if signatures.len() > 1 {
-        context.prepare_frequencies(source, hints);
-    }
-    let mut all: Vec<Vec<Match>> = sigtool_native::parallel::map(signatures.len(), |index| {
-        scan_in(source, &signatures[index], &context, hints)
-    });
-    // Joint resolution is measured hint-free only (`bench --joint`).
-    if !hints {
-        sigtool_native::joint::resolve(source, &context, signatures, &mut all, false);
-    }
     let mut hits = Vec::new();
     for (signature, matches) in signatures.iter().zip(all) {
         let signature_id = signature
