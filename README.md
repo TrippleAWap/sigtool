@@ -67,7 +67,16 @@ docker build -t sigtool-gcc-cross corpus/docker
 python corpus/real.py                      # zlib, lz4, cJSON, Lua, SQLite; clang + gcc; stripped copies
 cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 \
     --baseline ../tests/baseline/native-real-bench.json
+cd native && cargo run --release -- bench --corpus ../corpus/build-real --max-functions 24 \
+    --sample-seed 7                        # another function sample (milestone exits)
 ```
+
+The text report prints every rate as `k/n = rate [low, high]`, with the 95%
+Wilson interval, and each false-positive cell with the number and size of the
+images it scanned. A baseline comparison fails a false-positive cell that
+scanned no images. `--max-functions N` keeps the N functions per binary with
+the lowest CRC-32 of the name; `--sample-seed S` ranks by CRC-32 of the
+seed's eight little-endian bytes followed by the name instead.
 
 The numbers below come from the real-corpus baseline
 (`tests/baseline/native-real-bench.json`, spec v5, saved in commit `0e28cbf`
