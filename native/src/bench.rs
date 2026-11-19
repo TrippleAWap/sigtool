@@ -1700,12 +1700,13 @@ pub fn render(report: &BenchReport) -> String {
         for cell in cells {
             let _ = writeln!(
                 text,
-                "  {}: {}, total hits {}, {} targets ({:.1} MiB)",
+                // KiB, not MiB: toy-corpus images are a few KiB each.
+                "  {}: {}, total hits {}, {} targets ({} KiB)",
                 cell.arch,
                 rate_text(cell.signatures_with_hits, cell.signatures),
                 cell.hits,
                 cell.targets,
-                cell.target_bytes as f64 / (1024.0 * 1024.0)
+                cell.target_bytes.div_ceil(1024)
             );
         }
     }
