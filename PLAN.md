@@ -31,7 +31,7 @@ costs their trust and can send an analysis the wrong way.
 ## 2. Goals for v1.0
 
 Every goal is a number the bench measures. "Now" is the current baseline
-(2026-11-18, spec v5, `integrate-matcher`; strong FP from `strong-fp-floor`). All recall figures are top-1: the expected function must be the
+(2026-11-19, spec v6, `real-world`). All recall figures are top-1: the expected function must be the
 single best match, and ties count as misses. Hint-free figures scan
 `strip --strip-all` copies.
 
@@ -39,29 +39,29 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Same arch, same build | 0.835 | 0.95 |
-| Same arch, other compiler, same level | 0.412 | 0.55 |
-| Same arch, other optimization level | 0.365 | 0.45 |
-| Other arch, same build settings | 0.433 | 0.60 |
-| Other arch, other compiler | 0.287 | 0.45 |
-| Other arch, other optimization level | 0.259 | 0.35 |
-| Merged x64+arm64 signature, held-out arch, same level | 0.558 | 0.70 |
+| Same arch, same build | 0.838 | 0.95 |
+| Same arch, other compiler, same level | 0.427 | 0.55 |
+| Same arch, other optimization level | 0.368 | 0.45 |
+| Other arch, same build settings | 0.446 | 0.60 |
+| Other arch, other compiler | 0.302 | 0.45 |
+| Other arch, other optimization level | 0.267 | 0.35 |
+| Merged x64+arm64 signature, held-out arch, same level | 0.565 | 0.70 |
 
 ### G2. Find: whole-module sets (real corpus, hint-free, `bench --joint`)
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Other arch, same build settings | 0.810 | 0.85 |
-| Other arch, other compiler | 0.630 | 0.65 |
-| Other arch, other optimization level | 0.531 | 0.50 |
-| Same arch, other compiler | 0.714 | 0.70 |
+| Other arch, same build settings | 0.808 | 0.85 |
+| Other arch, other compiler | 0.634 | 0.65 |
+| Other arch, other optimization level | 0.533 | 0.50 |
+| Same arch, other compiler | 0.726 | 0.70 |
 
 ### G3. Trust
 
 | Measure | Now | v1.0 |
 |---|---|---|
-| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.993, hinted 0.994 | ≥ 0.98 |
-| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.115 | ≤ 0.05 |
+| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.993, hinted 0.995 | ≥ 0.98 |
+| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.112 | ≤ 0.05 |
 | Strong-signature false-positive rate, corpus | 0.000 | ≤ 0.01 |
 | Strong-signature false-positive rate, negative corpus | 0.000 | 0.000 |
 | Joint resolution false hits in unrelated libraries | equal to scanned alone in every library | no higher than the same set scanned alone |
@@ -347,13 +347,13 @@ documented.
 
 ## 8. Status
 
-As of 2026-11-18, `strong-fp-floor` branch, spec v5.
+As of 2026-11-19, `real-world` branch, spec v6.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
-  same build 0.690, other arch 0.374, other arch other compiler 0.307.
+  same build 0.688, other arch 0.386, other arch other compiler 0.323.
 - Whole-module sets: the "Now" column of G2.
 - False positives: strong 0.000 (corpus) and 0.000 (negative), any-verdict
-  hinted 0.075, hint-free 0.115.
+  hinted 0.083, hint-free 0.112.
 - What moved the numbers, in order, with measurements:
   [`docs/history/PLAN-v0.5.md`](docs/history/PLAN-v0.5.md) §13 and
   [`spec/CHANGELOG.md`](spec/CHANGELOG.md).
@@ -711,5 +711,48 @@ As of 2026-11-18, `strong-fp-floor` branch, spec v5.
   - Open: carve the tables `PT_DYNAMIC` and `PT_GNU_EH_FRAME` locate out of
     executable segments, then measure what `.rodata` still costs.
     `RawSource` (`--raw`) not started.
-- Next: M8 exit (weekly workflow green), strong FP on the held-out corpus
+- Real-world plan (2026-11-19, `real-world` branch, spec v6;
+  [`docs/real-world-plan.md`](docs/real-world-plan.md)):
+  - RW1: hostile-input hardening and fuzzing landed as #1; the IDA plugin
+    rework (#2, merged into `report-gaps` after #1 closed) carried over.
+  - RW2: bench FP cells record images scanned and fail when a measured cell
+    comes back empty, every rate prints n and a Wilson interval,
+    `--sample-seed`, real compiler names in sample provenance (ids only).
+    The gcc docker image is pinned by digest and apt snapshot (same gcc
+    12.2.0-14+deb12u1 / 12.2.0-14cross1, glibc 2.36). The weekly
+    `real-bench.yml` ran green once on `native-first` (run 44476342355,
+    2026-11-19), which closes the M8 exit.
+  - RW3: hinted `scan`/`locate` of files take the bench's indexed path, and
+    live-process scans get the hinted trust floors: the small-image
+    exemption counted symbol starts only, and a process has none, so every
+    process scan skipped them. No bench number moves (the bench already used
+    the indexed path); the process path has no bench cell yet. Big-endian ELF
+    and Windows ARMNT images are refused by name (exit 3).
+  - RW4 (first slice): `corpus/real.py --world`, 140 images (tuning
+    libraries x gcc 12 x plain `-O2`, `-O3`, Debian hardening, LTO, PIE,
+    static, previous release x 4 arches; stripped with each arch's binutils,
+    since llvm-strip refuses gcc's static ARM executables). Signing the
+    plain `-O2` shared object, hint-free same-arch top-1 at v5: same build
+    0.938, LTO 0.838, previous release 0.838, hardened 0.812, `-O3` 0.775,
+    PIE 0.613, static 0.525; identified precision hint-free 0.973, hinted
+    0.975; strong FP 0.043 (arm32 0.100, thumb 0.089, from static images
+    carrying libc). `examples/diagnose_cross` showed every executable
+    acceptance failure lacking a required feature lacked an exported
+    callee name, which an executable never has: spec v6 makes such callees
+    optional in targets that name no function (PIE 0.700, static 0.613; real
+    corpus unchanged; variants and losers in `spec/CHANGELOG.md`). The fixture
+    for its test exposed x86 immediates beside `rbp` being dropped; fixed in
+    v6 (real corpus: 290 top-1 cells up, 27 down, every G1 row up). World
+    tier at v6: hint-free top-1 hits 9672 -> 10046, hint-free any-verdict FP
+    0.105 -> 0.132, identified precision 0.972 / 0.976. Not yet: distro
+    packages, C++/ICF, joint drift, clang profiles.
+  - RW7: `SHT_RELR`/`DT_RELR` and APS2 packed relocations; section-less ELF
+    read from program headers (agreement with `--strip-all` 453/480 first
+    matches; GNU ld ARM images lose 26, open). Raw blobs not started.
+  - RW8: `scan --path DIR --jsonl OUT`, input identity (sha256, build-id, PE
+    GUID) in reports, `db info` / `db list`, spec-mismatch errors naming the
+    rebuild.
+  - Not yet run on held-out at v6. Open from the plan: RW5 (PE corpus), RW6
+    (large haystacks and scale), a process-path bench cell, `--explain`.
+- Next: strong FP on the held-out corpus
   (milestone exit), and pointer-width-dependent constants (M10).

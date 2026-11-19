@@ -121,37 +121,45 @@ the lowest CRC-32 of the name; `--sample-seed S` ranks by CRC-32 of the
 seed's eight little-endian bytes followed by the name instead.
 
 The numbers below come from the real-corpus baseline
-(`tests/baseline/native-real-bench.json`, spec v5, saved in commit `0e28cbf`
-on 2026-11-17 and recorded in `PLAN.md` §8 on 2026-11-18). The bench ran with
-`--max-functions 4 --joint` over the tuning corpus: zlib, lz4, cJSON, Lua, and
-SQLite, built by clang and gcc at `-O0/-O2/-Os` for all four architectures.
-Hint-free scans search the stripped copies.
+(`tests/baseline/native-real-bench.json`, spec v6, saved on 2026-11-19 and
+recorded in `PLAN.md` §8). The bench ran with `--max-functions 4 --joint` over
+the tuning corpus: zlib, lz4, cJSON, Lua, and SQLite, built by clang and gcc at
+`-O0/-O2/-Os` for all four architectures. Hint-free scans search the stripped
+copies.
 
 Top-1 recall: the expected function is the single best match, and ties count
 as misses.
 
 | Search | hinted | hint-free (stripped) |
 |---|---|---|
-| same arch, same build | 0.690 | 0.835 |
-| same arch, other compiler (clang ↔ gcc), same level | 0.406 | 0.412 |
-| same arch, other optimization level | 0.357 | 0.365 |
-| other arch, one sample, same build settings | 0.374 | 0.433 |
-| other arch, one sample, other compiler, same level | 0.307 | 0.287 |
-| other arch, one sample, other optimization level | 0.270 | 0.259 |
-| merged x64+arm64 signature, same build settings | 0.595 | 0.711 |
-| merged, held-out arch (ARM32, Thumb), same build settings | 0.490 | 0.558 |
+| same arch, same build | 0.688 | 0.838 |
+| same arch, other compiler (clang ↔ gcc), same level | 0.425 | 0.427 |
+| same arch, other optimization level | 0.362 | 0.368 |
+| other arch, one sample, same build settings | 0.386 | 0.446 |
+| other arch, one sample, other compiler, same level | 0.323 | 0.302 |
+| other arch, one sample, other optimization level | 0.285 | 0.267 |
+| merged x64+arm64 signature, same build settings | 0.603 | 0.715 |
+| merged, held-out arch (ARM32, Thumb), same build settings | 0.500 | 0.565 |
 
 Whole-module sets (`bench --joint`, hint-free, signatures from one clang-O2
 x64 module resolved together through call-graph links): other arch same build
-0.810, other arch other compiler 0.630, other arch other optimization level
-0.531, same arch other compiler 0.714.
+0.808, other arch other compiler 0.634, other arch other optimization level
+0.533, same arch other compiler 0.726.
 
 False positives, as the share of signatures with an accepted match in an
 unrelated library: strong signatures 0.000 against the other corpus libraries
-and 0.000 against the negative corpus; any verdict, hinted 0.075 and
-hint-free 0.115. Precision of `identified` answers (correct over all
+and 0.000 against the negative corpus; any verdict, hinted 0.083 and
+hint-free 0.112. Precision of `identified` answers (correct over all
 identified answers, including those in images without the function):
-hint-free 0.993, hinted 0.994.
+hint-free 0.993, hinted 0.995.
+
+Real-world build profiles (`python corpus/real.py --world`: the tuning
+libraries built by gcc 12 as plain, `-O3`, Debian-hardened, LTO, PIE and
+static executables, and the previous upstream release), signing the plain
+`-O2` shared object, hint-free top-1 on the same arch (80 attempts per row):
+same build 0.938, LTO 0.838, previous release 0.838, hardened 0.812, `-O3`
+0.787, PIE executable 0.700, static executable 0.613. Identified precision
+there is 0.972 hint-free and 0.976 hinted, below the 0.98 goal.
 
 Hinted scans may use the target's symbols. Hint-free scans of stripped
 targets compare every unwind entry, while hinted scans start from anchor

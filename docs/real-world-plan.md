@@ -2,6 +2,16 @@
 
 *Plan, 2026-11-19, written against `native-first` at b79da58 (spec v5) and adopted the same day; progress is recorded in `PLAN.md` §8. In the diagnosis, **verified** means read in the code, **audit** means reported by a gap audit and not re-checked, and **inferred** means not measured.*
 
+## Progress (2026-11-19)
+
+Landed on `real-world` (details and numbers in `PLAN.md` §8): RW1; RW2 except
+the build metadata in ground truth and the real negative set; RW3's floors and
+error paths (no process bench cell yet); RW4's gcc profile tier
+(`--world`) with spec v6's executable-callee rule and the x86 `rbp` fix it
+exposed; RW7's packed relocations and section-less ELF; RW8's batch scan,
+image identity and `db info`/`list`. Open: RW4 distro packages, C++, joint
+drift; RW5; RW6; RW7 raw blobs; RW8 `--explain` and generation warnings.
+
 ## 1. Diagnosis
 
 Every number in §8 comes from images we compile ourselves, and they are all the same kind: PIC ELF shared objects (`corpus/real.py:231`, `-shared` at `:258` and `:298`). The clang builds link no libc (`real.py:25`). Each library is pinned to one version, and it is all C. Ground truth keeps only functions that occur exactly once in all 24 builds (`real.py:424`). That filter removes clones, template duplicates and folded functions. These cases are never measured:
