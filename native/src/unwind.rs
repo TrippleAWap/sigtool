@@ -26,8 +26,19 @@ pub type UnwindEntry = (u64, u64);
 /// Entries are sorted by start, deduplicated, and restricted to starts inside
 /// an executable region.
 pub fn elf_entries(regions: &[Region], pointer_size: usize) -> Vec<UnwindEntry> {
+    elf_table_entries(regions, regions, pointer_size)
+}
+
+/// [`elf_entries`] over `tables` (named as sections), keeping the starts that
+/// lie in `regions`' code: an image without section headers has its tables
+/// only as views into a loaded segment.
+pub fn elf_table_entries(
+    tables: &[Region],
+    regions: &[Region],
+    pointer_size: usize,
+) -> Vec<UnwindEntry> {
     let mut entries = Vec::new();
-    for region in regions {
+    for region in tables {
         match region.name.as_str() {
             ".eh_frame" => entries.extend(eh_frame(region, pointer_size)),
             ".ARM.exidx" => entries.extend(arm_exidx(region)),
@@ -315,6 +326,68 @@ fn eh_frame(region: &Region, pointer_size: usize) -> Vec<UnwindEntry> {
     entries
 }
 
+/// `.eh_frame`'s address range, found from `.eh_frame_hdr` (`hdr`, the bytes
+/// `PT_GNU_EH_FRAME` maps) and the `region` holding the frame data, for an
+/// image without section headers (`llvm-objcopy --strip-sections`): the
+/// loader keeps only segments, and the header is how unwinders find frames.
+///
+/// The end is the furthest FDE the binary-search table lists, so the parse
+/// stops where the frames do even without a terminator (lld writes none for
+/// `-nostdlib` links). Without a usable table it is the region's end.
+pub fn eh_frame_extent(hdr: &Region, regions: &[Region]) -> Option<(u64, u64)> {
+    const DW_EH_PE_DATAREL_SDATA4: u8 = 0x3b;
+    let mut cursor = Cursor {
+        data: &hdr.data,
+        base: hdr.start,
+        pos: 0,
+    };
+    if cursor.u8()? != 1 {
+        return None;
+    }
+    let pointer_encoding = cursor.u8()?;
+    let count_encoding = cursor.u8()?;
+    let table_encoding = cursor.u8()?;
+    // The header's own pointers are 4-byte encodings in every toolchain;
+    // `absptr` would need the class, which only these two forms avoid.
+    let start = cursor.encoded(pointer_encoding, 4)?;
+    let region = regions
+        .iter()
+        .find(|region| region.start <= start && start < region.end())?;
+    let region_end = region.end();
+    let Some(count) = cursor.encoded(count_encoding, 4) else {
+        return Some((start, region_end));
+    };
+    if table_encoding != DW_EH_PE_DATAREL_SDATA4 {
+        return Some((start, region_end));
+    }
+    let mut end = start;
+    let rows = usize::try_from(count).unwrap_or(usize::MAX);
+    for _ in 0..rows.min(MAX_UNWIND_ENTRIES) {
+        let (Some(_), Some(fde)) = (cursor.u32(), cursor.u32()) else {
+            break;
+        };
+        let fde = hdr.start.wrapping_add(fde as i32 as i64 as u64);
+        if fde < start || fde >= region_end {
+            continue;
+        }
+        let at = (fde - region.start) as usize;
+        let Some(length) = region.data.get(at..at + 4) else {
+            continue;
+        };
+        let length = u32::from_le_bytes([length[0], length[1], length[2], length[3]]);
+        let extent = if length == 0xffff_ffff {
+            let Some(long) = region.data.get(at + 4..at + 12) else {
+                continue;
+            };
+            u64::from_le_bytes(long.try_into().expect("8 bytes")).saturating_add(12)
+        } else {
+            u64::from(length) + 4
+        };
+        end = end.max(fde.saturating_add(extent).min(region_end));
+    }
+    Some((start, end))
+}
+
 // -- PE .pdata ------------------------------------------------------------------
 
 /// `RUNTIME_FUNCTION` entries. x64 entries are 12 bytes (begin, end, unwind
@@ -377,6 +450,12 @@ mod tests {
             ];
             let _ = elf_entries(&regions, 8);
             let _ = elf_entries(&regions, 4);
+            for header in [data.clone(), [&[1u8, 0x1b, 0x03, 0x3b][..], &data].concat()] {
+                let hdr = region(".eh_frame_hdr", 0x2ff0, header, false);
+                if let Some((start, end)) = eh_frame_extent(&hdr, &regions) {
+                    assert!(start <= end);
+                }
+            }
             let _ = pdata(&data, 0x1_4000_0000, false);
             let _ = pdata(&data, 0x1_4000_0000, true);
         }

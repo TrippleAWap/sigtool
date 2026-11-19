@@ -1,7 +1,9 @@
-//! ELF inputs that a loader accepts but our parser once read differently:
-//! packed relative relocations (`-z pack-relative-relocs`, `SHT_RELR`). Each
-//! test builds twins from one source with clang and lld and requires them
-//! to give the same features and the same hint-free matches.
+//! ELF inputs that a loader accepts but our parser once read differently or
+//! refused: packed relative relocations (`-z pack-relative-relocs`,
+//! `SHT_RELR`) and images without section headers (`llvm-objcopy
+//! --strip-sections`). Each test builds twins from one source with clang and
+//! lld and requires them to give the same features and the same hint-free
+//! matches.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -213,7 +215,8 @@ const TARGETS: [(&str, &str, &[&str]); 4] = [
 /// Builds the relocation-heavy source plain and with `packing` (linker
 /// flags), checks that `llvm-readelf -S` of the packed image names `marker`,
 /// and requires the twins to give the same relocated-word count, signatures,
-/// and hint-free matches.
+/// and hint-free matches. The packed image's section-less copy, whose tables
+/// come from `PT_DYNAMIC`, must read like its `--strip-all` copy.
 fn assert_packed_twin(packing: &str, marker: &str) {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("tables.c");
@@ -252,6 +255,19 @@ fn assert_packed_twin(packing: &str, marker: &str) {
 
         let (plain_symbols, packed_symbols) = (symbols(&plain), symbols(&packed));
         let (plain_stripped, packed_stripped) = (strip_all(&plain), strip_all(&packed));
+        let sectionless = packed.with_extension("sectionless.so");
+        run(
+            Command::new("llvm-objcopy")
+                .arg("--strip-sections")
+                .arg(&packed)
+                .arg(&sectionless),
+            "llvm-objcopy",
+        );
+        assert_eq!(
+            loader_view(&packed_stripped).0,
+            loader_view(&sectionless).0,
+            "{arch}: section-less packed image"
+        );
         for function in FUNCTIONS {
             let label = format!("{arch} {function}");
             let plain_yaml = dir.path().join(format!("{arch}-{function}.yaml"));
@@ -270,7 +286,14 @@ fn assert_packed_twin(packing: &str, marker: &str) {
     }
 }
 
-const PACKED_TOOLS: [&str; 5] = ["clang", "ld.lld", "llvm-nm", "llvm-strip", "llvm-readelf"];
+const PACKED_TOOLS: [&str; 6] = [
+    "clang",
+    "ld.lld",
+    "llvm-nm",
+    "llvm-strip",
+    "llvm-readelf",
+    "llvm-objcopy",
+];
 
 /// lld's packed relative relocations move every aligned relative relocation
 /// out of `.rela.dyn` into `.relr.dyn`. Those words are still addresses
@@ -281,4 +304,170 @@ fn packed_relative_relocations_match_their_unpacked_twin() {
     if common::have_tools(&PACKED_TOOLS) {
         assert_packed_twin("-Wl,-z,pack-relative-relocs", ".relr.dyn");
     }
+}
+
+/// What a hint-free scan reads from an image's tables, which must not depend
+/// on whether the section headers survive, and the module's lowest address.
+///
+/// That base is the one thing allowed to move: without sections it is the
+/// end of the program headers, with them the first section, which can sit a
+/// few bytes of alignment padding higher. No code or data lives there.
+fn loader_view(image: &Path) -> (String, u64) {
+    let source = FileSource::from_path(image)
+        .unwrap_or_else(|error| panic!("{}: {error:?}", image.display()));
+    let module = &source.modules()[0];
+    let mut imports: Vec<_> = module.imports.iter().collect();
+    imports.sort();
+    let mut functions: Vec<_> = module.functions.iter().collect();
+    functions.sort();
+    let thumb: Vec<bool> = source
+        .unwind_entries()
+        .iter()
+        .map(|(start, _)| source.is_thumb(*start))
+        .collect();
+    let view = format!(
+        "image base 0x{:x} end 0x{:x}\nexports {:?}\nfunctions {functions:?}\n\
+         imports {imports:?}\nrelocations {:?}\nunwind {:x?}\nsynthesized {:x?}\nthumb {thumb:?}",
+        module.image_base,
+        module.end(),
+        module.exports,
+        module.relocations,
+        source.unwind_entries(),
+        source.synthesized_starts(),
+    );
+    (view, module.base)
+}
+
+/// `llvm-objcopy --strip-sections` keeps only what the loader reads: program
+/// headers, `PT_DYNAMIC`, and the unwind tables behind `PT_GNU_EH_FRAME` and
+/// `PT_ARM_EXIDX`, all of which also survive `strip --strip-all`. So the
+/// section-less copy must give the same tables and the same hint-free
+/// matches as the `--strip-all` copy, for toy-corpus executables (static,
+/// no unwind tables: starts come from code) and for shared objects.
+#[test]
+fn section_less_images_match_their_strip_all_twin() {
+    if !common::have_tools(&["clang", "ld.lld", "llvm-nm", "llvm-strip", "llvm-objcopy"]) {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo root")
+        .join("corpus")
+        .join("src");
+    let shared = dir.path().join("tables.c");
+    std::fs::write(&shared, relocation_heavy_source()).unwrap();
+    // As `corpus/build.py` links the toy corpus, without debug info.
+    let toy: &[&str] = &[
+        "-nostdlib",
+        "-static",
+        "-fno-builtin",
+        "-fno-stack-protector",
+        "-fno-asynchronous-unwind-tables",
+        "-fno-unwind-tables",
+        "-Wl,-e,_start",
+    ];
+    let builds: [(&str, &[&str], &[&str]); 3] = [
+        (
+            "loops",
+            toy,
+            &[
+                "accumulate",
+                "collatz_length",
+                "mix64",
+                "counter_state",
+                "table_walk",
+            ],
+        ),
+        (
+            "parser",
+            toy,
+            &[
+                "parse_record",
+                "record_error",
+                "record_score",
+                "record_copy",
+            ],
+        ),
+        ("tables", &[], &FUNCTIONS),
+    ];
+    let (mut found, mut compared) = (0, 0);
+    for (arch, target, mode) in TARGETS {
+        for (name, flags, functions) in builds {
+            let mut extra: Vec<&str> = flags.to_vec();
+            extra.extend(mode);
+            let image = if name == "tables" {
+                build(
+                    dir.path(),
+                    &format!("{arch}-{name}.so"),
+                    target,
+                    &extra,
+                    &shared,
+                )
+            } else {
+                // Not `build`: the toy corpus is linked static, not shared.
+                let image = dir.path().join(format!("{arch}-{name}.so"));
+                run(
+                    Command::new("clang")
+                        .arg(format!("--target={target}"))
+                        .args(["-O2", "-fuse-ld=lld"])
+                        .args(&extra)
+                        .arg(corpus.join(format!("{name}.c")))
+                        .arg("-o")
+                        .arg(&image),
+                    "clang",
+                );
+                image
+            };
+            let stripped = strip_all(&image);
+            let sectionless = image.with_extension("sectionless.so");
+            run(
+                Command::new("llvm-objcopy")
+                    .arg("--strip-sections")
+                    .arg(&image)
+                    .arg(&sectionless),
+                "llvm-objcopy",
+            );
+            let label = format!("{arch} {name}");
+            let ((want, base), (got, headers_end)) =
+                (loader_view(&stripped), loader_view(&sectionless));
+            assert_eq!(want, got, "{label}: loader view");
+            assert!(
+                headers_end <= base && base - headers_end < 0x40,
+                "{label}: base 0x{base:x} with sections, 0x{headers_end:x} without"
+            );
+            if name == "tables" {
+                assert!(
+                    !FileSource::from_path(&sectionless)
+                        .unwrap()
+                        .unwind_entries()
+                        .is_empty(),
+                    "{label}: no unwind entries, so the test would not test them"
+                );
+            }
+            let symbols = symbols(&image);
+            let names = by_address(&symbols);
+            for function in functions {
+                let yaml = dir.path().join(format!("{arch}-{name}-{function}.yaml"));
+                signature(&image, symbols[*function], &yaml);
+                let want = locate(&yaml, &stripped, &names);
+                found += usize::from(
+                    want.first()
+                        .is_some_and(|hit| hit.starts_with(&format!("{function} "))),
+                );
+                compared += 1;
+                assert_eq!(
+                    want,
+                    locate(&yaml, &sectionless, &names),
+                    "{label} {function}: hint-free matches"
+                );
+            }
+        }
+    }
+    // Equal empty answers would pass too: most functions must be found (59 of
+    // 60 with LLVM 22.1.5).
+    assert!(
+        4 * found >= 3 * compared,
+        "only {found} of {compared} functions found in the --strip-all copies"
+    );
 }

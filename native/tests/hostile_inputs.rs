@@ -167,6 +167,8 @@ struct Image {
     fields: Vec<Field>,
     /// `fn_a`'s address in the parsed image, for the builder sanity check.
     fn_a: u64,
+    /// ELF: `(name, addr, size)` per section, for [`sectionless`].
+    layout: Vec<(&'static str, u64, u64)>,
 }
 
 /// Two functions per architecture: `fn_a` (frame, a 0x12345678 constant,
@@ -634,6 +636,170 @@ fn elf_image(arch: Arch, relr: bool) -> Image {
         bytes: b.bytes,
         fields: b.fields,
         fn_a,
+        layout: sections
+            .iter()
+            .map(|section| (section.name, section.addr, section.size))
+            .collect(),
+    }
+}
+
+/// `image` as `llvm-objcopy --strip-sections` leaves an image: no section
+/// table, only program headers, here appended with what the loader reads in
+/// their place: `PT_LOAD` over the whole file, `PT_DYNAMIC` (hash, symbol,
+/// string, and relocation tables), and `PT_GNU_EH_FRAME` with an
+/// `.eh_frame_hdr` (64-bit) or `PT_ARM_EXIDX` (ARM32).
+fn sectionless(image: Image, arch: Arch) -> Image {
+    let is64 = arch != Arch::Arm32;
+    let word = if is64 { 8 } else { 4 };
+    let find = |name: &str| {
+        image
+            .layout
+            .iter()
+            .find(|(section, _, _)| *section == name)
+            .map(|(_, addr, size)| (*addr, *size))
+    };
+    let mut b = Builder {
+        bytes: image.bytes.clone(),
+        // The section table and the old program header are dead bytes now.
+        fields: image
+            .fields
+            .iter()
+            .filter(|field| {
+                !["section", "e_sh", "e_ph", "p_"]
+                    .iter()
+                    .any(|prefix| field.name.starts_with(prefix))
+            })
+            .cloned()
+            .collect(),
+    };
+    let address = |offset: usize| ELF_VBASE + offset as u64;
+    let mut segments: Vec<(u32, u64, u64)> = Vec::new(); // (type, offset, size)
+
+    if is64 {
+        // `.eh_frame_hdr`: pcrel sdata4 frame pointer, udata4 count, and a
+        // datarel sdata4 search table, as lld and GNU ld write it.
+        b.align(16);
+        let at = b.bytes.len();
+        let hdr = address(at);
+        let (frames, _) = find(".eh_frame").expect(".eh_frame");
+        b.raw(at, &[1, 0x1b, 0x03, 0x3b]);
+        b.set(
+            "eh_frame_hdr.frame_pointer",
+            at + 4,
+            4,
+            u64::from(frames.wrapping_sub(hdr + 4) as u32),
+        );
+        b.set("eh_frame_hdr.count", at + 8, 4, 2);
+        for (index, start) in [image.fn_a, image.fn_a + 32].iter().enumerate() {
+            let fde = frames + 20 + 20 * index as u64;
+            let row = at + 12 + 8 * index;
+            let relative = |value: u64| u64::from(value.wrapping_sub(hdr) as u32);
+            b.set(
+                format!("eh_frame_hdr.row{index}.start"),
+                row,
+                4,
+                relative(*start),
+            );
+            b.set(
+                format!("eh_frame_hdr.row{index}.fde"),
+                row + 4,
+                4,
+                relative(fde),
+            );
+        }
+        segments.push((0x6474_e550, at as u64, 28));
+    } else {
+        let (exidx, size) = find(".ARM.exidx").expect(".ARM.exidx");
+        segments.push((0x7000_0001, exidx - ELF_VBASE, size));
+    }
+
+    // `DT_HASH`: one bucket, and the chain count that sizes `.dynsym`.
+    b.align(8);
+    let hash = b.bytes.len();
+    b.write(hash, 4, 1);
+    b.set("hash.nchain", hash + 4, 4, 3);
+    b.bytes.resize(hash + 24, 0);
+
+    let (dynsym, _) = find(".dynsym").expect(".dynsym");
+    let (dynstr, dynstr_size) = find(".dynstr").expect(".dynstr");
+    let mut tags: Vec<(&str, u64, u64)> = vec![
+        ("hash", 4, address(hash)),
+        ("strtab", 5, dynstr),
+        ("symtab", 6, dynsym),
+        ("strsz", 10, dynstr_size),
+    ];
+    for (name, address_tag, size_tag) in [
+        (".rela.dyn", 7, 8),
+        (".rel.dyn", 17, 18),
+        (".relr.dyn", 36, 35),
+    ] {
+        if let Some((addr, size)) = find(name) {
+            tags.push(("relocations", address_tag, addr));
+            tags.push(("relocations_size", size_tag, size));
+        }
+    }
+    b.align(8);
+    let dynamic = b.bytes.len();
+    for (index, (name, tag, value)) in tags.iter().enumerate() {
+        let at = dynamic + 2 * word * index;
+        b.write(at, word, *tag);
+        b.set(format!("dynamic.{name}"), at + word, word, *value);
+    }
+    let dynamic_size = 2 * word * (tags.len() + 1);
+    b.bytes.resize(dynamic + dynamic_size, 0); // DT_NULL
+    segments.push((2, dynamic as u64, dynamic_size as u64));
+
+    // Program headers last: the file before them is one RWX `PT_LOAD`.
+    b.align(8);
+    let phoff = b.bytes.len();
+    segments.insert(0, (1, 0, phoff as u64));
+    let phentsize = if is64 { 56 } else { 32 };
+    for (index, (kind, offset, size)) in segments.iter().enumerate() {
+        let at = phoff + index * phentsize;
+        let label = format!("ph{index}");
+        let memsz = if *kind == 1 { size + 0x40 } else { *size };
+        // (field, offset64, offset32, value); widths are the class's word,
+        // except type and flags, which are always 4 bytes.
+        let rows: [(&str, usize, usize, u64); 6] = [
+            ("type", 0, 0, u64::from(*kind)),
+            ("flags", 4, 24, 7),
+            ("offset", 8, 4, *offset),
+            ("vaddr", 16, 8, ELF_VBASE + offset),
+            ("filesz", 32, 16, *size),
+            ("memsz", 40, 20, memsz),
+        ];
+        for (field, offset64, offset32, value) in rows {
+            let width = if matches!(field, "type" | "flags") {
+                4
+            } else {
+                word
+            };
+            let offset = if is64 { offset64 } else { offset32 };
+            b.set(format!("{label}.{field}"), at + offset, width, value);
+            if field == "memsz" {
+                b.fields.last_mut().expect("field").alloc = true;
+            }
+        }
+        // p_paddr
+        b.write(at + if is64 { 24 } else { 12 }, word, ELF_VBASE + offset);
+    }
+    b.bytes.resize(phoff + segments.len() * phentsize, 0);
+    let (phoff_at, phnum_at, shoff_at, shnum_at) = if is64 {
+        (32, 56, 40, 60)
+    } else {
+        (28, 44, 32, 48)
+    };
+    b.set("e_phoff", phoff_at, word, phoff as u64);
+    b.set("e_phnum", phnum_at, 2, segments.len() as u64);
+    b.write(shoff_at, word, 0);
+    b.write(shnum_at, 2, 0);
+    b.write(shnum_at + 2, 2, 0); // e_shstrndx
+    Image {
+        name: format!("{}-sectionless", image.name),
+        bytes: b.bytes,
+        fields: b.fields,
+        fn_a: image.fn_a,
+        layout: Vec::new(),
     }
 }
 
@@ -801,6 +967,7 @@ fn pe_image(arch: Arch) -> Image {
         bytes: b.bytes,
         fields: b.fields,
         fn_a: PE_IMAGE_BASE + PE_TEXT_RVA,
+        layout: Vec::new(),
     }
 }
 
@@ -809,7 +976,9 @@ fn images() -> Vec<Image> {
     for arch in [Arch::X64, Arch::Arm64, Arch::Arm32] {
         images.push(elf_image(arch, false));
         images.push(elf_image(arch, true));
+        images.push(sectionless(elf_image(arch, false), arch));
     }
+    images.push(sectionless(elf_image(Arch::Arm64, true), Arch::Arm64));
     images.push(pe_image(Arch::X64));
     images.push(pe_image(Arch::Arm64));
     images
