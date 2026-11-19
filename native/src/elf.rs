@@ -29,6 +29,9 @@ const ELF_SHT_RELA: u32 = 4;
 const ELF_SHT_NOBITS: u32 = 8;
 const ELF_SHT_REL: u32 = 9;
 const ELF_SHT_DYNSYM: u32 = 11;
+const ELF_SHT_RELR: u32 = 19;
+const ELF_SHT_ANDROID_REL: u32 = 0x6000_0001;
+const ELF_SHT_ANDROID_RELA: u32 = 0x6000_0002;
 const ELF_SHF_WRITE: u64 = 0x1;
 const ELF_SHF_ALLOC: u64 = 0x2;
 const ELF_SHF_EXECINSTR: u64 = 0x4;
@@ -553,7 +556,11 @@ fn parse_elf_budgeted(
             40usize,
         )
     };
-    if e_shoff == 0 || e_shnum == 0 || (e_shentsize as usize) < sh_struct_size {
+    // `llvm-objcopy --strip-sections` (and firmware or malware that drops
+    // the table) leaves only what the loader reads: program headers. A
+    // relocatable object has no segments, so it still needs its sections.
+    let sectionless = e_shnum == 0 && e_type != ELF_ET_REL;
+    if !sectionless && (e_shoff == 0 || e_shnum == 0 || (e_shentsize as usize) < sh_struct_size) {
         return Err(SourceFormatError(
             "ELF image has no usable section table".into(),
         ));
@@ -565,56 +572,30 @@ fn parse_elf_budgeted(
     // program headers and fall back to the lowest placed section.
     let load_base = elf_load_base(data, is64);
 
-    let mut sections: Vec<Section> = Vec::with_capacity(e_shnum as usize);
-    for index in 0..e_shnum as usize {
-        let offset = (e_shoff as usize).saturating_add(index * e_shentsize as usize);
-        if offset.saturating_add(sh_struct_size) > data.len() {
-            return Err(SourceFormatError("truncated ELF section table".into()));
-        }
-        if is64 {
-            sections.push(Section {
-                name_off: u32_at(data, offset)?,
-                kind: u32_at(data, offset + 4)?,
-                flags: u64_at(data, offset + 8)?,
-                addr: u64_at(data, offset + 16)?,
-                offset: u64_at(data, offset + 24)?,
-                size: u64_at(data, offset + 32)?,
-                link: u32_at(data, offset + 40)?,
-                info: u32_at(data, offset + 44)?,
-                entsize: u64_at(data, offset + 56)?,
-            });
-        } else {
-            sections.push(Section {
-                name_off: u32_at(data, offset)?,
-                kind: u32_at(data, offset + 4)?,
-                flags: u32_at(data, offset + 8)? as u64,
-                addr: u32_at(data, offset + 12)? as u64,
-                offset: u32_at(data, offset + 16)? as u64,
-                size: u32_at(data, offset + 20)? as u64,
-                link: u32_at(data, offset + 24)?,
-                info: u32_at(data, offset + 28)?,
-                entsize: u32_at(data, offset + 36)? as u64,
-            });
-        }
-    }
-
-    if e_shstrndx as usize >= sections.len() {
-        return Err(SourceFormatError(
-            "invalid ELF section-name table index".into(),
-        ));
-    }
     let mut name_budget = NameBudget::new(
         ELF_NAMES_FLOOR.saturating_add(data.len().saturating_mul(ELF_NAMES_PER_FILE_BYTE)),
     );
-    let name_table = section_bytes(data, &sections[e_shstrndx as usize], &mut budget)?;
-    let mut names: Vec<String> = sections
-        .iter()
-        .map(|section| {
-            name_budget
-                .cstr(&name_table, section.name_off as usize)
-                .ok_or_else(elf_names_exhausted)
-        })
-        .collect::<Result<_, _>>()?;
+    let (mut sections, mut names, segment_tables) = if sectionless {
+        let segments = segment_sections(data, is64)?;
+        (segments.sections, segments.names, Some(segments.tables))
+    } else {
+        let sections = section_table(data, is64, e_shoff, e_shnum, e_shentsize, sh_struct_size)?;
+        if e_shstrndx as usize >= sections.len() {
+            return Err(SourceFormatError(
+                "invalid ELF section-name table index".into(),
+            ));
+        }
+        let name_table = section_bytes(data, &sections[e_shstrndx as usize], &mut budget)?;
+        let names: Vec<String> = sections
+            .iter()
+            .map(|section| {
+                name_budget
+                    .cstr(&name_table, section.name_off as usize)
+                    .ok_or_else(elf_names_exhausted)
+            })
+            .collect::<Result<_, _>>()?;
+        (sections, names, None)
+    };
     // A section table that does not describe the dynamic symbols (an image
     // rebuilt from an IDA database, whose segments name only some sections)
     // still has the loader's view of them: take the tables from the dynamic
@@ -781,19 +762,53 @@ fn parse_elf_budgeted(
     // As for symbols: relocation tables are disjoint in a real file (2x
     // headroom over the smallest entry).
     let mut relocation_entries_left = data.len() / 4;
+    let pointer_size = if is64 { 8 } else { 4 };
+    // A packed relative relocation's addend is the word at its place, so
+    // every place is file-backed: no more of them than the file has words.
+    let mut packed_slots_left = data.len() / pointer_size;
     for section in &sections {
-        if section.kind != ELF_SHT_RELA && section.kind != ELF_SHT_REL {
+        if section.kind == ELF_SHT_RELR && e_type != ELF_ET_REL {
+            // `-z pack-relative-relocs` moves the relative relocations out of
+            // RELA/REL into this table. They must land in the same sets as
+            // their unpacked twins, or packing would change which words are
+            // addresses (SPEC.md §2.2) and which pointers seed start synthesis.
+            let raw = section_bytes(data, section, &mut budget)?;
+            for slot in relr_slots(&raw, pointer_size, &mut packed_slots_left)? {
+                if e_type == ELF_ET_DYN {
+                    relocations.push(slot);
+                }
+                if arch == Arch::Arm32 && !is64 {
+                    relative_slots.push(slot);
+                } else if is64 && start_pointers.len() < 2 * crate::unwind::MAX_UNWIND_ENTRIES {
+                    // The unpacked twin's RELA addend, which RELR keeps in place.
+                    if let Ok(word) = read_regions(&regions, slot, 8) {
+                        start_pointers.push(u64::from_le_bytes(
+                            word[..8].try_into().expect("8-byte read"),
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
+        // Android's packed tables (`--pack-dyn-relocs=android`) hold the same
+        // entries as their unpacked twins, so they are decoded into that form.
+        let (kind, packed) = match section.kind {
+            ELF_SHT_ANDROID_RELA => (ELF_SHT_RELA, true),
+            ELF_SHT_ANDROID_REL => (ELF_SHT_REL, true),
+            kind => (kind, false),
+        };
+        if kind != ELF_SHT_RELA && kind != ELF_SHT_REL {
             continue;
         }
         // `Elf32_Rel` is 8 bytes (ARM32 uses REL, not RELA); the addend that
         // RELA adds is never read here.
-        let rel_struct_size = match (is64, section.kind == ELF_SHT_RELA) {
+        let rel_struct_size = match (is64, kind == ELF_SHT_RELA) {
             (true, true) => 24usize,
             (true, false) => 16,
             (false, true) => 12,
             (false, false) => 8,
         };
-        let entry_size = if section.entsize != 0 {
+        let entry_size = if section.entsize != 0 && !packed {
             section.entsize as usize
         } else {
             rel_struct_size
@@ -802,6 +817,16 @@ fn parse_elf_budgeted(
             continue;
         }
         let raw = section_bytes(data, section, &mut budget)?;
+        let raw: Cow<'_, [u8]> = if packed {
+            Cow::Owned(android_relocations(
+                &raw,
+                is64,
+                kind == ELF_SHT_RELA,
+                relocation_entries_left,
+            )?)
+        } else {
+            raw
+        };
         let count = raw.len() / entry_size;
         if count > relocation_entries_left {
             return Err(SourceFormatError(
@@ -840,7 +865,7 @@ fn parse_elf_budgeted(
             };
             if is64
                 && e_type != ELF_ET_REL
-                && section.kind == ELF_SHT_RELA
+                && kind == ELF_SHT_RELA
                 && r_info & 0xffff_ffff == relative
             {
                 if start_pointers.len() < 2 * crate::unwind::MAX_UNWIND_ENTRIES {
@@ -873,6 +898,12 @@ fn parse_elf_budgeted(
                 r_offset
             };
             imports.entry(slot).or_insert(target);
+        }
+    }
+
+    if segment_tables.is_some() && arch != Arch::X64 {
+        if let Some(plt) = plt_range(arch, &regions, &imports) {
+            carve_plt(&mut regions, plt);
         }
     }
 
@@ -955,10 +986,19 @@ fn parse_elf_budgeted(
         imports,
         relocations: (e_type == ELF_ET_DYN).then_some(relocations),
     };
-    let unwind = crate::unwind::elf_entries(&regions, if is64 { 8 } else { 4 });
+    let unwind = match &segment_tables {
+        Some(tables) => {
+            let views = tables.unwind_views(&regions);
+            crate::unwind::elf_table_entries(&views, &regions, pointer_size)
+        }
+        None => crate::unwind::elf_entries(&regions, pointer_size),
+    };
     // `.ARM.exidx` ends are only the next entry's start; `.eh_frame` lengths
     // are exact.
-    let unwind_exact_ends = !regions.iter().any(|region| region.name == ".ARM.exidx");
+    let unwind_exact_ends = match &segment_tables {
+        Some(tables) => tables.arm_exidx.is_none(),
+        None => !regions.iter().any(|region| region.name == ".ARM.exidx"),
+    };
     // `(slot, pointer)` per relocated pointer, so tables can be told apart
     // (`starts::label_tables`). Only ARM needs it: `.eh_frame` extents
     // already drop starts inside x64/arm64 functions.
@@ -1007,6 +1047,493 @@ fn parse_elf_budgeted(
     })
 }
 
+/// What an image without section headers keeps of its unwind tables: the
+/// `PT_GNU_EH_FRAME` and `PT_ARM_EXIDX` ranges, as `(vaddr, memsz)`.
+struct SegmentTables {
+    eh_frame_hdr: Option<(u64, u64)>,
+    arm_exidx: Option<(u64, u64)>,
+}
+
+impl SegmentTables {
+    /// `.eh_frame` and `.ARM.exidx` as named copies of the loaded bytes, for
+    /// the unwind parsers, which find tables by section name.
+    fn unwind_views(&self, regions: &[Region]) -> Vec<Region> {
+        let mut views = Vec::new();
+        if let Some(hdr) = self
+            .eh_frame_hdr
+            .and_then(|(addr, size)| region_view(regions, ".eh_frame_hdr", addr, size))
+        {
+            if let Some(frames) = crate::unwind::eh_frame_extent(&hdr, regions)
+                .and_then(|(start, end)| region_view(regions, ".eh_frame", start, end - start))
+            {
+                views.push(frames);
+            }
+        }
+        if let Some(exidx) = self
+            .arm_exidx
+            .and_then(|(addr, size)| region_view(regions, ".ARM.exidx", addr, size))
+        {
+            views.push(exidx);
+        }
+        views
+    }
+}
+
+/// `[addr, addr + size)` cut to the one region holding `addr`, as a region
+/// named `name`: a table the loader finds through a segment never spans two.
+fn region_view(regions: &[Region], name: &str, addr: u64, size: u64) -> Option<Region> {
+    let region = regions
+        .iter()
+        .find(|region| region.start <= addr && addr < region.end())?;
+    let begin = (addr - region.start) as usize;
+    let end = (addr.saturating_add(size).min(region.end()) - region.start) as usize;
+    Some(Region::new(
+        name,
+        addr,
+        region.data[begin..end].to_vec(),
+        false,
+        false,
+    ))
+}
+
+/// The PLT of a section-less ARM32 or AArch64 image, `[start, end)`.
+///
+/// Start synthesis leaves `.plt` out by name: its stubs are linker-made, and
+/// a call into one names an import, not a function. Without sections the
+/// PLT shares the code segment, and on the real corpus every stub became a
+/// synthesized start. The stubs are the `stubs` matches that jump through an
+/// import slot; the header before them opens with `stp x16, x30, [sp,
+/// #-16]!` (AArch64) or `str lr, [sp, #-4]!` (ARM), in lld and GNU ld alike.
+fn plt_range(arch: Arch, regions: &[Region], imports: &HashMap<u64, String>) -> Option<(u64, u64)> {
+    const ARM64_HEADER: u32 = 0xa9bf_7bf0;
+    const ARM64_BTI_C: u32 = 0xd503_245f;
+    const ARM_HEADER: u32 = 0xe52d_e004;
+    /// Longest PLT header (lld's AArch64 and ARM headers, 32 bytes).
+    const MAX_HEADER: u64 = 32;
+    let arm64 = arch == Arch::Arm64;
+    let mut entries: Vec<u64> = Vec::new();
+    for region in regions.iter().filter(|region| region.executable) {
+        for (index, chunk) in region.data.as_chunks::<4>().0.iter().enumerate() {
+            let word = u32::from_le_bytes(*chunk);
+            // Cheap first-word filters before the full match: `adrp x16` or
+            // `bti`, and `add ip, pc` or Thumb's `bx pc; nop`.
+            let candidate = if arm64 {
+                word & 0x9f00_001f == 0x9000_0010 || word & 0xffff_ff3f == 0xd503_241f
+            } else {
+                word & 0xffff_f000 == 0xe28f_c000 || word == 0x46c0_4778
+            };
+            if !candidate || entries.len() >= imports.len() {
+                continue;
+            }
+            let offset = index * 4;
+            let address = region.start + offset as u64;
+            let bytes =
+                &region.data[offset..region.data.len().min(offset + crate::stubs::MAX_STUB_BYTES)];
+            let exit = if arm64 {
+                crate::stubs::arm64_stub(address, bytes)
+            } else {
+                crate::stubs::arm32_stub(address, bytes)
+            };
+            if let Some(crate::stubs::StubExit::Slot(slot)) = exit {
+                if imports.contains_key(&slot) {
+                    entries.push(address);
+                }
+            }
+        }
+    }
+    let first = *entries.iter().min()?;
+    let last = *entries.iter().max()?;
+    let mut stride = 16;
+    entries.sort_unstable();
+    if let Some(gap) = entries.windows(2).map(|pair| pair[1] - pair[0]).min() {
+        stride = gap.clamp(4, 32);
+    }
+    let region = regions
+        .iter()
+        .find(|region| region.start <= first && first < region.end())?;
+    let word_at = |address: u64| {
+        let offset = address.checked_sub(region.start)? as usize;
+        let bytes = region.data.get(offset..offset + 4)?;
+        Some(u32::from_le_bytes(bytes.try_into().expect("4 bytes")))
+    };
+    let mut start = first;
+    for back in (4..=MAX_HEADER).step_by(4) {
+        let Some(address) = first.checked_sub(back) else {
+            break;
+        };
+        if word_at(address) == Some(if arm64 { ARM64_HEADER } else { ARM_HEADER }) {
+            start = address;
+            if arm64 && address >= 4 && word_at(address - 4) == Some(ARM64_BTI_C) {
+                start = address - 4;
+            }
+            break;
+        }
+    }
+    Some((start, last.saturating_add(stride).min(region.end())))
+}
+
+/// Split the executable region holding `[start, end)` so that range becomes
+/// its own region named `.plt`, as the section table would have shown it.
+fn carve_plt(regions: &mut Vec<Region>, (start, end): (u64, u64)) {
+    let Some(index) = regions.iter().position(|region| {
+        region.executable && region.start <= start && start < end && end <= region.end()
+    }) else {
+        return;
+    };
+    let mut region = regions.remove(index);
+    let mut plt = region.data.split_off((start - region.start) as usize);
+    let tail = plt.split_off((end - start) as usize);
+    let writable = region.writable;
+    if !tail.is_empty() {
+        regions.push(Region::new(
+            format!("{}.tail", region.name),
+            end,
+            tail,
+            true,
+            writable,
+        ));
+    }
+    regions.push(Region::new(".plt", start, plt, true, writable));
+    if !region.data.is_empty() {
+        regions.push(region);
+    }
+    regions.sort_by_key(|region| region.start);
+}
+
+/// Sections standing in for a missing section table: one per `PT_LOAD` file
+/// part and one per zero-filled tail, as the loader maps them.
+struct Segments {
+    sections: Vec<Section>,
+    names: Vec<String>,
+    tables: SegmentTables,
+}
+
+fn segment_sections(data: &[u8], is64: bool) -> Result<Segments, SourceFormatError> {
+    const ELF_PT_GNU_EH_FRAME: u32 = 0x6474_e550;
+    const ELF_PT_ARM_EXIDX: u32 = 0x7000_0001;
+    const ELF_PF_X: u32 = 1;
+    const ELF_PF_W: u32 = 2;
+    const ELF_SHT_PROGBITS: u32 = 1;
+    let (phoff, phentsize, phnum, header_size, entry_size) = if is64 {
+        (
+            u64_at(data, 0x20)?,
+            u16_at(data, 0x36)?,
+            u16_at(data, 0x38)?,
+            0x40u64,
+            0x38usize,
+        )
+    } else {
+        (
+            u64::from(u32_at(data, 0x1C)?),
+            u16_at(data, 0x2A)?,
+            u16_at(data, 0x2C)?,
+            0x34,
+            0x20,
+        )
+    };
+    if phoff == 0 || phnum == 0 || (phentsize as usize) < entry_size {
+        return Err(SourceFormatError(
+            "ELF image has neither a section table nor program headers".into(),
+        ));
+    }
+    // No code or data lives in the file's own headers, and leaving them out
+    // starts the first region where the first section would have. The
+    // program headers count only when they follow the ELF header, as every
+    // linker writes them; a table elsewhere in the file would otherwise hide
+    // everything before it.
+    let headers_end = if phoff <= header_size {
+        phoff
+            .saturating_add(u64::from(phnum) * u64::from(phentsize))
+            .max(header_size)
+    } else {
+        header_size
+    };
+    let mut segments = Segments {
+        sections: Vec::new(),
+        names: Vec::new(),
+        tables: SegmentTables {
+            eh_frame_hdr: None,
+            arm_exidx: None,
+        },
+    };
+    let section = |kind: u32, flags: u64, addr: u64, offset: u64, size: u64| Section {
+        name_off: 0,
+        kind,
+        flags,
+        addr,
+        offset,
+        size,
+        link: 0,
+        info: 0,
+        entsize: 0,
+    };
+    for index in 0..phnum as usize {
+        let at = usize::try_from(phoff)
+            .ok()
+            .and_then(|phoff| phoff.checked_add(index * phentsize as usize))
+            .filter(|at| at.saturating_add(entry_size) <= data.len())
+            .ok_or_else(|| SourceFormatError("truncated ELF program headers".into()))?;
+        let (kind, flags, offset, vaddr, filesz, memsz) = if is64 {
+            (
+                u32_at(data, at)?,
+                u32_at(data, at + 4)?,
+                u64_at(data, at + 8)?,
+                u64_at(data, at + 16)?,
+                u64_at(data, at + 32)?,
+                u64_at(data, at + 40)?,
+            )
+        } else {
+            (
+                u32_at(data, at)?,
+                u32_at(data, at + 24)?,
+                u64::from(u32_at(data, at + 4)?),
+                u64::from(u32_at(data, at + 8)?),
+                u64::from(u32_at(data, at + 16)?),
+                u64::from(u32_at(data, at + 20)?),
+            )
+        };
+        match kind {
+            ELF_PT_LOAD => {}
+            ELF_PT_GNU_EH_FRAME => {
+                segments.tables.eh_frame_hdr = Some((vaddr, memsz));
+                continue;
+            }
+            ELF_PT_ARM_EXIDX => {
+                segments.tables.arm_exidx = Some((vaddr, memsz));
+                continue;
+            }
+            _ => continue,
+        }
+        let mut section_flags = ELF_SHF_ALLOC;
+        if flags & ELF_PF_X != 0 {
+            section_flags |= ELF_SHF_EXECINSTR;
+        }
+        if flags & ELF_PF_W != 0 {
+            section_flags |= ELF_SHF_WRITE;
+        }
+        let file_part = filesz.min(memsz);
+        let skip = headers_end.saturating_sub(offset).min(file_part);
+        if file_part > skip {
+            segments.sections.push(section(
+                ELF_SHT_PROGBITS,
+                section_flags,
+                vaddr.saturating_add(skip),
+                offset.saturating_add(skip),
+                file_part - skip,
+            ));
+            segments.names.push(format!("load{index}"));
+        }
+        if memsz > file_part {
+            segments.sections.push(section(
+                ELF_SHT_NOBITS,
+                section_flags,
+                vaddr.saturating_add(file_part),
+                0,
+                memsz - file_part,
+            ));
+            segments.names.push(format!("load{index}.bss"));
+        }
+    }
+    Ok(segments)
+}
+
+/// The section header table, every entry inside the file.
+fn section_table(
+    data: &[u8],
+    is64: bool,
+    e_shoff: u64,
+    e_shnum: u16,
+    e_shentsize: u16,
+    sh_struct_size: usize,
+) -> Result<Vec<Section>, SourceFormatError> {
+    let mut sections: Vec<Section> = Vec::with_capacity(e_shnum as usize);
+    for index in 0..e_shnum as usize {
+        let offset = (e_shoff as usize).saturating_add(index * e_shentsize as usize);
+        if offset.saturating_add(sh_struct_size) > data.len() {
+            return Err(SourceFormatError("truncated ELF section table".into()));
+        }
+        if is64 {
+            sections.push(Section {
+                name_off: u32_at(data, offset)?,
+                kind: u32_at(data, offset + 4)?,
+                flags: u64_at(data, offset + 8)?,
+                addr: u64_at(data, offset + 16)?,
+                offset: u64_at(data, offset + 24)?,
+                size: u64_at(data, offset + 32)?,
+                link: u32_at(data, offset + 40)?,
+                info: u32_at(data, offset + 44)?,
+                entsize: u64_at(data, offset + 56)?,
+            });
+        } else {
+            sections.push(Section {
+                name_off: u32_at(data, offset)?,
+                kind: u32_at(data, offset + 4)?,
+                flags: u32_at(data, offset + 8)? as u64,
+                addr: u32_at(data, offset + 12)? as u64,
+                offset: u32_at(data, offset + 16)? as u64,
+                size: u32_at(data, offset + 20)? as u64,
+                link: u32_at(data, offset + 24)?,
+                info: u32_at(data, offset + 28)?,
+                entsize: u32_at(data, offset + 36)? as u64,
+            });
+        }
+    }
+    Ok(sections)
+}
+
+/// Android's packed relocations (`APS2`, as bionic reads them) re-encoded as
+/// plain `Elf*_Rela` (`rela`) or `Elf*_Rel` entries.
+///
+/// The stream is SLEB128 values: the count and first offset, then groups
+/// whose flags say which of offset delta, info, and addend delta the group
+/// shares and which each entry carries. More than `limit` entries is a
+/// malformed table; a truncated stream keeps the entries before the cut.
+fn android_relocations(
+    raw: &[u8],
+    is64: bool,
+    rela: bool,
+    limit: usize,
+) -> Result<Vec<u8>, SourceFormatError> {
+    const GROUPED_BY_INFO: i64 = 1;
+    const GROUPED_BY_OFFSET_DELTA: i64 = 2;
+    const GROUPED_BY_ADDEND: i64 = 4;
+    const GROUP_HAS_ADDEND: i64 = 8;
+    let Some(stream) = raw.strip_prefix(b"APS2") else {
+        return Ok(Vec::new());
+    };
+    let mut cursor = 0usize;
+    let mut next = || -> Option<i64> {
+        let mut value = 0i64;
+        for shift in (0..64).step_by(7) {
+            let byte = *stream.get(cursor)?;
+            cursor += 1;
+            value |= i64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                if shift + 7 < 64 && byte & 0x40 != 0 {
+                    value |= -1i64 << (shift + 7);
+                }
+                return Some(value);
+            }
+        }
+        None
+    };
+    let mut out = Vec::new();
+    let (Some(count), Some(mut offset)) = (next(), next()) else {
+        return Ok(out);
+    };
+    let count = usize::try_from(count).unwrap_or(0);
+    if count > limit {
+        return Err(SourceFormatError(
+            "ELF packed relocations hold more entries than the file".into(),
+        ));
+    }
+    let mut emit = |offset: i64, info: i64, addend: i64| {
+        for value in [offset, info, addend].iter().take(if rela { 3 } else { 2 }) {
+            if is64 {
+                out.extend_from_slice(&value.to_le_bytes());
+            } else {
+                out.extend_from_slice(&(*value as u32).to_le_bytes());
+            }
+        }
+    };
+    let (mut info, mut addend, mut done) = (0i64, 0i64, 0usize);
+    'groups: while done < count {
+        let (Some(size), Some(flags)) = (next(), next()) else {
+            break;
+        };
+        let delta = if flags & GROUPED_BY_OFFSET_DELTA != 0 {
+            match next() {
+                Some(delta) => delta,
+                None => break,
+            }
+        } else {
+            0
+        };
+        if flags & GROUPED_BY_INFO != 0 {
+            let Some(value) = next() else { break };
+            info = value;
+        }
+        let has_addend = rela && flags & GROUP_HAS_ADDEND != 0;
+        if has_addend && flags & GROUPED_BY_ADDEND != 0 {
+            let Some(value) = next() else { break };
+            addend = addend.wrapping_add(value);
+        } else if !has_addend {
+            addend = 0;
+        }
+        // A group never holds more than the entries still to come; a zero or
+        // negative size consumes its header and nothing else.
+        let size = usize::try_from(size).unwrap_or(0).min(count - done);
+        for _ in 0..size {
+            let step = if flags & GROUPED_BY_OFFSET_DELTA != 0 {
+                delta
+            } else {
+                let Some(step) = next() else { break 'groups };
+                step
+            };
+            offset = offset.wrapping_add(step);
+            if flags & GROUPED_BY_INFO == 0 {
+                let Some(value) = next() else { break 'groups };
+                info = value;
+            }
+            if has_addend && flags & GROUPED_BY_ADDEND == 0 {
+                let Some(value) = next() else { break 'groups };
+                addend = addend.wrapping_add(value);
+            }
+            emit(offset, info, addend);
+            done += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// The places an `SHT_RELR` table relocates (gABI packed relative
+/// relocations): an even word is a place, and each odd word after it is a
+/// bitmap of the `8 * word - 1` words that follow the last place covered.
+///
+/// `left` caps the places over all tables, since a bitmap expands one word
+/// into up to 63; running out is a malformed image, not a short read.
+fn relr_slots(raw: &[u8], word: usize, left: &mut usize) -> Result<Vec<u64>, SourceFormatError> {
+    let bits = (word * 8 - 1) as u64;
+    let mut slots = Vec::new();
+    let mut push = |slot: u64, slots: &mut Vec<u64>| {
+        if *left == 0 {
+            return Err(SourceFormatError(
+                "ELF RELR tables relocate more words than the file holds".into(),
+            ));
+        }
+        *left -= 1;
+        slots.push(slot);
+        Ok(())
+    };
+    // Where the next bitmap starts; `None` before the first place, so a
+    // leading bitmap (malformed) relocates nothing.
+    let mut next: Option<u64> = None;
+    for entry in raw.chunks_exact(word) {
+        let entry = if word == 8 {
+            u64::from_le_bytes(entry.try_into().expect("8-byte chunk"))
+        } else {
+            u64::from(u32::from_le_bytes(entry.try_into().expect("4-byte chunk")))
+        };
+        if entry & 1 == 0 {
+            push(entry, &mut slots)?;
+            next = entry.checked_add(word as u64);
+            continue;
+        }
+        let Some(base) = next else {
+            continue;
+        };
+        for bit in 0..bits {
+            if (entry >> (bit + 1)) & 1 != 0 {
+                if let Some(slot) = base.checked_add(bit * word as u64) {
+                    push(slot, &mut slots)?;
+                }
+            }
+        }
+        next = base.checked_add(bits * word as u64);
+    }
+    Ok(slots)
+}
+
 /// The dynamic symbol, string, and relocation tables the `PT_DYNAMIC` segment
 /// points at, as unallocated sections appended after `first_index` existing
 /// ones (their `link` fields index the result's position in that list).
@@ -1026,6 +1553,12 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
     const DT_RELSZ: u64 = 18;
     const DT_PLTREL: u64 = 20;
     const DT_JMPREL: u64 = 23;
+    const DT_RELRSZ: u64 = 35;
+    const DT_RELR: u64 = 36;
+    const DT_ANDROID_REL: u64 = 0x6000_000f;
+    const DT_ANDROID_RELSZ: u64 = 0x6000_0010;
+    const DT_ANDROID_RELA: u64 = 0x6000_0011;
+    const DT_ANDROID_RELASZ: u64 = 0x6000_0012;
 
     let word = |offset: usize| -> Option<u64> {
         if is64 {
@@ -1150,6 +1683,7 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
     ];
     let rela_size: u64 = if is64 { 24 } else { 12 };
     let rel_size: u64 = if is64 { 16 } else { 8 };
+    let relr_size: u64 = if is64 { 8 } else { 4 };
     let pltrel_kind = match tags.get(&DT_PLTREL) {
         Some(&DT_REL) => ELF_SHT_REL,
         _ => ELF_SHT_RELA,
@@ -1158,6 +1692,19 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
         (DT_RELA, DT_RELASZ, ELF_SHT_RELA, ".rela.dyn"),
         (DT_REL, DT_RELSZ, ELF_SHT_REL, ".rel.dyn"),
         (DT_JMPREL, DT_PLTRELSZ, pltrel_kind, ".rela.plt"),
+        (DT_RELR, DT_RELRSZ, ELF_SHT_RELR, ".relr.dyn"),
+        (
+            DT_ANDROID_RELA,
+            DT_ANDROID_RELASZ,
+            ELF_SHT_ANDROID_RELA,
+            ".rela.dyn",
+        ),
+        (
+            DT_ANDROID_REL,
+            DT_ANDROID_RELSZ,
+            ELF_SHT_ANDROID_REL,
+            ".rel.dyn",
+        ),
     ];
     for (address_tag, size_tag, kind, name) in tables {
         let (Some(&addr), Some(&size)) = (tags.get(&address_tag), tags.get(&size_tag)) else {
@@ -1166,10 +1713,10 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
         let Some(offset) = to_offset(addr, size) else {
             continue;
         };
-        let entsize = if kind == ELF_SHT_RELA {
-            rela_size
-        } else {
-            rel_size
+        let entsize = match kind {
+            ELF_SHT_RELA => rela_size,
+            ELF_SHT_REL => rel_size,
+            _ => relr_size,
         };
         let name = if kind == ELF_SHT_REL && name == ".rela.plt" {
             ".rel.plt"
@@ -2137,6 +2684,63 @@ mod tests {
         assert!(budget.padded(&[1, 2, 3], 3).is_err());
         assert_eq!(budget.padded(&[7, 8], 2).unwrap(), vec![7, 8]);
         assert_eq!(budget.padded(&[], 0).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn relr_bitmaps_expand_after_their_place_and_are_capped() {
+        let words: Vec<u8> = [0x1000u64, 0b1011, 0x2000, 1 | (1 << 63)]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        let mut left = 16;
+        // 0x1000, then bits 0 and 2 of the next 63 words; 0x2000, then the
+        // last of its 63 words.
+        assert_eq!(
+            relr_slots(&words, 8, &mut left).unwrap(),
+            vec![0x1000, 0x1008, 0x1018, 0x2000, 0x2008 + 8 * 62]
+        );
+        assert_eq!(left, 11);
+        assert!(relr_slots(&words, 8, &mut 4).is_err());
+        // A bitmap before any place relocates nothing.
+        let leading: Vec<u8> = [3u32, 0x40].iter().flat_map(|w| w.to_le_bytes()).collect();
+        assert_eq!(relr_slots(&leading, 4, &mut 8).unwrap(), vec![0x40]);
+    }
+
+    #[test]
+    fn packed_relocation_streams_never_panic_and_stay_bounded() {
+        let mut state = 0x9e37_79b9u32;
+        for size in [0usize, 3, 4, 5, 9, 64, 4096] {
+            for prefix in [&b""[..], b"APS2"] {
+                let mut data = prefix.to_vec();
+                data.extend((0..size).map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                }));
+                for (is64, rela) in [(true, true), (true, false), (false, true), (false, false)] {
+                    let entry = match (is64, rela) {
+                        (true, true) => 24,
+                        (true, false) => 16,
+                        (false, true) => 12,
+                        (false, false) => 8,
+                    };
+                    if let Ok(out) = android_relocations(&data, is64, rela, 1000) {
+                        assert!(out.len() <= 1000 * entry);
+                        assert_eq!(out.len() % entry, 0);
+                    }
+                }
+                let _ = relr_slots(&data, 8, &mut 100_000);
+                let _ = relr_slots(&data, 4, &mut 100_000);
+            }
+        }
+        // A huge count is refused, and a group of size 0 consumes its header.
+        assert!(android_relocations(b"APS2\xff\xff\x03\x00", true, true, 10).is_err());
+        let zero_groups = [b"APS2".to_vec(), vec![2, 0x10], [0u8, 0].repeat(64)].concat();
+        assert_eq!(
+            android_relocations(&zero_groups, true, true, 10).unwrap(),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]

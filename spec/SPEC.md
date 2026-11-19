@@ -211,7 +211,11 @@ still base-independent there; reading PE base relocations would let PE use
 the relocation test too.
 
 The decision uses only the relocation table, which `strip --strip-all` keeps,
-so hint-free discovery may apply it. Two loads of the same shared object at
+so hint-free discovery may apply it. That table is every place the dynamic
+relocations name, however they are stored: `REL`, `RELA`, packed `RELR`
+(`-z pack-relative-relocs`), and Android's `APS2` packing, found through the
+section headers or, in an image without them, through `PT_DYNAMIC`. Packing
+or dropping the section headers never changes the set. Two loads of the same shared object at
 different bases give identical features (`tests/golden.rs`, the `*-pic-*`
 vectors).
 

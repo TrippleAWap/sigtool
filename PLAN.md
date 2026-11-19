@@ -673,5 +673,43 @@ As of 2026-11-18, `strong-fp-floor` branch, spec v5.
     regeneration (exit 2 as before).
   - Not done from RW8: `--explain` / `--expect`, generation warnings, the
     workflow pages, and the plugin smoke rerun (no plugin change).
+- RW7, ELF inputs (2026-11-19, `rw/elf-inputs` branch, spec v5
+  unchanged):
+  - Packed relocations: `SHT_RELR` / `DT_RELR` and Android `APS2`
+    (`SHT_ANDROID_REL[A]`, `DT_ANDROID_REL[A]`) are read into the same
+    relocation set as `RELA` / `REL` (SPEC.md §2.2). Built with clang and
+    lld for x64, arm64, arm32, and Thumb, a packed shared object and its
+    unpacked twin give identical signatures and hint-free matches for 6
+    functions each (`tests/elf_inputs.rs`).
+  - Section-less ELF (`e_shnum == 0`): read from `PT_LOAD`, `PT_DYNAMIC`,
+    `PT_GNU_EH_FRAME` (`.eh_frame` bounded by the `.eh_frame_hdr` search
+    table), and `PT_ARM_EXIDX`. On ARM and AArch64 the PLT is found from
+    its stubs and kept out of start synthesis, as `.plt` is with sections.
+    In the test, toy-corpus executables and a shared object for the four
+    architectures give the same tables and hint-free matches without
+    sections as `--strip-all` does, for 60 functions (59 found).
+  - Real corpus (`examples/sectionless`: 120 stripped images, the first 4
+    ground-truth functions each, signed on the unstripped image): the
+    module tables agree on 120 of 120 images. The first hint-free match is
+    the same for 453 of 480 signatures: 240 of 240 on clang+lld, 60 of 60 on
+    gcc x64, and 153 of 180 on gcc ARM32, Thumb, and AArch64. Identified at
+    the signed start: 219 with sections, 193 without, all of the loss on
+    gcc ARM (86 -> 60). GNU ld there maps `.dynsym` through `.rodata` and
+    `.eh_frame` in the one R+X segment, so the sweeps decode them as code
+    (877 to 4857 extra synthesized starts per arch over 15 images). Unwind
+    start lists are identical on 58 of 120 images: every x64 and lld arm64
+    image; the other lld ARM32 and Thumb images differ by one start, the
+    `.ARM.exidx` end-of-text sentinel, which a section table leaves outside
+    `.text`.
+  - `tests/hostile_inputs.rs` builds each ELF image also with `.relr.dyn`,
+    with an `APS2` table, and without section headers (release and debug
+    builds pass).
+  - Unchanged: toy bench report (byte-identical apart from the cost
+    lines), golden vectors, `elf_dynamic`; real bench (`--max-functions 4`,
+    both modes, FP) report identical to its base (d56505e) apart from the
+    cost lines (peak 1311 MiB both).
+  - Open: carve the tables `PT_DYNAMIC` and `PT_GNU_EH_FRAME` locate out of
+    executable segments, then measure what `.rodata` still costs.
+    `RawSource` (`--raw`) not started.
 - Next: M8 exit (weekly workflow green), strong FP on the held-out corpus
   (milestone exit), and pointer-width-dependent constants (M10).
