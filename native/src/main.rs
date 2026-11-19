@@ -49,7 +49,8 @@ use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
 use sigtool_native::identity::{container, identify, Container, ImageIdentity};
 use sigtool_native::matcher::{
-    evidence, hinted_floors, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
+    evidence, explain, hinted_floors, scan, scan_in, Explanation, Match, ScanContext,
+    DEFAULT_MAX_RECOVERIES,
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
@@ -157,6 +158,14 @@ struct LocateArgs {
     /// without `.symtab` function symbols (stripped ELF, PE)
     #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
     discovery: String,
+    /// Explain the verdict on the best match (or on --expect): matched and
+    /// missed features, neighbour keys, and the gate that decided
+    #[arg(long, conflicts_with = "pid")]
+    explain: bool,
+    /// With --explain, explain the function at this module-relative address
+    /// instead of the best match
+    #[arg(long, value_name = "RVA", requires = "explain")]
+    expect: Option<String>,
 }
 
 #[derive(Args)]
@@ -664,28 +673,58 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     // no whole-process index (hundreds of modules); its hinted scan starts
     // from anchor hits and gets the same hinted floors.
     let mut coverage = Coverage::new();
+    let mut context = None;
     let matches = if hints && args.pid.is_some() {
         let found = scan(source, &signature, None, 256, true, None);
         hinted_floors(source, &signature, found)
     } else {
-        let context = ScanContext::build(source);
-        coverage.add_context(&context);
+        let built = context.insert(ScanContext::build(source));
+        coverage.add_context(built);
         coverage.add_source(source, hints);
-        scan_in(source, &signature, &context, hints)
+        scan_in(source, &signature, built, hints)
     };
     warn_coverage(&coverage);
+
+    // clap keeps --explain off --pid, so a context exists here.
+    let explanation = match (&context, args.explain) {
+        (Some(context), true) => {
+            let address = match &args.expect {
+                Some(rva) => Some(resolve_address(source, None, Some(rva), None)?),
+                None => matches.first().map(|matched| matched.address),
+            };
+            address.map(|address| explain(source, &signature, context, hints, address))
+        }
+        _ => None,
+    };
 
     if let Some(path) = &args.json {
         let mut document = match_document(source, &signature, &matches);
         document.insert("truncated".to_string(), coverage_value(&coverage));
+        if args.explain {
+            document.insert(
+                "explain".to_string(),
+                explanation.as_ref().map_or(Value::Null, |explanation| {
+                    explain_value(source, &signature, explanation)
+                }),
+            );
+        }
         write_json(path, &document)?;
     }
+    let print_explanation = || {
+        if args.explain {
+            match &explanation {
+                Some(explanation) => print!("{}", explain_text(source, &signature, explanation)),
+                None => println!("explain: no match to explain (pass --expect RVA)"),
+            }
+        }
+    };
 
     if matches.is_empty() {
         eprintln!(
             "sigtool-native: no match for signature {:?} in the target",
             signature.name
         );
+        print_explanation();
         return Ok(EXIT_NOT_FOUND);
     }
     println!(
@@ -707,6 +746,7 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
             where_
         );
     }
+    print_explanation();
     if !args.yes && std::io::stdin().is_terminal() {
         let label = source
             .label_for_address(matches[0].address)
@@ -779,6 +819,243 @@ fn match_document(
         .collect();
     document.insert("matches".to_string(), Value::Array(entries));
     document
+}
+
+fn hex_value(address: Option<u64>) -> Value {
+    address.map_or(Value::Null, |address| {
+        Value::String(format!("0x{address:x}"))
+    })
+}
+
+fn number_value(number: Option<f64>) -> Value {
+    number.map_or(Value::Null, json_number)
+}
+
+fn strings_value(keys: &[String]) -> Value {
+    Value::Array(keys.iter().cloned().map(Value::String).collect())
+}
+
+/// The `explain` object of `locate --json`: what [`explain`] found, keyed
+/// like the match entries.
+fn explain_value(
+    source: &dyn ByteSource,
+    signature: &Signature,
+    explanation: &Explanation,
+) -> Value {
+    let mut object: BTreeMap<String, Value> = BTreeMap::new();
+    object.insert("address".to_string(), hex_value(Some(explanation.address)));
+    if let Some(module) = source.module_for(explanation.address) {
+        object.insert("module".to_string(), Value::String(module.name.clone()));
+        object.insert(
+            "rva".to_string(),
+            hex_value(Some(module.rva(explanation.address))),
+        );
+    }
+    object.insert(
+        "label".to_string(),
+        source
+            .label_for_address(explanation.address)
+            .map_or(Value::Null, Value::String),
+    );
+    object.insert("start".to_string(), hex_value(explanation.start));
+    object.insert("end".to_string(), hex_value(explanation.end));
+    object.insert("candidate".to_string(), Value::Bool(explanation.candidate));
+    object.insert("score".to_string(), json_number(explanation.score));
+    object.insert(
+        "similarity".to_string(),
+        json_number(explanation.similarity),
+    );
+    object.insert(
+        "threshold".to_string(),
+        json_number(signature.match_threshold),
+    );
+    object.insert(
+        "min_distinct".to_string(),
+        Value::Number(signature.min_distinct.into()),
+    );
+    object.insert(
+        "matched_required".to_string(),
+        Value::Number(explanation.matched_required.into()),
+    );
+    object.insert(
+        "required".to_string(),
+        Value::Number(explanation.required.into()),
+    );
+    object.insert("matched".to_string(), strings_value(&explanation.matched));
+    object.insert(
+        "inherited".to_string(),
+        strings_value(&explanation.inherited),
+    );
+    object.insert(
+        "missed".to_string(),
+        Value::Array(
+            explanation
+                .missed
+                .iter()
+                .map(|(key, required)| serde_json::json!({ "key": key, "required": required }))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "optional_callees".to_string(),
+        strings_value(&explanation.optional_callees),
+    );
+    object.insert(
+        "neighbours".to_string(),
+        serde_json::json!({
+            "shared": explanation.neighbours_shared,
+            "missed": explanation.neighbours_missed,
+        }),
+    );
+    object.insert("cross_isa".to_string(), Value::Bool(explanation.cross_isa));
+    object.insert(
+        "gates".to_string(),
+        Value::Array(
+            explanation
+                .gates
+                .iter()
+                .map(|gate| {
+                    serde_json::json!({
+                        "gate": gate.gate,
+                        "passed": gate.passed,
+                        "value": number_value(gate.value),
+                        "needed": number_value(gate.needed),
+                    })
+                })
+                .collect(),
+        ),
+    );
+    object.insert(
+        "decided".to_string(),
+        Value::String(explanation.decided.clone()),
+    );
+    object.insert(
+        "rank".to_string(),
+        explanation
+            .rank
+            .map_or(Value::Null, |rank| Value::Number((rank + 1).into())),
+    );
+    object.insert(
+        "matches".to_string(),
+        Value::Number(explanation.matches.into()),
+    );
+    object.insert(
+        "evidence".to_string(),
+        explanation
+            .evidence
+            .map_or(Value::Null, |label| Value::String(label.to_string())),
+    );
+    object.insert(
+        "answer_withheld".to_string(),
+        explanation
+            .answer_withheld
+            .map_or(Value::Null, |reason| Value::String(reason.to_string())),
+    );
+    object.insert(
+        "answer_floor".to_string(),
+        number_value(explanation.answer_floor),
+    );
+    object.insert("rival".to_string(), number_value(explanation.rival));
+    object.insert("chance".to_string(), number_value(explanation.chance));
+    object.insert(
+        "carriers".to_string(),
+        explanation
+            .carriers
+            .map_or(Value::Null, |count| Value::Number(count.into())),
+    );
+    Value::Object(object.into_iter().collect())
+}
+
+/// `locate --explain` as text, after the match list.
+fn explain_text(
+    source: &dyn ByteSource,
+    signature: &Signature,
+    explanation: &Explanation,
+) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    let label = source
+        .label_for_address(explanation.address)
+        .unwrap_or_else(|| "unlabelled".to_string());
+    let _ = writeln!(
+        text,
+        "explain 0x{:x} {label}: {}",
+        explanation.address, explanation.decided
+    );
+    let rank = match explanation.rank {
+        Some(rank) => format!(
+            "rank {} of {}, {}",
+            rank + 1,
+            explanation.matches,
+            explanation.evidence.unwrap_or("")
+        ),
+        None => format!("not in the {} matches", explanation.matches),
+    };
+    let _ = writeln!(
+        text,
+        "  {rank}; score {:.3} (threshold {}), similarity {:.3}, required {}/{} (min_distinct {})",
+        explanation.score,
+        signature.match_threshold,
+        explanation.similarity,
+        explanation.matched_required,
+        explanation.required,
+        signature.min_distinct
+    );
+    if let Some(reason) = explanation.answer_withheld {
+        let _ = writeln!(
+            text,
+            "  not identified: {reason} (answer floor {:.2}, rival {})",
+            explanation.answer_floor.unwrap_or(0.0),
+            explanation
+                .rival
+                .map_or("none".to_string(), |rival| format!("{rival:.3}"))
+        );
+    }
+    let _ = writeln!(text, "  matched: {}", explanation.matched.join(" "));
+    if !explanation.inherited.is_empty() {
+        let _ = writeln!(text, "  inherited: {}", explanation.inherited.join(" "));
+    }
+    let missed: Vec<String> = explanation
+        .missed
+        .iter()
+        .map(|(key, required)| format!("{}{key}", if *required { "!" } else { "" }))
+        .collect();
+    let _ = writeln!(text, "  missed (! required): {}", missed.join(" "));
+    if !explanation.optional_callees.is_empty() {
+        let _ = writeln!(
+            text,
+            "  optional here (target names no function): {}",
+            explanation.optional_callees.join(" ")
+        );
+    }
+    if !explanation.neighbours_shared.is_empty() || !explanation.neighbours_missed.is_empty() {
+        let _ = writeln!(
+            text,
+            "  neighbour keys shared {} / missed {}",
+            explanation.neighbours_shared.join(" "),
+            explanation.neighbours_missed.join(" ")
+        );
+    }
+    if let (Some(chance), Some(carriers)) = (explanation.chance, explanation.carriers) {
+        let _ = writeln!(
+            text,
+            "  chance carriers {chance:.3} expected, {carriers} exact"
+        );
+    }
+    for gate in &explanation.gates {
+        let value = match (gate.value, gate.needed) {
+            (Some(value), Some(needed)) => format!(" {value:.3} vs {needed:.3}"),
+            (Some(value), None) => format!(" {value:.3}"),
+            _ => String::new(),
+        };
+        let _ = writeln!(
+            text,
+            "  gate {}: {}{value}",
+            gate.gate,
+            if gate.passed { "pass" } else { "FAIL" }
+        );
+    }
+    text
 }
 
 // -- scan --------------------------------------------------------------------
