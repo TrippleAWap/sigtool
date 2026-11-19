@@ -1,4 +1,4 @@
-# Signature spec v6
+# Signature spec v7
 
 Status: draft for M1 (extraction). Generation, scoring, and matching fields are
 specified in outline and completed in M2/M3.
@@ -164,9 +164,11 @@ reaches. Names are the only callee form: an unnamed target's address (or a
   `__aeabi_memcpy*` is `memcpy`, `__aeabi_memmove*` is `memmove`, and
   `__aeabi_memset*` / `__aeabi_memclr*` are `memset`.
 * **Calls into other images are low-information.** An import the image does
-  not define itself (no `.dynsym` definition; every PE import) is written in
-  the `module!import` form; ELF does not record the providing library, so the
-  module is `*` (`*!memcpy`). A shared object's call to its own export
+  not define itself (no `.dynsym` definition; every PE import, and in a
+  process a call into another module) is written `*!import`: ELF does not
+  record the providing library, and the module a PE import names
+  (`ucrtbase!memcpy`) is dropped so the same call gives the same key in every
+  format. A shared object's call to its own export
   through the PLT keeps the plain name. A callee value containing `!` is never
   an anchor and, like a small constant, does not make a signature
   high-information or corroborate a match (§8): `memcpy` and `free` are
