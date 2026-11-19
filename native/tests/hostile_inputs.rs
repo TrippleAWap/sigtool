@@ -162,11 +162,13 @@ impl Builder {
 }
 
 struct Image {
-    name: &'static str,
+    name: String,
     bytes: Vec<u8>,
     fields: Vec<Field>,
     /// `fn_a`'s address in the parsed image, for the builder sanity check.
     fn_a: u64,
+    /// ELF: `(name, addr, size)` per section, for [`sectionless`].
+    layout: Vec<(&'static str, u64, u64)>,
 }
 
 /// Two functions per architecture: `fn_a` (frame, a 0x12345678 constant,
@@ -237,6 +239,14 @@ const SHF_WRITE: u64 = 1;
 const SHF_ALLOC: u64 = 2;
 const SHF_EXECINSTR: u64 = 4;
 
+/// How the builder stores the dynamic relocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Packing {
+    None,
+    Relr,
+    Android,
+}
+
 struct ElfSection {
     name: &'static str,
     kind: u32,
@@ -252,8 +262,12 @@ struct ElfSection {
 /// A linked shared object (`ET_DYN`) shaped like lld output after
 /// `strip --strip-all`: `.text`, `.rodata`, an unwind table, `.data` with one
 /// relocated function pointer, `.dynsym`/`.dynstr`, the relative relocation,
-/// `.bss`, and `.shstrtab`.
-fn elf_image(arch: Arch) -> Image {
+/// `.bss`, and `.shstrtab`. With [`Packing::Relr`], `.data` holds a second
+/// pointer and both are relocated by `.relr.dyn` (`-z pack-relative-relocs`):
+/// one place entry and one bitmap entry. With [`Packing::Android`], the one
+/// relocation is an `APS2` stream (`--pack-dyn-relocs=android`).
+fn elf_image(arch: Arch, packing: Packing) -> Image {
+    let relr = packing == Packing::Relr;
     let is64 = arch != Arch::Arm32;
     let (ehsize, phentsize, shentsize) = if is64 { (64, 56, 64) } else { (52, 32, 40) };
     let pointer = if is64 { 8 } else { 4 };
@@ -373,18 +387,22 @@ fn elf_image(arch: Arch) -> Image {
         entsize: 0,
     });
 
-    // `.data`: one function pointer, written by a relative relocation.
+    // `.data`: one function pointer (two with `relr`), written by a relative
+    // relocation.
     b.align(16);
     let data_offset = b.bytes.len();
     let slot = ELF_VBASE + data_offset as u64;
     b.set("data.pointer", data_offset, pointer, fn_a);
+    if relr {
+        b.set("data.pointer2", data_offset + pointer, pointer, fn_b);
+    }
     sections.push(ElfSection {
         name: ".data",
         kind: 1,
         flags: SHF_ALLOC | SHF_WRITE,
         addr: slot,
         offset: data_offset as u64,
-        size: pointer as u64,
+        size: (pointer * if relr { 2 } else { 1 }) as u64,
         link: 0,
         info: 0,
         entsize: 0,
@@ -436,10 +454,47 @@ fn elf_image(arch: Arch) -> Image {
         entsize: 0,
     });
 
-    // `.rela.dyn` (RELA, 64-bit) or `.rel.dyn` (REL, ARM32): `*RELATIVE`.
+    // `.rela.dyn` (RELA, 64-bit) or `.rel.dyn` (REL, ARM32): `*RELATIVE`;
+    // with `relr`, `.relr.dyn`: the slot, then a bitmap naming the next word.
     b.align(16);
     let rel_offset = b.bytes.len();
-    let rel_size = if is64 {
+    let rel_size = if relr {
+        b.set("relr.place", rel_offset, pointer, slot);
+        b.set("relr.bitmap", rel_offset + pointer, pointer, 0b11);
+        2 * pointer as u64
+    } else if packing == Packing::Android {
+        // Count, first offset, then one group sharing offset delta, info,
+        // and (RELA) addend: flags 1 | 2 (| 4 | 8). Each value is a 5-byte
+        // SLEB128 so the fields have fixed places.
+        let relative = match arch {
+            Arch::X64 => 8,
+            Arch::Arm64 => 1027,
+            _ => 23,
+        };
+        let mut values = vec![
+            ("aps2.count", 1),
+            ("aps2.offset", 0),
+            ("aps2.group_size", 1),
+            ("aps2.group_flags", if is64 { 15 } else { 3 }),
+            ("aps2.offset_delta", slot),
+            ("aps2.info", relative),
+        ];
+        if is64 {
+            values.push(("aps2.addend", fn_a));
+        }
+        b.raw(rel_offset, b"APS2");
+        for (index, (name, value)) in values.iter().enumerate() {
+            let at = rel_offset + 4 + 5 * index;
+            let mut encoded = 0u64;
+            for byte in 0..5 {
+                let septet = (value >> (7 * byte)) & 0x7f;
+                let more = if byte < 4 { 0x80 } else { 0 };
+                encoded |= (septet | more) << (8 * byte);
+            }
+            b.set(*name, at, 5, encoded);
+        }
+        (4 + 5 * values.len()) as u64
+    } else if is64 {
         let relative = if arch == Arch::X64 { 8 } else { 1027 };
         b.set("rela.offset", rel_offset, 8, slot);
         b.set("rela.info", rel_offset + 8, 8, relative);
@@ -451,15 +506,27 @@ fn elf_image(arch: Arch) -> Image {
         8
     };
     sections.push(ElfSection {
-        name: if is64 { ".rela.dyn" } else { ".rel.dyn" },
-        kind: if is64 { 4 } else { 9 },
+        name: match (packing, is64) {
+            (Packing::Relr, _) => ".relr.dyn",
+            (Packing::Android, true) => ".android.rela.dyn",
+            (Packing::Android, false) => ".android.rel.dyn",
+            (Packing::None, true) => ".rela.dyn",
+            (Packing::None, false) => ".rel.dyn",
+        },
+        kind: match (packing, is64) {
+            (Packing::Relr, _) => 19,
+            (Packing::Android, true) => 0x6000_0002,
+            (Packing::Android, false) => 0x6000_0001,
+            (Packing::None, true) => 4,
+            (Packing::None, false) => 9,
+        },
         flags: SHF_ALLOC,
         addr: ELF_VBASE + rel_offset as u64,
         offset: rel_offset as u64,
         size: rel_size,
-        link: 5,
+        link: if relr { 0 } else { 5 },
         info: 0,
-        entsize: rel_size,
+        entsize: if relr { pointer as u64 } else { rel_size },
     });
 
     // `.bss`: no file bytes.
@@ -601,15 +668,186 @@ fn elf_image(arch: Arch) -> Image {
         file_len,
         "headers fit before the data"
     );
+    let name = match arch {
+        Arch::X64 => "elf64-x64",
+        Arch::Arm64 => "elf64-arm64",
+        _ => "elf32-arm",
+    };
     Image {
-        name: match arch {
-            Arch::X64 => "elf64-x64",
-            Arch::Arm64 => "elf64-arm64",
-            _ => "elf32-arm",
+        name: match packing {
+            Packing::None => name.to_string(),
+            Packing::Relr => format!("{name}-relr"),
+            Packing::Android => format!("{name}-aps2"),
         },
         bytes: b.bytes,
         fields: b.fields,
         fn_a,
+        layout: sections
+            .iter()
+            .map(|section| (section.name, section.addr, section.size))
+            .collect(),
+    }
+}
+
+/// `image` as `llvm-objcopy --strip-sections` leaves an image: no section
+/// table, only program headers, here appended with what the loader reads in
+/// their place: `PT_LOAD` over the whole file, `PT_DYNAMIC` (hash, symbol,
+/// string, and relocation tables), and `PT_GNU_EH_FRAME` with an
+/// `.eh_frame_hdr` (64-bit) or `PT_ARM_EXIDX` (ARM32).
+fn sectionless(image: Image, arch: Arch) -> Image {
+    let is64 = arch != Arch::Arm32;
+    let word = if is64 { 8 } else { 4 };
+    let find = |name: &str| {
+        image
+            .layout
+            .iter()
+            .find(|(section, _, _)| *section == name)
+            .map(|(_, addr, size)| (*addr, *size))
+    };
+    let mut b = Builder {
+        bytes: image.bytes.clone(),
+        // The section table and the old program header are dead bytes now.
+        fields: image
+            .fields
+            .iter()
+            .filter(|field| {
+                !["section", "e_sh", "e_ph", "p_"]
+                    .iter()
+                    .any(|prefix| field.name.starts_with(prefix))
+            })
+            .cloned()
+            .collect(),
+    };
+    let address = |offset: usize| ELF_VBASE + offset as u64;
+    let mut segments: Vec<(u32, u64, u64)> = Vec::new(); // (type, offset, size)
+
+    if is64 {
+        // `.eh_frame_hdr`: pcrel sdata4 frame pointer, udata4 count, and a
+        // datarel sdata4 search table, as lld and GNU ld write it.
+        b.align(16);
+        let at = b.bytes.len();
+        let hdr = address(at);
+        let (frames, _) = find(".eh_frame").expect(".eh_frame");
+        b.raw(at, &[1, 0x1b, 0x03, 0x3b]);
+        b.set(
+            "eh_frame_hdr.frame_pointer",
+            at + 4,
+            4,
+            u64::from(frames.wrapping_sub(hdr + 4) as u32),
+        );
+        b.set("eh_frame_hdr.count", at + 8, 4, 2);
+        for (index, start) in [image.fn_a, image.fn_a + 32].iter().enumerate() {
+            let fde = frames + 20 + 20 * index as u64;
+            let row = at + 12 + 8 * index;
+            let relative = |value: u64| u64::from(value.wrapping_sub(hdr) as u32);
+            b.set(
+                format!("eh_frame_hdr.row{index}.start"),
+                row,
+                4,
+                relative(*start),
+            );
+            b.set(
+                format!("eh_frame_hdr.row{index}.fde"),
+                row + 4,
+                4,
+                relative(fde),
+            );
+        }
+        segments.push((0x6474_e550, at as u64, 28));
+    } else {
+        let (exidx, size) = find(".ARM.exidx").expect(".ARM.exidx");
+        segments.push((0x7000_0001, exidx - ELF_VBASE, size));
+    }
+
+    // `DT_HASH`: one bucket, and the chain count that sizes `.dynsym`.
+    b.align(8);
+    let hash = b.bytes.len();
+    b.write(hash, 4, 1);
+    b.set("hash.nchain", hash + 4, 4, 3);
+    b.bytes.resize(hash + 24, 0);
+
+    let (dynsym, _) = find(".dynsym").expect(".dynsym");
+    let (dynstr, dynstr_size) = find(".dynstr").expect(".dynstr");
+    let mut tags: Vec<(&str, u64, u64)> = vec![
+        ("hash", 4, address(hash)),
+        ("strtab", 5, dynstr),
+        ("symtab", 6, dynsym),
+        ("strsz", 10, dynstr_size),
+    ];
+    for (name, address_tag, size_tag) in [
+        (".rela.dyn", 7, 8),
+        (".rel.dyn", 17, 18),
+        (".relr.dyn", 36, 35),
+        (".android.rela.dyn", 0x6000_0011, 0x6000_0012),
+        (".android.rel.dyn", 0x6000_000f, 0x6000_0010),
+    ] {
+        if let Some((addr, size)) = find(name) {
+            tags.push(("relocations", address_tag, addr));
+            tags.push(("relocations_size", size_tag, size));
+        }
+    }
+    b.align(8);
+    let dynamic = b.bytes.len();
+    for (index, (name, tag, value)) in tags.iter().enumerate() {
+        let at = dynamic + 2 * word * index;
+        b.write(at, word, *tag);
+        b.set(format!("dynamic.{name}"), at + word, word, *value);
+    }
+    let dynamic_size = 2 * word * (tags.len() + 1);
+    b.bytes.resize(dynamic + dynamic_size, 0); // DT_NULL
+    segments.push((2, dynamic as u64, dynamic_size as u64));
+
+    // Program headers last: the file before them is one RWX `PT_LOAD`.
+    b.align(8);
+    let phoff = b.bytes.len();
+    segments.insert(0, (1, 0, phoff as u64));
+    let phentsize = if is64 { 56 } else { 32 };
+    for (index, (kind, offset, size)) in segments.iter().enumerate() {
+        let at = phoff + index * phentsize;
+        let label = format!("ph{index}");
+        let memsz = if *kind == 1 { size + 0x40 } else { *size };
+        // (field, offset64, offset32, value); widths are the class's word,
+        // except type and flags, which are always 4 bytes.
+        let rows: [(&str, usize, usize, u64); 6] = [
+            ("type", 0, 0, u64::from(*kind)),
+            ("flags", 4, 24, 7),
+            ("offset", 8, 4, *offset),
+            ("vaddr", 16, 8, ELF_VBASE + offset),
+            ("filesz", 32, 16, *size),
+            ("memsz", 40, 20, memsz),
+        ];
+        for (field, offset64, offset32, value) in rows {
+            let width = if matches!(field, "type" | "flags") {
+                4
+            } else {
+                word
+            };
+            let offset = if is64 { offset64 } else { offset32 };
+            b.set(format!("{label}.{field}"), at + offset, width, value);
+            if field == "memsz" {
+                b.fields.last_mut().expect("field").alloc = true;
+            }
+        }
+        // p_paddr
+        b.write(at + if is64 { 24 } else { 12 }, word, ELF_VBASE + offset);
+    }
+    b.bytes.resize(phoff + segments.len() * phentsize, 0);
+    let (phoff_at, phnum_at, shoff_at, shnum_at) = if is64 {
+        (32, 56, 40, 60)
+    } else {
+        (28, 44, 32, 48)
+    };
+    b.set("e_phoff", phoff_at, word, phoff as u64);
+    b.set("e_phnum", phnum_at, 2, segments.len() as u64);
+    b.write(shoff_at, word, 0);
+    b.write(shnum_at, 2, 0);
+    b.write(shnum_at + 2, 2, 0); // e_shstrndx
+    Image {
+        name: format!("{}-sectionless", image.name),
+        bytes: b.bytes,
+        fields: b.fields,
+        fn_a: image.fn_a,
+        layout: Vec::new(),
     }
 }
 
@@ -772,21 +1010,34 @@ fn pe_image(arch: Arch) -> Image {
             "pe32p-x64"
         } else {
             "pe32p-arm64"
-        },
+        }
+        .to_string(),
         bytes: b.bytes,
         fields: b.fields,
         fn_a: PE_IMAGE_BASE + PE_TEXT_RVA,
+        layout: Vec::new(),
     }
 }
 
 fn images() -> Vec<Image> {
-    vec![
-        elf_image(Arch::X64),
-        elf_image(Arch::Arm64),
-        elf_image(Arch::Arm32),
-        pe_image(Arch::X64),
-        pe_image(Arch::Arm64),
-    ]
+    let mut images = Vec::new();
+    for arch in [Arch::X64, Arch::Arm64, Arch::Arm32] {
+        images.push(elf_image(arch, Packing::None));
+        images.push(elf_image(arch, Packing::Relr));
+        images.push(elf_image(arch, Packing::Android));
+        images.push(sectionless(elf_image(arch, Packing::None), arch));
+    }
+    images.push(sectionless(
+        elf_image(Arch::Arm64, Packing::Relr),
+        Arch::Arm64,
+    ));
+    images.push(sectionless(
+        elf_image(Arch::Arm32, Packing::Android),
+        Arch::Arm32,
+    ));
+    images.push(pe_image(Arch::X64));
+    images.push(pe_image(Arch::Arm64));
+    images
 }
 
 // -- mutation ------------------------------------------------------------------
@@ -840,7 +1091,7 @@ fn truncations(length: usize, steps: usize) -> Vec<usize> {
 #[test]
 fn unmutated_inputs_parse_and_recover() {
     for image in images() {
-        let name = image.name;
+        let name = image.name.as_str();
         let source = FileSource::from_bytes(&image.bytes, "hostile.bin")
             .unwrap_or_else(|error| panic!("{name}: builder image rejected: {error:?}"));
         assert!(
@@ -1354,6 +1605,83 @@ fn raw_code_never_panics() {
         }
     }
     cases.finish("raw code");
+}
+
+/// `--raw` input: golden-vector code and noise as blobs of every
+/// architecture, at bases from 0 to where the blob's end would overflow,
+/// and odd bases that misalign every instruction.
+#[test]
+fn raw_blobs_never_panic() {
+    let vectors = vector_code();
+    let mut rng = Rng(0x7a3b_1c0d_5e6f_8091);
+    let mut cases = Cases::new();
+    let input = |selector: u8, base: u64, blob: &[u8]| {
+        let mut bytes = vec![selector];
+        bytes.extend(base.to_le_bytes());
+        bytes.extend_from_slice(blob);
+        bytes
+    };
+    for (label, code) in &vectors {
+        let blob = &code[1..];
+        let length = blob.len() as u64;
+        let bases = [
+            0,
+            1,
+            0x1000,
+            0x40_0001,
+            // The top of the 32-bit space ARM32 and Thumb blobs must fit in.
+            (1u64 << 32).saturating_sub(length),
+            (1u64 << 32).saturating_sub(length) + 1,
+            0x8000_0000_0000_0000,
+            u64::MAX - length,
+            (u64::MAX - length).wrapping_add(1),
+            u64::MAX,
+        ];
+        for selector in 0..4u8 {
+            for base in bases {
+                cases.run(
+                    &|| format!("{label} selector {selector} base 0x{base:x}"),
+                    hostile::raw,
+                    &input(selector, base, blob),
+                );
+            }
+        }
+        for round in 0..4 {
+            let mut corrupted = blob.to_vec();
+            if corrupted.is_empty() {
+                break;
+            }
+            for _ in 0..1 + rng.below(16) {
+                let at = rng.below(corrupted.len());
+                corrupted[at] = rng.next_u64() as u8;
+            }
+            let cut = rng.below(corrupted.len() + 1);
+            cases.run(
+                &|| format!("{label} random round {round}"),
+                hostile::raw,
+                &input(code[0], 0x10_0000, &corrupted[..cut]),
+            );
+        }
+    }
+    for selector in 0..4u8 {
+        for length in [0usize, 1, 2, 3, 4, 7, 64, 4096] {
+            let blob = rng.bytes(length);
+            cases.run(
+                &|| format!("noise selector {selector} length {length}"),
+                hostile::raw,
+                &input(selector, 0x8000, &blob),
+            );
+        }
+    }
+    // Shorter than the header: no blob at all.
+    for length in 0..hostile::RAW_HEADER {
+        cases.run(
+            &|| format!("header only, {length} bytes"),
+            hostile::raw,
+            &vec![1u8; length],
+        );
+    }
+    cases.finish("raw blobs");
 }
 
 // -- fuzz seeds ------------------------------------------------------------------

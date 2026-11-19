@@ -87,10 +87,18 @@ fn map_symbols(map: &Path) -> Vec<(String, u64)> {
 /// leaf functions, found as direct call targets.
 #[test]
 fn pe_leaf_functions_and_images_without_pdata_have_starts() {
-    if !common::have_tools(&["clang", "lld-link"]) {
+    // `ld.lld -flavor link` is lld-link without needing the alias installed.
+    if !common::have_tools(&["clang", "ld.lld"]) {
         return;
     }
-    let dir = scratch("pe-leaf");
+    // x86-64 and AArch64: Windows on both lets a leaf go without `.pdata`.
+    for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+        pe_leaf_starts(target);
+    }
+}
+
+fn pe_leaf_starts(target: &str) {
+    let dir = scratch(&format!("pe-leaf-{target}"));
     let source = dir.join("leaf.c");
     // Enough leaves that a table-less image clears the 32-start floor
     // (`elf::MIN_SYNTHESIZED_STARTS`); each is called from a framed export.
@@ -129,20 +137,21 @@ fn pe_leaf_functions_and_images_without_pdata_have_starts() {
     let image = dir.join("leaf.dll");
     let map = dir.join("leaf.map");
     let compiled = Command::new("clang")
-        .args(["--target=x86_64-pc-windows-msvc", "-O2", "-c"])
+        .arg(format!("--target={target}"))
+        .args(["-O2", "-c"])
         .arg(&source)
         .arg("-o")
         .arg(&object)
         .status()
         .expect("run clang");
     assert!(compiled.success());
-    let linked = Command::new("lld-link")
-        .args(["/dll", "/noentry", "/nodefaultlib"])
+    let linked = common::command("ld.lld")
+        .args(["-flavor", "link", "/dll", "/noentry", "/nodefaultlib"])
         .arg(format!("/out:{}", image.display()))
         .arg(format!("/map:{}", map.display()))
         .arg(&object)
         .status()
-        .expect("run lld-link");
+        .expect("run ld.lld -flavor link");
     assert!(linked.success());
     let symbols = map_symbols(&map);
     let address = |name: &str| {
@@ -183,7 +192,7 @@ fn pe_leaf_functions_and_images_without_pdata_have_starts() {
         for name in &names {
             assert!(
                 starts.contains(&address(name)),
-                "{label}: {name} at {:#x} not in {starts:x?}",
+                "{target} {label}: {name} at {:#x} not in {starts:x?}",
                 address(name)
             );
         }
@@ -193,7 +202,10 @@ fn pe_leaf_functions_and_images_without_pdata_have_starts() {
             .iter()
             .filter(|start| !truth.contains(start))
             .collect();
-        assert!(stray.is_empty(), "{label}: false starts {stray:x?}");
+        assert!(
+            stray.is_empty(),
+            "{target} {label}: false starts {stray:x?}"
+        );
     }
 }
 

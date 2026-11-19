@@ -88,6 +88,10 @@ pub struct Match {
     /// Accepted only because a shared neighbour key waived the shape gate
     /// (see [`MIN_WAIVED_SHAPE_SIMILARITY`]).
     pub waived: bool,
+    /// The function's only caller calls nothing else ([`scan_in`], first
+    /// match only): a wrapper signed where this callee was inlined into it
+    /// names this function too, so the evidence cannot tell them apart.
+    pub wrapped: bool,
 }
 
 /// Encode the signature's data anchors for Tier 0 scanning.
@@ -610,6 +614,20 @@ pub fn accepts(signature: &Signature, result: &MatchScore) -> bool {
 /// [`accepts`] on a target whose ISA family `cross_isa` ([`cross_isa`]) says
 /// no sample of the signature shares.
 pub fn accepts_on(signature: &Signature, result: &MatchScore, cross_isa: bool) -> bool {
+    acceptance_gates(signature, result, cross_isa)
+        .iter()
+        .all(|(_, passed)| *passed)
+}
+
+/// The [`accepts_on`] gates in order, each `(name, passed)`: `score`
+/// (the match threshold), `min_distinct` (distinct required features), and
+/// `shape` (corroboration of low-information signatures). `locate
+/// --explain` reports them one by one.
+pub fn acceptance_gates(
+    signature: &Signature,
+    result: &MatchScore,
+    cross_isa: bool,
+) -> [(&'static str, bool); 3] {
     let required_count = signature
         .features
         .iter()
@@ -622,14 +640,20 @@ pub fn accepts_on(signature: &Signature, result: &MatchScore, cross_isa: bool) -
         key.strip_prefix("callee:")
             .is_some_and(|value| !low_information_callee(value))
     });
-    result.score >= signature.match_threshold
-        && result.matched_required >= signature.min_distinct.min(required_count)
-        && (!needs_shape_corroboration(signature)
-            || named
-            || shape_agreement(signature, &result.matched) >= MIN_SHAPE_AGREEMENT
-            || (cross_isa
-                && result.matched_required >= MIN_CROSS_ISA_REQUIRED
-                && shape_agreement_on(signature, &result.matched, true) >= MIN_SHAPE_AGREEMENT))
+    let shape = !needs_shape_corroboration(signature)
+        || named
+        || shape_agreement(signature, &result.matched) >= MIN_SHAPE_AGREEMENT
+        || (cross_isa
+            && result.matched_required >= MIN_CROSS_ISA_REQUIRED
+            && shape_agreement_on(signature, &result.matched, true) >= MIN_SHAPE_AGREEMENT);
+    [
+        ("score", result.score >= signature.match_threshold),
+        (
+            "min_distinct",
+            result.matched_required >= signature.min_distinct.min(required_count),
+        ),
+        ("shape", shape),
+    ]
 }
 
 /// Find accepted matches for `signature` in `source`, best first.
@@ -713,6 +737,9 @@ pub struct ScanContext {
     pub features: FeatureCache,
     /// Per-image feature frequencies, `[hint-free, hinted]`, built on first use.
     frequencies: [OnceLock<Option<Frequencies>>; 2],
+    /// Every function name the image can give a callee, `[hint-free,
+    /// hinted]`, built on first use ([`unnamed_callees_optional`]).
+    callee_names: [OnceLock<HashSet<String>>; 2],
 }
 
 /// How many of an image's functions carry each feature key.
@@ -903,6 +930,39 @@ impl ScanContext {
         found.dedup();
         found.truncate(MAX_NEIGHBOURS);
         found
+    }
+
+    /// Whether the function at `start` has exactly one direct caller and
+    /// that caller calls nothing else: a wrapper whose body, in a build
+    /// that inlined its callee, is this function's evidence.
+    pub fn sole_wrapper<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> bool {
+        let callers = self.callers_of(source, start, hints);
+        let [caller] = callers.as_slice() else {
+            return false;
+        };
+        self.callees_of(source, *caller, hints) == [start]
+    }
+
+    /// `(size in bytes, direct callees)` of each direct caller of the
+    /// function at `start`. Diagnostic (`bench --fp-report`): a thin wrapper
+    /// caller is the one function a signature of the wrapper, signed where
+    /// the callee was inlined into it, can also mean.
+    pub fn caller_shapes<S: ByteSource + ?Sized>(
+        &self,
+        source: &S,
+        start: u64,
+        hints: bool,
+    ) -> Vec<(u64, usize)> {
+        self.callers_of(source, start, hints)
+            .into_iter()
+            .filter_map(|caller| self.features.get_or_recover(source, caller, hints))
+            .map(|caller| (caller.end.saturating_sub(caller.start), caller.calls.len()))
+            .collect()
     }
 
     /// Identifying keys of the function at `start`'s call-graph neighbours:
@@ -1141,8 +1201,87 @@ impl ScanContext {
             code: code.finish(),
             features: FeatureCache::default(),
             frequencies: [OnceLock::new(), OnceLock::new()],
+            callee_names: [OnceLock::new(), OnceLock::new()],
         }
     }
+}
+
+/// `signature` with the required callees a target that names no function
+/// cannot hold made optional, or `None` when nothing changes.
+///
+/// A callee key without `!` names a function of the signed image itself,
+/// resolved through that image's dynamic exports. A shared object exports
+/// its functions, but the same code linked into an executable (PIE or
+/// static) or built with hidden visibility exports none of them: the call
+/// is there, its name is not. Demanding the key then rejects the true
+/// function on evidence the target can never show. On the `--world` tier,
+/// same arch hint-free, every acceptance failure of a shared-object
+/// signature in PIE and static targets that lacked a required feature
+/// lacked such a callee (11 of 40 PIE and 13 of 40 static pairs,
+/// `examples/diagnose_cross`). The key still counts when present.
+fn unnamed_callees_optional<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    context: &ScanContext,
+    hints: bool,
+) -> Option<Signature> {
+    let unnamed = |feature: &crate::sigfile::SignatureFeature| {
+        feature.required
+            && feature.kind == FeatureKind::Callee
+            && !low_information_callee(&feature.value)
+    };
+    if !signature.features.iter().any(unnamed) {
+        return None;
+    }
+    // Only a target that names no function of its own: one that names some
+    // (a shared object) and lacks this one is evidence the function is not
+    // there. Waiving in every target that lacked the name doubled the real
+    // corpus's any-verdict false positives (arm32 0.117 -> 0.217), because
+    // unrelated libraries lack it too.
+    // Function exports only: a PIE defines the data it copy-relocates
+    // (`stderr`, `optarg`) as dynamic exports, and those name no function.
+    // `.symtab` names count only when the scan may read them (hint-free
+    // reads only what survives stripping, hard rule 10).
+    let names = context.callee_names[usize::from(hints)].get_or_init(|| {
+        let in_code = |address: u64| {
+            source.regions().iter().any(|region| {
+                region.executable && region.start <= address && address < region.end()
+            })
+        };
+        source
+            .modules()
+            .iter()
+            .flat_map(|module| {
+                let exports = module
+                    .exports
+                    .iter()
+                    .filter(|(_, address)| in_code(*address))
+                    .map(|(name, _)| name);
+                let symbols = module.functions.values().filter(move |_| hints);
+                exports.chain(symbols)
+            })
+            .filter_map(|name| crate::features::canonical_callee(name))
+            .map(str::to_string)
+            .collect()
+    });
+    if !names.is_empty() {
+        return None;
+    }
+    // Optional, not dropped: measured on the `--world` tier against the
+    // gcc-O2 shared object, hint-free. Optional gave PIE / static same-arch
+    // top-1 0.700 / 0.613 (from 0.613 / 0.525) with the hint-free
+    // any-verdict FP rate 0.105 -> 0.132. Dropping the keys gave 0.713 /
+    // 0.625 but 0.167, past the tolerance: a signature whose only
+    // identifying keys were these names is left with shape alone, and
+    // lookalikes in unrelated executables match it. Dropping them only when
+    // other identifying keys remain gave 0.625 / 0.537 at 0.134.
+    let mut adapted = signature.clone();
+    for feature in &mut adapted.features {
+        if unnamed(feature) {
+            feature.required = false;
+        }
+    }
+    Some(adapted)
 }
 
 /// [`scan`] with the image's shared indexes: string anchors seed candidates
@@ -1154,12 +1293,29 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
-    let mut matches = scan_in_ranked(source, signature, context, hints);
+    // The keys a target cannot name stay identifying: a match that holds
+    // none of the rest still needs `MIN_UNANCHORED_SIMILARITY`, so the
+    // lighter required set does not admit lookalikes.
+    let identifying = identifying_required(signature);
+    let adapted = unnamed_callees_optional(source, signature, context, hints);
+    let signature = adapted.as_ref().unwrap_or(signature);
+    let mut matches = scan_in_ranked(source, signature, &identifying, context, hints);
     // Only the first match can be an answer, so only it needs a rival.
     if let Some(first) = matches.first() {
         if identified(first) {
             let rival = context.rival(source, signature, first, hints);
+            // A signature that is itself a sole callee (one `in:` link in
+            // its own image) describes the callee, not a wrapper around it:
+            // a static helper called from one place is found as itself.
+            let sole_callee = signature
+                .links
+                .iter()
+                .filter(|link| link.starts_with("in:"))
+                .count()
+                == 1;
+            let wrapped = !sole_callee && context.sole_wrapper(source, first.address, hints);
             matches[0].rival = rival;
+            matches[0].wrapped = wrapped;
         }
     }
     matches
@@ -1172,6 +1328,7 @@ pub const MAX_RIVALS: usize = 64;
 fn scan_in_ranked<S: ByteSource + ?Sized>(
     source: &S,
     signature: &Signature,
+    identifying: &[String],
     context: &ScanContext,
     hints: bool,
 ) -> Vec<Match> {
@@ -1194,20 +1351,18 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
     // shared neighbour evidence. It must also reach
     // `MIN_WAIVED_SHAPE_SIMILARITY`.
     let shares_neighbour = |start: u64, similarity: f64| {
-        similarity >= MIN_WAIVED_SHAPE_SIMILARITY
-            && context
-                .neighbour_keys(source, start, hints)
-                .iter()
-                .any(|key| signature_neighbours.contains(key.as_str()))
+        shares_neighbour_key(
+            source,
+            context,
+            &signature_neighbours,
+            start,
+            similarity,
+            hints,
+        )
     };
-    // Like the other hint-free gates, only on images large enough for
-    // frequencies (the gates that follow need them).
-    let gated = !hints
-        && context.frequencies[usize::from(hints)]
-            .get_or_init(|| Frequencies::build(source, &context.features, hints))
-            .is_some();
-    let waiver: Option<&dyn Fn(u64, f64) -> bool> =
-        (gated && !signature_neighbours.is_empty()).then_some(&shares_neighbour);
+    let waiver: Option<&dyn Fn(u64, f64) -> bool> = (frequency_gated(source, context, hints)
+        && !signature_neighbours.is_empty())
+    .then_some(&shares_neighbour);
     let matches = scan_candidates_with(
         source,
         signature,
@@ -1235,18 +1390,8 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
         // on constants alone needs hint-free's similarity floor (see
         // `MIN_CONSTANT_ANCHORED_SIMILARITY`). Small images are exempt for
         // the same reason as in hint-free mode.
-        if source.function_starts().len() < MIN_FREQUENCY_FUNCTIONS {
-            return matches;
-        }
-        let identifying = identifying_required(signature);
-        return matches
-            .into_iter()
-            .filter(enough_evidence)
-            .filter(|found| anchored_enough(&identifying, found))
-            .filter(constants_enough)
-            .collect();
+        return hinted_floors_with(source, identifying, matches);
     }
-    let identifying = identifying_required(signature);
     let frequencies = context.frequencies[usize::from(hints)]
         .get_or_init(|| Frequencies::build(source, &context.features, hints));
     let Some(frequencies) = frequencies else {
@@ -1254,42 +1399,17 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
     };
     let mut kept: Vec<Match> = matches
         .into_iter()
-        .filter(|found| found.similarity >= MIN_SIMILARITY)
-        .filter(|found| anchored_enough(&identifying, found))
-        .filter_map(|mut found| {
-            let own_evidence = identified(&found);
-            let shared: Vec<String> = if signature_neighbours.is_empty() {
-                Vec::new()
-            } else {
-                context
-                    .neighbour_keys(source, found.address, hints)
-                    .into_iter()
-                    .filter(|key| signature_neighbours.contains(key.as_str()))
-                    .map(|key| format!("{NEIGHBOUR_PREFIX}{key}"))
-                    .collect()
-            };
-            // The chance gate prices only the candidate's own keys. A shared
-            // neighbour key is evidence it does not see: a one-block helper
-            // has the commonest shape in the image, yet only one such helper
-            // is called from the function holding the signature's string.
-            if shared.is_empty() && !specific(frequencies, &found) {
-                return None;
-            }
-            // A function whose neighbours carry evidence is expected to keep
-            // some of it: a shape-only lookalike elsewhere shares none.
-            if !own_evidence
-                && shared.is_empty()
-                && signature.neighbours.len() >= MIN_NEIGHBOURS_TO_REJECT
-            {
-                return None;
-            }
-            if !shared.is_empty() {
-                found.matched.extend(shared);
-                found.matched.sort();
-            } else if !enough_evidence(&found) {
-                return None;
-            }
-            Some(found)
+        .filter_map(|found| {
+            hint_free_floors(
+                source,
+                signature,
+                &signature_neighbours,
+                identifying,
+                context,
+                frequencies,
+                found,
+            )
+            .ok()
         })
         .collect();
     // Shared neighbour evidence ranks first: among lookalikes with similar
@@ -1301,6 +1421,146 @@ fn scan_in_ranked<S: ByteSource + ?Sized>(
             .then(left.address.cmp(&right.address))
     });
     kept
+}
+
+/// Whether the hint-free gates that need frequencies apply: hint-free, on
+/// an image large enough for them.
+fn frequency_gated<S: ByteSource + ?Sized>(source: &S, context: &ScanContext, hints: bool) -> bool {
+    !hints
+        && context.frequencies[usize::from(hints)]
+            .get_or_init(|| Frequencies::build(source, &context.features, hints))
+            .is_some()
+}
+
+/// The shape waiver of [`scan_in`]: a candidate similar enough
+/// ([`MIN_WAIVED_SHAPE_SIMILARITY`]) whose call-graph neighbours carry one
+/// of the signature's neighbour keys.
+fn shares_neighbour_key<S: ByteSource + ?Sized>(
+    source: &S,
+    context: &ScanContext,
+    signature_neighbours: &HashSet<&str>,
+    start: u64,
+    similarity: f64,
+    hints: bool,
+) -> bool {
+    similarity >= MIN_WAIVED_SHAPE_SIMILARITY
+        && context
+            .neighbour_keys(source, start, hints)
+            .iter()
+            .any(|key| signature_neighbours.contains(key.as_str()))
+}
+
+/// The hint-free gates after acceptance, in order, on an image with
+/// `frequencies`: the match with its shared neighbour keys added, or the
+/// name of the gate that rejected it (`similarity`, `anchoring`, `chance`,
+/// `neighbours`, `evidence`; `locate --explain` reports it).
+fn hint_free_floors<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    signature_neighbours: &HashSet<&str>,
+    identifying: &[String],
+    context: &ScanContext,
+    frequencies: &Frequencies,
+    mut found: Match,
+) -> Result<Match, &'static str> {
+    let hints = false;
+    if found.similarity < MIN_SIMILARITY {
+        return Err("similarity");
+    }
+    if !anchored_enough(identifying, &found) {
+        return Err("anchoring");
+    }
+    let own_evidence = identified(&found);
+    let shared: Vec<String> = if signature_neighbours.is_empty() {
+        Vec::new()
+    } else {
+        context
+            .neighbour_keys(source, found.address, hints)
+            .into_iter()
+            .filter(|key| signature_neighbours.contains(key.as_str()))
+            .map(|key| format!("{NEIGHBOUR_PREFIX}{key}"))
+            .collect()
+    };
+    // The chance gate prices only the candidate's own keys. A shared
+    // neighbour key is evidence it does not see: a one-block helper has the
+    // commonest shape in the image, yet only one such helper is called from
+    // the function holding the signature's string.
+    if shared.is_empty() && !specific(frequencies, &found) {
+        return Err("chance");
+    }
+    // A function whose neighbours carry evidence is expected to keep some of
+    // it: a shape-only lookalike elsewhere shares none.
+    if !own_evidence && shared.is_empty() && signature.neighbours.len() >= MIN_NEIGHBOURS_TO_REJECT
+    {
+        return Err("neighbours");
+    }
+    if !shared.is_empty() {
+        found.matched.extend(shared);
+        found.matched.sort();
+    } else if !enough_evidence(&found) {
+        return Err("evidence");
+    }
+    Ok(found)
+}
+
+/// Functions an image is known to have, for telling a small image from a
+/// large one: symbol starts or unwind entries, whichever is more. A live
+/// process names no symbol starts, only `.pdata` bounds, so counting starts
+/// alone exempted every process scan from the hinted floors.
+fn known_functions<S: ByteSource + ?Sized>(source: &S) -> usize {
+    source
+        .function_starts()
+        .len()
+        .max(source.unwind_entries().len())
+}
+
+/// The trust floors every hinted match passes ([`scan_in`]): a shape-only
+/// lookalike needs [`MIN_SHAPE_ONLY_SIMILARITY`], a match holding none of
+/// the signature's identifying keys [`MIN_UNANCHORED_SIMILARITY`], and one
+/// resting on constants alone [`MIN_CONSTANT_ANCHORED_SIMILARITY`]. Images
+/// with fewer than [`MIN_FREQUENCY_FUNCTIONS`] known functions keep every
+/// match, as in hint-free mode. Shared with the incremental scanner, so a
+/// process scan is held to the floors the bench measures on files.
+pub fn hinted_floors<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    matches: Vec<Match>,
+) -> Vec<Match> {
+    hinted_floors_with(source, &identifying_required(signature), matches)
+}
+
+fn hinted_floors_with<S: ByteSource + ?Sized>(
+    source: &S,
+    identifying: &[String],
+    matches: Vec<Match>,
+) -> Vec<Match> {
+    if !hinted_floors_apply(source) {
+        return matches;
+    }
+    matches
+        .into_iter()
+        .filter(|found| hinted_floor(identifying, found).is_ok())
+        .collect()
+}
+
+/// Whether [`hinted_floors`] judges matches in `source` at all: small
+/// images are exempt.
+pub fn hinted_floors_apply<S: ByteSource + ?Sized>(source: &S) -> bool {
+    known_functions(source) >= MIN_FREQUENCY_FUNCTIONS
+}
+
+/// The [`hinted_floors`] gates in order: `Ok`, or the name of the gate that
+/// rejects `found` (`evidence`, `anchoring`, `constants`).
+fn hinted_floor(identifying: &[String], found: &Match) -> Result<(), &'static str> {
+    if !enough_evidence(found) {
+        Err("evidence")
+    } else if !anchored_enough(identifying, found) {
+        Err("anchoring")
+    } else if !constants_enough(found) {
+        Err("constants")
+    } else {
+        Ok(())
+    }
 }
 
 /// Similarity a hint-free candidate needs when a shared neighbour key, not
@@ -1466,34 +1726,59 @@ impl Evidence {
 /// answer: identifying evidence, strictly first (a tie is no answer), and
 /// similar enough for the kind of evidence it rests on.
 pub fn identified_answer(matches: &[Match]) -> bool {
+    answer_gate(matches).is_ok()
+}
+
+/// [`identified_answer`] with the reason: `Ok`, or the name of the rule
+/// that withholds the label (`none`, `not-identified`, `tie`, `waived`,
+/// `wrapped`, `rival`, `answer-similarity`; `locate --explain` reports it).
+pub fn answer_gate(matches: &[Match]) -> Result<(), &'static str> {
     let Some(first) = matches.first() else {
-        return false;
+        return Err("none");
     };
     if !identified(first) {
-        return false;
+        return Err("not-identified");
     }
     if matches
         .get(1)
         .is_some_and(|next| rank_key(next) == rank_key(first))
     {
-        return false;
+        return Err("tie");
     }
     // Preserved call-graph links are evidence of their own; without them a
     // waived shape gate or a rival the evidence cannot tell apart leaves
     // only shape to name the function.
     if crate::joint::votes(first) == 0 {
         if first.waived {
-            return false;
+            return Err("waived");
+        }
+        // A wrapper's signature, signed where it inlined this callee, holds
+        // this function's evidence: on the `--world` tier 104 wrong
+        // identified answers (`lua_next` at `luaH_next`) and no correct one
+        // had a sole caller calling nothing else (hint-free precision 0.972
+        // -> 0.988, 6212 correct kept); the real corpus has none.
+        if first.wrapped {
+            return Err("wrapped");
         }
         if first
             .rival
             .is_some_and(|rival| rival >= first.similarity - RIVAL_MARGIN)
         {
-            return false;
+            return Err("rival");
         }
     }
+    if first.similarity >= answer_floor(first) {
+        Ok(())
+    } else {
+        Err("answer-similarity")
+    }
+}
+
+/// The similarity an identified first match needs for the evidence it
+/// rests on (see [`MIN_ANSWER_SIMILARITY_NEIGHBOUR`]).
+pub fn answer_floor(first: &Match) -> f64 {
     let named_by_string = first.matched.iter().any(|key| key.starts_with("str:"));
-    let floor = if named_by_string {
+    if named_by_string {
         0.0
     } else if first
         .matched
@@ -1504,8 +1789,7 @@ pub fn identified_answer(matches: &[Match]) -> bool {
         MIN_ANSWER_SIMILARITY_NEIGHBOUR
     } else {
         MIN_ANSWER_SIMILARITY
-    };
-    first.similarity >= floor
+    }
 }
 
 /// The [`Evidence`] of `matches[index]` in a list ranked best first.
@@ -1639,6 +1923,335 @@ pub fn explain_candidates<S: ByteSource + ?Sized>(
         Some(&context.references),
         Some(&context.code),
     )
+}
+
+/// One matcher gate as [`explain`] saw it: its name, whether the candidate
+/// passed, and the value compared with the threshold where there is one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateResult {
+    pub gate: &'static str,
+    pub passed: bool,
+    pub value: Option<f64>,
+    pub needed: Option<f64>,
+}
+
+/// Why [`scan_in`] did or did not return the function at one address, for
+/// `locate --explain`. Every gate result comes from the matcher's own gate
+/// functions; the ranked list, rank, evidence label, and rival are
+/// [`scan_in`]'s own answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Explanation {
+    pub address: u64,
+    /// The recovered function's bounds, when recovery succeeded.
+    pub start: Option<u64>,
+    pub end: Option<u64>,
+    /// The address is one of the candidate starts the scan tries
+    /// ([`explain_candidates`]).
+    pub candidate: bool,
+    pub score: f64,
+    pub similarity: f64,
+    /// Signature keys the candidate holds itself.
+    pub matched: Vec<String>,
+    /// Signature keys the candidate holds only through a small callee
+    /// (`inl:`, credited at [`INHERITED_CREDIT`]).
+    pub inherited: Vec<String>,
+    /// Signature keys it lacks, each with whether it is required.
+    pub missed: Vec<(String, bool)>,
+    pub matched_required: usize,
+    pub required: usize,
+    /// Required callees made optional because the target names no
+    /// function ([`unnamed_callees_optional`]).
+    pub optional_callees: Vec<String>,
+    /// The signature's neighbour keys the candidate's call-graph neighbours
+    /// carry, and those they do not.
+    pub neighbours_shared: Vec<String>,
+    pub neighbours_missed: Vec<String>,
+    pub cross_isa: bool,
+    /// Gates in the order the scan applies them, up to the first that
+    /// failed.
+    pub gates: Vec<GateResult>,
+    /// The first failed gate, `ranked-out` when every gate passed but the
+    /// match was deduplicated or fell past [`MAX_MATCHES`], else `accepted`.
+    pub decided: String,
+    /// Position in [`scan_in`]'s ranked list.
+    pub rank: Option<usize>,
+    pub matches: usize,
+    /// [`Evidence`] label at that rank.
+    pub evidence: Option<&'static str>,
+    /// For the first match, why it is not `identified` ([`answer_gate`]).
+    pub answer_withheld: Option<&'static str>,
+    pub answer_floor: Option<f64>,
+    pub rival: Option<f64>,
+    /// Hint-free: expected chance carriers of the matched keys and the
+    /// exact count, on images with frequencies.
+    pub chance: Option<f64>,
+    pub carriers: Option<usize>,
+}
+
+/// Explain [`scan_in`]'s verdict on the function at `address` (see
+/// [`Explanation`]). Recovers it through the context's cache, so the
+/// candidate compared is the one the scan compared.
+pub fn explain<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    context: &ScanContext,
+    hints: bool,
+    address: u64,
+) -> Explanation {
+    let matches = scan_in(source, signature, context, hints);
+    let rank = matches.iter().position(|found| found.address == address);
+    let identifying = identifying_required(signature);
+    let adapted = unnamed_callees_optional(source, signature, context, hints);
+    let adapted_signature = adapted.as_ref().unwrap_or(signature);
+    let optional_callees = match &adapted {
+        Some(adapted) => signature
+            .features
+            .iter()
+            .zip(&adapted.features)
+            .filter(|(before, after)| before.required && !after.required)
+            .map(|(before, _)| before.key())
+            .collect(),
+        None => Vec::new(),
+    };
+    let candidate =
+        explain_candidates(source, adapted_signature, context, hints).contains(&address);
+    let cross = cross_isa(adapted_signature, source.arch());
+    let mut explanation = Explanation {
+        address,
+        start: None,
+        end: None,
+        candidate,
+        score: 0.0,
+        similarity: 0.0,
+        matched: Vec::new(),
+        inherited: Vec::new(),
+        missed: Vec::new(),
+        matched_required: 0,
+        required: adapted_signature
+            .features
+            .iter()
+            .filter(|feature| feature.required)
+            .count(),
+        optional_callees,
+        neighbours_shared: Vec::new(),
+        neighbours_missed: Vec::new(),
+        cross_isa: cross,
+        gates: Vec::new(),
+        decided: String::new(),
+        rank,
+        matches: matches.len(),
+        evidence: rank.map(|index| evidence(&matches, index).label()),
+        answer_withheld: (rank == Some(0))
+            .then(|| answer_gate(&matches).err())
+            .flatten(),
+        answer_floor: (rank == Some(0)).then(|| answer_floor(&matches[0])),
+        rival: (rank == Some(0)).then(|| matches[0].rival).flatten(),
+        chance: None,
+        carriers: None,
+    };
+    explanation.gates.push(GateResult {
+        gate: "candidate",
+        passed: candidate,
+        value: None,
+        needed: None,
+    });
+    explain_gates(
+        source,
+        adapted_signature,
+        &identifying,
+        context,
+        hints,
+        address,
+        &mut explanation,
+    );
+    explanation.decided = match explanation.gates.iter().find(|gate| !gate.passed) {
+        Some(failed) => failed.gate.to_string(),
+        None if rank.is_none() => "ranked-out".to_string(),
+        None => "accepted".to_string(),
+    };
+    explanation
+}
+
+/// The gates after the candidate check, for [`explain`].
+fn explain_gates<S: ByteSource + ?Sized>(
+    source: &S,
+    signature: &Signature,
+    identifying: &[String],
+    context: &ScanContext,
+    hints: bool,
+    address: u64,
+    explanation: &mut Explanation,
+) {
+    let gate =
+        |name: &'static str, passed: bool, value: Option<f64>, needed: Option<f64>| GateResult {
+            gate: name,
+            passed,
+            value,
+            needed,
+        };
+    let Some(found) = context.features.get_or_recover(source, address, hints) else {
+        explanation.gates.push(gate("recovery", false, None, None));
+        return;
+    };
+    explanation.start = Some(found.start);
+    explanation.end = Some(found.end);
+    let result = compare_keys(signature, &found.keys);
+    let similar = similarity(signature, &found.weighted);
+    explanation.score = result.score;
+    explanation.similarity = similar;
+    explanation.matched_required = result.matched_required;
+    for feature in &signature.features {
+        let key = feature.key();
+        let inherited = format!("{INHERITED_PREFIX}{key}");
+        if found.keys.contains(&key) {
+            explanation.matched.push(key);
+        } else if found.keys.contains(&inherited) {
+            explanation.inherited.push(inherited);
+        } else {
+            explanation.missed.push((key, feature.required));
+        }
+    }
+    let signature_neighbours: HashSet<&str> =
+        signature.neighbours.iter().map(String::as_str).collect();
+    if !signature_neighbours.is_empty() {
+        let held: HashSet<String> = context
+            .neighbour_keys(source, found.start, hints)
+            .into_iter()
+            .collect();
+        for key in &signature.neighbours {
+            if held.contains(key) {
+                explanation.neighbours_shared.push(key.clone());
+            } else {
+                explanation.neighbours_missed.push(key.clone());
+            }
+        }
+    }
+    let required_count = explanation.required;
+    let [score, distinct, shape] = acceptance_gates(signature, &result, explanation.cross_isa);
+    explanation.gates.push(gate(
+        score.0,
+        score.1,
+        Some(result.score),
+        Some(signature.match_threshold),
+    ));
+    if !score.1 {
+        return;
+    }
+    explanation.gates.push(gate(
+        distinct.0,
+        distinct.1,
+        Some(result.matched_required as f64),
+        Some(signature.min_distinct.min(required_count) as f64),
+    ));
+    if !distinct.1 {
+        return;
+    }
+    // The agreement only counts for a signature that needs corroboration;
+    // for the others the gate passes whatever it is.
+    let corroborate = needs_shape_corroboration(signature);
+    explanation.gates.push(gate(
+        shape.0,
+        shape.1,
+        corroborate.then(|| shape_agreement(signature, &result.matched)),
+        corroborate.then_some(MIN_SHAPE_AGREEMENT),
+    ));
+    let mut waived = false;
+    if !shape.1 {
+        waived = frequency_gated(source, context, hints)
+            && !signature_neighbours.is_empty()
+            && shares_neighbour_key(
+                source,
+                context,
+                &signature_neighbours,
+                found.start,
+                similar,
+                hints,
+            );
+        // The waiver stands in for the failed shape gate.
+        explanation.gates.pop();
+        explanation.gates.push(gate(
+            "shape-waiver",
+            waived,
+            Some(similar),
+            Some(MIN_WAIVED_SHAPE_SIMILARITY),
+        ));
+        if !waived {
+            return;
+        }
+    }
+    let candidate = Match {
+        address: found.start,
+        end: found.end,
+        score: result.score,
+        similarity: similar,
+        matched: result.matched,
+        rival: None,
+        waived,
+        wrapped: false,
+    };
+    let needed = |name: &str| match name {
+        "similarity" => Some(MIN_SIMILARITY),
+        "anchoring" => Some(MIN_UNANCHORED_SIMILARITY),
+        "constants" => Some(MIN_CONSTANT_ANCHORED_SIMILARITY),
+        "evidence" => Some(MIN_SHAPE_ONLY_SIMILARITY),
+        _ => None,
+    };
+    if hints {
+        if !hinted_floors_apply(source) {
+            explanation
+                .gates
+                .push(gate("small-image-exempt", true, None, None));
+            return;
+        }
+        match hinted_floor(identifying, &candidate) {
+            Ok(()) => explanation
+                .gates
+                .push(gate("hinted-floors", true, Some(similar), None)),
+            Err(name) => explanation
+                .gates
+                .push(gate(name, false, Some(similar), needed(name))),
+        }
+        return;
+    }
+    let Some(frequencies) = context.frequencies[0]
+        .get_or_init(|| Frequencies::build(source, &context.features, hints))
+        .as_ref()
+    else {
+        explanation
+            .gates
+            .push(gate("small-image-exempt", true, None, None));
+        return;
+    };
+    explanation.chance = Some(frequencies.chance_matches(&candidate.matched));
+    explanation.carriers = Some(frequencies.carriers(&candidate.matched));
+    match hint_free_floors(
+        source,
+        signature,
+        &signature_neighbours,
+        identifying,
+        context,
+        frequencies,
+        candidate,
+    ) {
+        Ok(_) => explanation
+            .gates
+            .push(gate("hint-free-floors", true, Some(similar), None)),
+        Err("chance") => explanation.gates.push(gate(
+            "chance",
+            false,
+            explanation.chance,
+            Some(MAX_CHANCE_MATCHES),
+        )),
+        Err("neighbours") => explanation.gates.push(gate(
+            "neighbours",
+            false,
+            Some(signature.neighbours.len() as f64),
+            Some(MIN_NEIGHBOURS_TO_REJECT as f64),
+        )),
+        Err(name) => explanation
+            .gates
+            .push(gate(name, false, Some(similar), needed(name))),
+    }
 }
 
 /// A recovered candidate function reduced to what comparison needs.
@@ -1780,6 +2393,7 @@ fn scan_candidates_with<S: ByteSource + ?Sized>(
                 matched: result.matched,
                 rival: None,
                 waived: waived.get(),
+                wrapped: false,
             });
         }
     }
@@ -2154,6 +2768,7 @@ fn structural_self_test<S: ByteSource + ?Sized>(
         matched: result.matched,
         rival: None,
         waived: false,
+        wrapped: false,
     })
 }
 
@@ -3007,6 +3622,7 @@ mod tests {
             matched: matched.iter().map(|key| key.to_string()).collect(),
             rival: None,
             waived: false,
+            wrapped: false,
         }
     }
 
@@ -3035,6 +3651,7 @@ mod tests {
     fn a_waived_shape_or_a_close_rival_is_no_answer() {
         let waived = Match {
             waived: true,
+            wrapped: false,
             ..found(1, 0.9, &["str:x"])
         };
         assert!(!identified_answer(&[waived]));
@@ -3055,6 +3672,7 @@ mod tests {
         // Preserved call-graph links still name it.
         let placed = Match {
             waived: true,
+            wrapped: false,
             rival: Some(0.9),
             ..found(1, 0.9, &["str:x", "joint:2"])
         };

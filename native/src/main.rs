@@ -17,6 +17,9 @@
 //! sigtool-native merge --sample a.elf:0x1000 --sample b.elf:0x2c40 --name fn
 //! sigtool-native db build --signature fn.yaml --output signatures.db
 //! sigtool-native db build --file image.elf --functions names.json --output signatures.db
+//! sigtool-native scan --path dir --recursive --db signatures.db --jsonl hits.jsonl
+//! sigtool-native db info signatures.db
+//! sigtool-native db list signatures.db --json
 //! ```
 //!
 //! The signature YAML goes to stdout (or `--output`) so it can be piped; the
@@ -24,7 +27,8 @@
 //!
 //! Exit codes:
 //!
-//! * `0` success
+//! * `0` success (for `scan --path`: every file got a line, whatever its
+//!   status and hits)
 //! * `1` locate/scan found no accepted match
 //! * `2` usage or input error (missing file, bad address, unmapped address, ...)
 //! * `3` unsupported target architecture or mode
@@ -38,17 +42,20 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::Value;
 
+use sigtool_native::arch::Arch;
 use sigtool_native::coverage::Coverage;
 use sigtool_native::db::{DbView, MappedDb, SignatureDb};
 use sigtool_native::elf::FileSource;
 use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
+use sigtool_native::identity::{container, identify, Container, ImageIdentity};
 use sigtool_native::matcher::{
-    evidence, scan, scan_in, Match, ScanContext, DEFAULT_MAX_RECOVERIES,
+    evidence, explain, hinted_floors, scan, scan_in, Explanation, Match, ScanContext,
+    DEFAULT_MAX_RECOVERIES,
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
-use sigtool_native::scanner::{ScanHit, SignatureScanner};
+use sigtool_native::scanner::{scan_all, scan_modules, ScanHit, SignatureScanner};
 use sigtool_native::sigfile::Signature;
 use sigtool_native::source::{ByteSource, Module};
 
@@ -85,19 +92,41 @@ enum Command {
     Bench(BenchArgs),
 }
 
+/// `--raw FILE --arch A --base ADDR`: a code blob without a container.
+#[derive(Args)]
+struct RawArgs {
+    /// Raw code blob (firmware, a dump of one code region): one executable
+    /// region at --base, no symbols or relocations; hint-free only
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["arch", "base"],
+        conflicts_with_all = ["file", "pid"]
+    )]
+    raw: Option<PathBuf>,
+    /// With --raw, the blob's architecture
+    #[arg(long, requires = "raw", value_parser = ["x64", "arm64", "arm32", "thumb"])]
+    arch: Option<String>,
+    /// With --raw, the address the blob's first byte is mapped at
+    #[arg(long, value_name = "ADDR", requires = "raw")]
+    base: Option<String>,
+}
+
 #[derive(Args)]
 struct GenArgs {
     /// ELF or PE image
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
+        required_unless_present_any = ["pid", "raw"],
         conflicts_with = "pid"
     )]
     file: Option<PathBuf>,
     /// Live Windows process to read (read-only)
     #[arg(long, value_name = "PID")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Absolute address, e.g. 0x1000
     #[arg(long, value_name = "ADDR", conflicts_with = "rva")]
     addr: Option<String>,
@@ -133,13 +162,15 @@ struct LocateArgs {
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
+        required_unless_present_any = ["pid", "raw"],
         conflicts_with = "pid"
     )]
     file: Option<PathBuf>,
     /// Live Windows process to scan (read-only)
     #[arg(long, value_name = "PID")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
     /// Write the match list as JSON
     #[arg(long, value_name = "FILE")]
     json: Option<PathBuf>,
@@ -149,9 +180,21 @@ struct LocateArgs {
     /// Discovery mode: `hinted` uses the image's symbols and function bounds;
     /// `hint-free` uses only what survives stripping (unwind tables, dynamic
     /// symbols, relocations, code); `auto` picks hint-free for image files
-    /// without `.symtab` function symbols (stripped ELF, PE)
+    /// without `.symtab` function symbols (stripped ELF, PE) and for live
+    /// processes, which it scans one module at a time
     #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
     discovery: String,
+    /// With --pid, scan only this module (name or file name, as `gen --module`)
+    #[arg(long, value_name = "NAME", requires = "pid")]
+    module: Option<String>,
+    /// Explain the verdict on the best match (or on --expect): matched and
+    /// missed features, neighbour keys, and the gate that decided
+    #[arg(long, conflicts_with = "pid")]
+    explain: bool,
+    /// With --explain, explain the function at this module-relative address
+    /// instead of the best match
+    #[arg(long, value_name = "RVA", requires = "explain")]
+    expect: Option<String>,
 }
 
 #[derive(Args)]
@@ -160,13 +203,29 @@ struct ScanArgs {
     #[arg(
         long,
         value_name = "IMAGE",
-        required_unless_present = "pid",
-        conflicts_with = "pid"
+        required_unless_present_any = ["pid", "path", "raw"],
+        conflicts_with_all = ["pid", "path"]
     )]
     file: Option<PathBuf>,
     /// Live Windows process to scan (read-only)
-    #[arg(long, value_name = "PID")]
+    #[arg(long, value_name = "PID", conflicts_with = "path")]
     pid: Option<u32>,
+    #[command(flatten)]
+    raw: RawArgs,
+    /// Scan every regular file in this directory (batch mode; needs --jsonl)
+    #[arg(
+        long,
+        value_name = "DIR",
+        requires = "jsonl",
+        conflicts_with_all = ["json", "raw"]
+    )]
+    path: Option<PathBuf>,
+    /// With --path, also scan subdirectories (symlinks are never followed)
+    #[arg(long, requires = "path")]
+    recursive: bool,
+    /// With --path, write one JSON object per file to this file
+    #[arg(long, value_name = "FILE", requires = "path")]
+    jsonl: Option<PathBuf>,
     /// Signature YAML file (repeatable)
     #[arg(long, value_name = "FILE")]
     signature: Vec<PathBuf>,
@@ -179,9 +238,13 @@ struct ScanArgs {
     /// Discovery mode: `hinted` uses the image's symbols and function bounds;
     /// `hint-free` uses only what survives stripping (unwind tables, dynamic
     /// symbols, relocations, code); `auto` picks hint-free for image files
-    /// without `.symtab` function symbols (stripped ELF, PE)
+    /// without `.symtab` function symbols (stripped ELF, PE) and for live
+    /// processes, which it scans one module at a time
     #[arg(long, default_value = "auto", value_parser = ["auto", "hinted", "hint-free"])]
     discovery: String,
+    /// With --pid, scan only this module (name or file name, as `gen --module`)
+    #[arg(long, value_name = "NAME", requires = "pid")]
+    module: Option<String>,
 }
 
 #[derive(Args)]
@@ -210,6 +273,20 @@ struct DbArgs {
 enum DbCommand {
     /// Build a deterministic binary DB from signature YAML files
     Build(DbBuildArgs),
+    /// Summarize a DB: spec version, signature count, confidence and arch counts
+    Info(DbShowArgs),
+    /// List a DB's signatures: name, signature id, arches, confidence
+    List(DbShowArgs),
+}
+
+#[derive(Args)]
+struct DbShowArgs {
+    /// Signature database built by `db build`
+    #[arg(value_name = "DB")]
+    db: PathBuf,
+    /// Print JSON instead of text
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -252,6 +329,10 @@ struct BenchArgs {
     /// Keep at most N ground-truth functions per binary (0 = all)
     #[arg(long = "max-functions", default_value_t = 0)]
     max_functions: usize,
+    /// With --max-functions, pick functions by CRC-32 of this seed and the
+    /// name instead of the name alone (a fresh sample for milestone exits)
+    #[arg(long = "sample-seed", value_name = "N")]
+    sample_seed: Option<u64>,
     /// Only one discovery mode: hinted or hint-free
     #[arg(long, value_parser = ["hinted", "hint-free"])]
     discovery: Option<String>,
@@ -270,6 +351,11 @@ struct BenchArgs {
     /// lines to this file (offline simulation of assignment rules)
     #[arg(long = "joint-report", requires = "joint")]
     joint_report: Option<PathBuf>,
+    /// Also scan every stripped target the way `scan --pid` scans a live
+    /// process (no symbol starts, only the unwind table's own entries,
+    /// hint-free per module) and report it as discovery `process`
+    #[arg(long = "process-like")]
+    process_like: bool,
     /// Allowed recall drop / false-positive increase
     #[arg(long, default_value_t = sigtool_native::bench::DEFAULT_TOLERANCE)]
     tolerance: f64,
@@ -341,7 +427,15 @@ fn main() -> ExitCode {
 // -- gen ---------------------------------------------------------------------
 
 fn run_gen(args: GenArgs) -> Result<u8, CliError> {
-    let target = load_target(args.file.as_deref(), args.pid)?;
+    // A live process has no input file to hash, so its report says `null`.
+    let (target, input): (Box<dyn ByteSource>, Value) = match (&args.file, load_raw(&args.raw)?) {
+        (_, Some((source, identity))) => (Box::new(source), identity_value(&identity)),
+        (Some(path), None) => {
+            let (source, identity) = load_file_with_identity(path)?;
+            (Box::new(source), identity_value(&identity))
+        }
+        (None, None) => (load_target(None, args.pid, &args.raw)?, Value::Null),
+    };
     let source = target.as_ref();
     let addr = resolve_address(
         source,
@@ -352,7 +446,7 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
     // The image's call graph gives the signature its neighbour keys. A live
     // process is not indexed: the code index would decode every loaded DLL,
     // so `gen --pid` runs no budgeted pass and always reports `[]`.
-    let context = args.file.is_some().then(|| ScanContext::build(source));
+    let context = args.pid.is_none().then(|| ScanContext::build(source));
     let result = generate_in(
         source,
         addr,
@@ -379,6 +473,7 @@ fn run_gen(args: GenArgs) -> Result<u8, CliError> {
         args.output.as_deref(),
         args.json_report.as_deref(),
         &coverage,
+        ("input", input),
     )?;
     Ok(EXIT_OK)
 }
@@ -406,6 +501,7 @@ fn write_outputs(
     output: Option<&Path>,
     json_report: Option<&Path>,
     coverage: &Coverage,
+    input: (&str, Value),
 ) -> Result<(), CliError> {
     let text = result
         .to_yaml()
@@ -429,6 +525,7 @@ fn write_outputs(
     if let Some(path) = json_report {
         let mut document = report_document(result, arch, label);
         document.insert("truncated".to_string(), coverage_value(coverage));
+        document.insert(input.0.to_string(), input.1);
         write_json(path, &document)?;
     }
     Ok(())
@@ -531,6 +628,7 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
     }
     let mut sources: Vec<FileSource> = Vec::new();
     let mut addresses: Vec<u64> = Vec::new();
+    let mut inputs: Vec<Value> = Vec::new();
     for text in &args.sample {
         // Split on the last colon so Windows drive paths keep working.
         let Some((path, addr_text)) = text.rsplit_once(':') else {
@@ -538,7 +636,8 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
                 "--sample expects FILE:ADDR, got {text:?}"
             )));
         };
-        let source = load_file(Path::new(path))?;
+        let (source, identity) = load_file_with_identity(Path::new(path))?;
+        inputs.push(identity_value(&identity));
         // `FILE:+RVA` is relative to the image base, the form a disassembler
         // with a rebased database can always supply.
         let addr = match addr_text.strip_prefix('+') {
@@ -593,6 +692,8 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
         args.output.as_deref(),
         args.json_report.as_deref(),
         &coverage,
+        // One entry per --sample, in argument order.
+        ("inputs", Value::Array(inputs)),
     )?;
     Ok(EXIT_OK)
 }
@@ -601,37 +702,80 @@ fn run_merge(args: MergeArgs) -> Result<u8, CliError> {
 
 fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
     let signature = load_signature(&args.signature)?;
-    let target = load_target(args.file.as_deref(), args.pid)?;
+    check_raw_discovery(&args.raw, &args.discovery)?;
+    let target = load_target(args.file.as_deref(), args.pid, &args.raw)?;
     let source = target.as_ref();
     let hints = use_hints(source, &args.discovery);
     eprintln!(
         "sigtool-native: {} discovery",
         if hints { "hinted" } else { "hint-free" }
     );
-    // Hinted locate builds no image index, so only hint-free has budgets
-    // to report; `[]` from hinted locate means no budgeted pass ran.
+    // A file is scanned the way the bench measures it, with the image's
+    // indexes and every trust floor, in both modes. A live process is
+    // scanned hint-free one module at a time, each module with its own
+    // indexes (`bench --process-like` measures this path). A forced hinted
+    // process scan builds no index; it starts from anchor hits and gets the
+    // hinted floors.
+    let only = only_module(source, args.module.as_deref())?;
     let mut coverage = Coverage::new();
-    let matches = if hints {
-        scan(source, &signature, None, 256, true, None)
+    let mut context = None;
+    let matches = if args.pid.is_some() && !hints {
+        let signatures = std::slice::from_ref(&signature);
+        let mut found = scan_modules(source, signatures, only, None, &mut coverage);
+        found.pop().unwrap_or_default()
+    } else if hints && args.pid.is_some() {
+        let found = scan(source, &signature, None, 256, true, None);
+        let mut found = hinted_floors(source, &signature, found);
+        found.retain(|matched| in_module(source, only, matched.address));
+        found
     } else {
-        let context = ScanContext::build(source);
-        coverage.add_context(&context);
-        coverage.add_source(source, false);
-        scan_in(source, &signature, &context, false)
+        let built = context.insert(ScanContext::build(source));
+        coverage.add_context(built);
+        coverage.add_source(source, hints);
+        scan_in(source, &signature, built, hints)
     };
     warn_coverage(&coverage);
+
+    // clap keeps --explain off --pid, so a context exists here.
+    let explanation = match (&context, args.explain) {
+        (Some(context), true) => {
+            let address = match &args.expect {
+                Some(rva) => Some(resolve_address(source, None, Some(rva), None)?),
+                None => matches.first().map(|matched| matched.address),
+            };
+            address.map(|address| explain(source, &signature, context, hints, address))
+        }
+        _ => None,
+    };
 
     if let Some(path) = &args.json {
         let mut document = match_document(source, &signature, &matches);
         document.insert("truncated".to_string(), coverage_value(&coverage));
+        if args.explain {
+            document.insert(
+                "explain".to_string(),
+                explanation.as_ref().map_or(Value::Null, |explanation| {
+                    explain_value(source, &signature, explanation)
+                }),
+            );
+        }
         write_json(path, &document)?;
     }
+    let print_explanation = || {
+        if args.explain {
+            match &explanation {
+                Some(explanation) => print!("{}", explain_text(source, &signature, explanation)),
+                None => println!("explain: no match to explain (pass --expect RVA)"),
+            }
+        }
+    };
 
     if matches.is_empty() {
         eprintln!(
             "sigtool-native: no match for signature {:?} in the target",
             signature.name
         );
+        print_explanation();
         return Ok(EXIT_NOT_FOUND);
     }
     println!(
@@ -653,6 +797,7 @@ fn run_locate(args: LocateArgs) -> Result<u8, CliError> {
             where_
         );
     }
+    print_explanation();
     if !args.yes && std::io::stdin().is_terminal() {
         let label = source
             .label_for_address(matches[0].address)
@@ -727,11 +872,246 @@ fn match_document(
     document
 }
 
+fn hex_value(address: Option<u64>) -> Value {
+    address.map_or(Value::Null, |address| {
+        Value::String(format!("0x{address:x}"))
+    })
+}
+
+fn number_value(number: Option<f64>) -> Value {
+    number.map_or(Value::Null, json_number)
+}
+
+fn strings_value(keys: &[String]) -> Value {
+    Value::Array(keys.iter().cloned().map(Value::String).collect())
+}
+
+/// The `explain` object of `locate --json`: what [`explain`] found, keyed
+/// like the match entries.
+fn explain_value(
+    source: &dyn ByteSource,
+    signature: &Signature,
+    explanation: &Explanation,
+) -> Value {
+    let mut object: BTreeMap<String, Value> = BTreeMap::new();
+    object.insert("address".to_string(), hex_value(Some(explanation.address)));
+    if let Some(module) = source.module_for(explanation.address) {
+        object.insert("module".to_string(), Value::String(module.name.clone()));
+        object.insert(
+            "rva".to_string(),
+            hex_value(Some(module.rva(explanation.address))),
+        );
+    }
+    object.insert(
+        "label".to_string(),
+        source
+            .label_for_address(explanation.address)
+            .map_or(Value::Null, Value::String),
+    );
+    object.insert("start".to_string(), hex_value(explanation.start));
+    object.insert("end".to_string(), hex_value(explanation.end));
+    object.insert("candidate".to_string(), Value::Bool(explanation.candidate));
+    object.insert("score".to_string(), json_number(explanation.score));
+    object.insert(
+        "similarity".to_string(),
+        json_number(explanation.similarity),
+    );
+    object.insert(
+        "threshold".to_string(),
+        json_number(signature.match_threshold),
+    );
+    object.insert(
+        "min_distinct".to_string(),
+        Value::Number(signature.min_distinct.into()),
+    );
+    object.insert(
+        "matched_required".to_string(),
+        Value::Number(explanation.matched_required.into()),
+    );
+    object.insert(
+        "required".to_string(),
+        Value::Number(explanation.required.into()),
+    );
+    object.insert("matched".to_string(), strings_value(&explanation.matched));
+    object.insert(
+        "inherited".to_string(),
+        strings_value(&explanation.inherited),
+    );
+    object.insert(
+        "missed".to_string(),
+        Value::Array(
+            explanation
+                .missed
+                .iter()
+                .map(|(key, required)| serde_json::json!({ "key": key, "required": required }))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "optional_callees".to_string(),
+        strings_value(&explanation.optional_callees),
+    );
+    object.insert(
+        "neighbours".to_string(),
+        serde_json::json!({
+            "shared": explanation.neighbours_shared,
+            "missed": explanation.neighbours_missed,
+        }),
+    );
+    object.insert("cross_isa".to_string(), Value::Bool(explanation.cross_isa));
+    object.insert(
+        "gates".to_string(),
+        Value::Array(
+            explanation
+                .gates
+                .iter()
+                .map(|gate| {
+                    serde_json::json!({
+                        "gate": gate.gate,
+                        "passed": gate.passed,
+                        "value": number_value(gate.value),
+                        "needed": number_value(gate.needed),
+                    })
+                })
+                .collect(),
+        ),
+    );
+    object.insert(
+        "decided".to_string(),
+        Value::String(explanation.decided.clone()),
+    );
+    object.insert(
+        "rank".to_string(),
+        explanation
+            .rank
+            .map_or(Value::Null, |rank| Value::Number((rank + 1).into())),
+    );
+    object.insert(
+        "matches".to_string(),
+        Value::Number(explanation.matches.into()),
+    );
+    object.insert(
+        "evidence".to_string(),
+        explanation
+            .evidence
+            .map_or(Value::Null, |label| Value::String(label.to_string())),
+    );
+    object.insert(
+        "answer_withheld".to_string(),
+        explanation
+            .answer_withheld
+            .map_or(Value::Null, |reason| Value::String(reason.to_string())),
+    );
+    object.insert(
+        "answer_floor".to_string(),
+        number_value(explanation.answer_floor),
+    );
+    object.insert("rival".to_string(), number_value(explanation.rival));
+    object.insert("chance".to_string(), number_value(explanation.chance));
+    object.insert(
+        "carriers".to_string(),
+        explanation
+            .carriers
+            .map_or(Value::Null, |count| Value::Number(count.into())),
+    );
+    Value::Object(object.into_iter().collect())
+}
+
+/// `locate --explain` as text, after the match list.
+fn explain_text(
+    source: &dyn ByteSource,
+    signature: &Signature,
+    explanation: &Explanation,
+) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    let label = source
+        .label_for_address(explanation.address)
+        .unwrap_or_else(|| "unlabelled".to_string());
+    let _ = writeln!(
+        text,
+        "explain 0x{:x} {label}: {}",
+        explanation.address, explanation.decided
+    );
+    let rank = match explanation.rank {
+        Some(rank) => format!(
+            "rank {} of {}, {}",
+            rank + 1,
+            explanation.matches,
+            explanation.evidence.unwrap_or("")
+        ),
+        None => format!("not in the {} matches", explanation.matches),
+    };
+    let _ = writeln!(
+        text,
+        "  {rank}; score {:.3} (threshold {}), similarity {:.3}, required {}/{} (min_distinct {})",
+        explanation.score,
+        signature.match_threshold,
+        explanation.similarity,
+        explanation.matched_required,
+        explanation.required,
+        signature.min_distinct
+    );
+    if let Some(reason) = explanation.answer_withheld {
+        let _ = writeln!(
+            text,
+            "  not identified: {reason} (answer floor {:.2}, rival {})",
+            explanation.answer_floor.unwrap_or(0.0),
+            explanation
+                .rival
+                .map_or("none".to_string(), |rival| format!("{rival:.3}"))
+        );
+    }
+    let _ = writeln!(text, "  matched: {}", explanation.matched.join(" "));
+    if !explanation.inherited.is_empty() {
+        let _ = writeln!(text, "  inherited: {}", explanation.inherited.join(" "));
+    }
+    let missed: Vec<String> = explanation
+        .missed
+        .iter()
+        .map(|(key, required)| format!("{}{key}", if *required { "!" } else { "" }))
+        .collect();
+    let _ = writeln!(text, "  missed (! required): {}", missed.join(" "));
+    if !explanation.optional_callees.is_empty() {
+        let _ = writeln!(
+            text,
+            "  optional here (target names no function): {}",
+            explanation.optional_callees.join(" ")
+        );
+    }
+    if !explanation.neighbours_shared.is_empty() || !explanation.neighbours_missed.is_empty() {
+        let _ = writeln!(
+            text,
+            "  neighbour keys shared {} / missed {}",
+            explanation.neighbours_shared.join(" "),
+            explanation.neighbours_missed.join(" ")
+        );
+    }
+    if let (Some(chance), Some(carriers)) = (explanation.chance, explanation.carriers) {
+        let _ = writeln!(
+            text,
+            "  chance carriers {chance:.3} expected, {carriers} exact"
+        );
+    }
+    for gate in &explanation.gates {
+        let value = match (gate.value, gate.needed) {
+            (Some(value), Some(needed)) => format!(" {value:.3} vs {needed:.3}"),
+            (Some(value), None) => format!(" {value:.3}"),
+            _ => String::new(),
+        };
+        let _ = writeln!(
+            text,
+            "  gate {}: {}{value}",
+            gate.gate,
+            if gate.passed { "pass" } else { "FAIL" }
+        );
+    }
+    text
+}
+
 // -- scan --------------------------------------------------------------------
 
 fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
-    let target = load_target(args.file.as_deref(), args.pid)?;
-    let source = target.as_ref();
     let signatures = if let Some(db_path) = &args.db {
         load_db_signatures(db_path)?
     } else {
@@ -743,19 +1123,16 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
             .map(|path| load_signature(path))
             .collect::<Result<Vec<_>, _>>()?
     };
+    if let (Some(dir), Some(out)) = (&args.path, &args.jsonl) {
+        return run_batch_scan(dir, args.recursive, out, &signatures, &args.discovery);
+    }
+    check_raw_discovery(&args.raw, &args.discovery)?;
+    let target = load_target(args.file.as_deref(), args.pid, &args.raw)?;
+    let source = target.as_ref();
 
-    let mut coverage = Coverage::new();
-    let hits = if use_hints(source, &args.discovery) {
-        let mut scanner = SignatureScanner::new(source, signatures, None, None)
-            .map_err(|error| CliError::input(error.to_string()))?;
-        let report = scanner.scan_pass();
-        // The scanner's own reference index is not passed to its matcher,
-        // so only the recovery budget can drop its matches.
-        coverage.add_scan_report(&report, DEFAULT_MAX_RECOVERIES);
-        report.hits
-    } else {
-        hint_free_hits(source, &signatures, &mut coverage)?
-    };
+    let hints = use_hints(source, &args.discovery);
+    let only = only_module(source, args.module.as_deref())?;
+    let (hits, coverage) = scan_source(source, &signatures, hints, args.pid.is_some(), only)?;
     warn_coverage(&coverage);
 
     if let Some(path) = &args.json {
@@ -783,6 +1160,380 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
     Ok(EXIT_OK)
 }
 
+/// One `scan` of one target, the same for `--file`, `--pid` and each file of
+/// `--path`. `only` (a module base, `--module`) applies to `--pid`.
+fn scan_source(
+    source: &dyn ByteSource,
+    signatures: &[Signature],
+    hints: bool,
+    live: bool,
+    only: Option<u64>,
+) -> Result<(Vec<ScanHit>, Coverage), CliError> {
+    let mut coverage = Coverage::new();
+    let hits = if !live {
+        // Files get the bench's path (see `run_locate`).
+        let context = ScanContext::build(source);
+        coverage.add_context(&context);
+        coverage.add_source(source, hints);
+        let all = scan_all(source, &context, signatures, hints);
+        scan_hits(source, signatures, all)?
+    } else if !hints {
+        // A process one module at a time (see `run_locate`).
+        let all = scan_modules(source, signatures, only, None, &mut coverage);
+        scan_hits(source, signatures, all)?
+    } else {
+        // Only a forced hinted process scan uses the incremental scanner.
+        let mut scanner = SignatureScanner::new(source, signatures.to_vec(), None, None)
+            .map_err(|error| CliError::input(error.to_string()))?;
+        let report = scanner.scan_pass();
+        // The scanner's own reference index is not passed to its matcher,
+        // so only the recovery budget can drop its matches.
+        coverage.add_scan_report(&report, DEFAULT_MAX_RECOVERIES);
+        let mut hits = report.hits;
+        hits.retain(|hit| in_module(source, only, hit.address));
+        hits
+    };
+    Ok((hits, coverage))
+}
+
+/// The base of the module `--module` names, checked against the target.
+fn only_module(source: &dyn ByteSource, name: Option<&str>) -> Result<Option<u64>, CliError> {
+    name.map(|name| find_module(source, Some(name)).map(|module| module.base))
+        .transpose()
+}
+
+/// Whether `address` lies in the module with base `only` (always, without one).
+fn in_module(source: &dyn ByteSource, only: Option<u64>, address: u64) -> bool {
+    only.is_none_or(|base| {
+        source
+            .module_for(address)
+            .is_some_and(|module| module.base == base)
+    })
+}
+
+// -- batch scan --------------------------------------------------------------
+
+/// Directory levels `--recursive` descends. Symlinks are never followed, so
+/// the walk cannot loop; the cap only bounds a pathological tree (a bind
+/// mount of an ancestor), which gets an `error` line instead of a hang.
+const MAX_BATCH_DEPTH: usize = 64;
+
+/// One entry the batch walk found: a regular file to scan, or a directory it
+/// could not list (reported, so the output names every gap).
+enum BatchEntry {
+    File(PathBuf),
+    Unlisted(String),
+}
+
+/// `scan --path DIR --jsonl OUT`: scan every regular file under `DIR` with
+/// one loaded signature set and write one JSON line per file, in byte order
+/// of the `/`-separated path relative to `DIR`. A file that is not an image,
+/// cannot be read, or fails to parse gets its status and the batch goes on,
+/// so the exit code is 0 whenever every file got a line, hits or not, and 2
+/// only for a usage or input error of the run itself (missing `DIR`,
+/// unreadable signatures, unwritable `OUT`).
+fn run_batch_scan(
+    dir: &Path,
+    recursive: bool,
+    out: &Path,
+    signatures: &[Signature],
+    discovery: &str,
+) -> Result<u8, CliError> {
+    use std::io::Write;
+
+    if !dir.is_dir() {
+        return Err(CliError::input(format!(
+            "no such directory: {}",
+            dir.display()
+        )));
+    }
+    let file = std::fs::File::create(out)
+        .map_err(|error| CliError::input(format!("cannot write {}: {error}", out.display())))?;
+    // OUT may live inside DIR; scanning it would make the output depend on
+    // the previous run.
+    let out_canonical = std::fs::canonicalize(out).ok();
+    let entries = batch_entries(dir, recursive, out_canonical.as_deref())?;
+    let mut writer = std::io::BufWriter::new(file);
+    let total = entries.len();
+    let write_error =
+        |error: std::io::Error| CliError::input(format!("cannot write {}: {error}", out.display()));
+    for (index, (relative, entry)) in entries.iter().enumerate() {
+        let line = match entry {
+            BatchEntry::File(path) => batch_line(relative, path, signatures, discovery),
+            BatchEntry::Unlisted(message) => {
+                let mut row = batch_row(relative);
+                row.insert("status".to_string(), Value::String("error".to_string()));
+                row.insert("error".to_string(), Value::String(message.clone()));
+                row
+            }
+        };
+        let status = line
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("error")
+            .to_string();
+        let hits = line
+            .get("hits")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let text = serde_json::to_string(&line)
+            .map_err(|error| CliError::input(format!("cannot encode JSON: {error}")))?;
+        writeln!(writer, "{text}").map_err(write_error)?;
+        eprintln!(
+            "scanned {}/{total} {relative}: {status}, {hits} hits",
+            index + 1
+        );
+    }
+    writer.flush().map_err(write_error)?;
+    Ok(EXIT_OK)
+}
+
+/// Every regular file (and every directory that could not be listed) under
+/// `root`, keyed and sorted by its `/`-separated path relative to `root`.
+/// Symlinks and special files (FIFOs, devices, sockets) are skipped: a
+/// symlink may lead out of the tree or loop, and reading a FIFO blocks.
+fn batch_entries(
+    root: &Path,
+    recursive: bool,
+    skip: Option<&Path>,
+) -> Result<Vec<(String, BatchEntry)>, CliError> {
+    let mut found: Vec<(String, BatchEntry)> = Vec::new();
+    let mut pending: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
+    while let Some((dir, prefix, depth)) = pending.pop() {
+        let listing = match std::fs::read_dir(&dir) {
+            Ok(listing) => listing,
+            Err(error) if depth == 0 => {
+                return Err(CliError::input(format!(
+                    "cannot list {}: {error}",
+                    dir.display()
+                )))
+            }
+            Err(error) => {
+                found.push((
+                    prefix,
+                    BatchEntry::Unlisted(format!("cannot list: {error}")),
+                ));
+                continue;
+            }
+        };
+        for item in listing {
+            let item = match item {
+                Ok(item) => item,
+                Err(error) => {
+                    found.push((
+                        prefix.clone(),
+                        BatchEntry::Unlisted(format!("cannot list: {error}")),
+                    ));
+                    break;
+                }
+            };
+            let name = item.file_name().to_string_lossy().into_owned();
+            let relative = format!("{prefix}{name}");
+            // `DirEntry::file_type` does not follow symlinks.
+            let Ok(kind) = item.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            let path = item.path();
+            if kind.is_dir() {
+                if !recursive {
+                    continue;
+                }
+                if depth + 1 >= MAX_BATCH_DEPTH {
+                    found.push((
+                        format!("{relative}/"),
+                        BatchEntry::Unlisted(format!(
+                            "not listed: deeper than {MAX_BATCH_DEPTH} levels"
+                        )),
+                    ));
+                    continue;
+                }
+                pending.push((path, format!("{relative}/"), depth + 1));
+            } else if kind.is_file() {
+                let is_output = skip.is_some_and(|skip| {
+                    skip.file_name() == path.file_name()
+                        && std::fs::canonicalize(&path).ok().as_deref() == Some(skip)
+                });
+                if !is_output {
+                    found.push((relative, BatchEntry::File(path)));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(found)
+}
+
+/// The fields every batch line carries, filled with "nothing known".
+fn batch_row(relative: &str) -> BTreeMap<String, Value> {
+    let mut row: BTreeMap<String, Value> = BTreeMap::new();
+    row.insert("path".to_string(), Value::String(relative.to_string()));
+    for key in ["sha256", "size", "arch", "discovery", "error"] {
+        row.insert(key.to_string(), Value::Null);
+    }
+    row.insert("hits".to_string(), Value::Array(Vec::new()));
+    row.insert("truncated".to_string(), Value::Array(Vec::new()));
+    row
+}
+
+/// Scan one batch file into its JSON line. `status` is `ok`, `unsupported`
+/// (not an ELF or PE image, or an image `scan --file` would refuse with exit
+/// 3), `error` (unreadable, malformed, or a scan failure), or
+/// `budget-exhausted` (scanned, but a work budget ran out, so `truncated` is
+/// non-empty and hits may be missing; never based on wall time).
+/// SHA-256 of the file at `path`, read 64 KiB at a time.
+fn stream_sha256(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = sigtool_native::identity::Sha256::new();
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        match file.read(&mut buffer).ok()? {
+            0 => break,
+            n => hasher.update(&buffer[..n]),
+        }
+    }
+    Some(sigtool_native::identity::hex(&hasher.finish()))
+}
+
+/// Largest file a batch scan reads: the raw-blob limit, far above any image
+/// the corpus or a real module set has, so one huge file costs a line, not
+/// the machine's memory.
+const MAX_BATCH_IMAGE_BYTES: u64 = sigtool_native::elf::MAX_RAW_BYTES as u64;
+
+fn batch_line(
+    relative: &str,
+    path: &Path,
+    signatures: &[Signature],
+    discovery: &str,
+) -> BTreeMap<String, Value> {
+    let mut row = batch_row(relative);
+    let fail = |row: &mut BTreeMap<String, Value>, status: &str, message: String| {
+        row.insert("status".to_string(), Value::String(status.to_string()));
+        row.insert("error".to_string(), Value::String(message));
+    };
+    // Read only the magic first: a directory of firmware dumps or media
+    // holds files far larger than any image the scanner takes (rule 11).
+    let size = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            fail(&mut row, "error", format!("cannot read: {error}"));
+            return row;
+        }
+    };
+    let mut magic = [0u8; 4];
+    let head = std::fs::File::open(path).and_then(|mut file| {
+        use std::io::Read;
+        let mut read = 0;
+        while read < magic.len() {
+            match file.read(&mut magic[read..])? {
+                0 => break,
+                n => read += n,
+            }
+        }
+        Ok(read)
+    });
+    let head = match head {
+        Ok(read) => &magic[..read],
+        Err(error) => {
+            fail(&mut row, "error", format!("cannot read: {error}"));
+            return row;
+        }
+    };
+    if container(head) == Container::Other {
+        row.insert("size".to_string(), Value::Number(size.into()));
+        // Hashed in bounded chunks, never held whole: the hash still names
+        // the file for whoever triages the batch.
+        if let Some(digest) = stream_sha256(path) {
+            row.insert("sha256".to_string(), Value::String(digest));
+        }
+        fail(
+            &mut row,
+            "unsupported",
+            "not an ELF or PE image".to_string(),
+        );
+        return row;
+    }
+    if size > MAX_BATCH_IMAGE_BYTES {
+        row.insert("size".to_string(), Value::Number(size.into()));
+        fail(
+            &mut row,
+            "unsupported",
+            format!("image of {size} bytes exceeds the {MAX_BATCH_IMAGE_BYTES}-byte limit"),
+        );
+        return row;
+    }
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(error) => {
+            fail(&mut row, "error", format!("cannot read: {error}"));
+            return row;
+        }
+    };
+    let identity = identify(&data);
+    row.insert("sha256".to_string(), Value::String(identity.sha256_hex()));
+    row.insert("size".to_string(), Value::Number(identity.size.into()));
+    if container(&data) == Container::Other {
+        fail(
+            &mut row,
+            "unsupported",
+            "not an ELF or PE image".to_string(),
+        );
+        return row;
+    }
+    // Target bytes are hostile (rule 8) and must never panic the scanner,
+    // but one file that does must not cost the rest of the batch its lines.
+    let scanned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source =
+            FileSource::from_bytes(&data, &file_name(path)).map_err(classify_source_error)?;
+        let hints = use_hints(&source, discovery);
+        let (hits, coverage) = scan_source(&source, signatures, hints, false, None)?;
+        let mut document = scan_document(&source, &hits);
+        Ok::<_, CliError>((
+            source.arch().as_str().to_string(),
+            hints,
+            document.remove("hits").unwrap_or_default(),
+            coverage,
+        ))
+    }));
+    match scanned {
+        Ok(Ok((arch, hints, hits, coverage))) => {
+            for line in coverage.warnings() {
+                eprintln!("sigtool-native: {relative}: {line}");
+            }
+            let status = if coverage.exhausted().is_empty() {
+                "ok"
+            } else {
+                "budget-exhausted"
+            };
+            row.insert("status".to_string(), Value::String(status.to_string()));
+            row.insert("arch".to_string(), Value::String(arch));
+            row.insert(
+                "discovery".to_string(),
+                Value::String(if hints { "hinted" } else { "hint-free" }.to_string()),
+            );
+            row.insert("hits".to_string(), hits);
+            row.insert("truncated".to_string(), coverage_value(&coverage));
+        }
+        Ok(Err(error)) => {
+            let status = if error.code == EXIT_UNSUPPORTED {
+                "unsupported"
+            } else {
+                "error"
+            };
+            fail(&mut row, status, error.message);
+        }
+        Err(_) => fail(
+            &mut row,
+            "error",
+            "scanner panicked on this file".to_string(),
+        ),
+    }
+    row
+}
+
 /// Whether a scan uses the image's symbol hints. `auto` drops them for a
 /// stripped image: its dynamic symbols name only exports, and on the stripped
 /// real corpus hinted discovery found about half as many functions as
@@ -795,26 +1546,13 @@ fn use_hints(source: &dyn ByteSource, discovery: &str) -> bool {
     }
 }
 
-/// Every signature against one shared hint-free context, best match first
-/// per signature, in signature order. Signatures from one module are then
-/// resolved jointly through their call-graph links.
-fn hint_free_hits(
+/// Hit rows from [`scan_all`] or [`scan_modules`] (best match first per
+/// signature, in signature order).
+fn scan_hits(
     source: &dyn ByteSource,
     signatures: &[Signature],
-    coverage: &mut Coverage,
+    all: Vec<Vec<Match>>,
 ) -> Result<Vec<ScanHit>, CliError> {
-    let context = ScanContext::build(source);
-    coverage.add_context(&context);
-    coverage.add_source(source, false);
-    // Signatures share only the context's caches, so they scan in parallel;
-    // results keep signature order.
-    if signatures.len() > 1 {
-        context.prepare_frequencies(source, false);
-    }
-    let mut all: Vec<Vec<Match>> = sigtool_native::parallel::map(signatures.len(), |index| {
-        scan_in(source, &signatures[index], &context, false)
-    });
-    sigtool_native::joint::resolve(source, &context, signatures, &mut all, false);
     let mut hits = Vec::new();
     for (signature, matches) in signatures.iter().zip(all) {
         let signature_id = signature
@@ -893,7 +1631,138 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
 fn run_db(args: DbArgs) -> Result<u8, CliError> {
     match args.command {
         DbCommand::Build(build) => run_db_build(build),
+        DbCommand::Info(show) => run_db_info(show),
+        DbCommand::List(show) => run_db_list(show),
     }
+}
+
+/// One DB signature as `db info` and `db list` show it.
+struct DbEntry {
+    name: String,
+    signature_id: String,
+    /// Sample arches from the provenance, sorted and distinct (a merged
+    /// signature has several).
+    arches: Vec<String>,
+    confidence: String,
+}
+
+/// The DB's spec version and its signatures sorted by name, then id, so the
+/// listing does not depend on the order the DB was built in.
+fn db_entries(path: &Path) -> Result<(String, Vec<DbEntry>), CliError> {
+    let mapped = MappedDb::open(path).map_err(|error| CliError::input(error.to_string()))?;
+    let view: DbView<'_> = mapped
+        .view()
+        .map_err(|error| CliError::input(format!("{}: {error}", path.display())))?;
+    let mut entries = Vec::with_capacity(view.len());
+    for index in 0..view.len() {
+        let error = |error: sigtool_native::errors::SignatureError| {
+            CliError::input(format!("{}: {error}", path.display()))
+        };
+        let signature = view.signature(index).map_err(error)?;
+        let arches: BTreeSet<String> = signature
+            .provenance
+            .iter()
+            .map(|sample| sample.arch.clone())
+            .collect();
+        entries.push(DbEntry {
+            name: signature.name.clone(),
+            signature_id: view.signature_id(index).map_err(error)?.to_string(),
+            arches: arches.into_iter().collect(),
+            confidence: signature.confidence.clone(),
+        });
+    }
+    entries.sort_by(|a, b| {
+        (a.name.as_str(), a.signature_id.as_str()).cmp(&(b.name.as_str(), b.signature_id.as_str()))
+    });
+    Ok((view.spec_version().to_string(), entries))
+}
+
+fn run_db_info(args: DbShowArgs) -> Result<u8, CliError> {
+    let (spec, entries) = db_entries(&args.db)?;
+    let mut confidence: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut arches: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in &entries {
+        *confidence.entry(entry.confidence.as_str()).or_default() += 1;
+        for arch in &entry.arches {
+            *arches.entry(arch.as_str()).or_default() += 1;
+        }
+    }
+    if args.json {
+        let counts = |map: &BTreeMap<&str, usize>| {
+            Value::Object(
+                map.iter()
+                    .map(|(key, count)| (key.to_string(), Value::Number((*count).into())))
+                    .collect(),
+            )
+        };
+        let mut document: BTreeMap<String, Value> = BTreeMap::new();
+        document.insert("spec_version".to_string(), Value::String(spec));
+        document.insert(
+            "signatures".to_string(),
+            Value::Number(entries.len().into()),
+        );
+        document.insert("confidence".to_string(), counts(&confidence));
+        // Signatures per arch; a merged signature counts once for each.
+        document.insert("arches".to_string(), counts(&arches));
+        print_json(&document)?;
+    } else {
+        println!("spec {spec}");
+        println!("signatures {}", entries.len());
+        for (level, count) in &confidence {
+            println!("confidence {level} {count}");
+        }
+        for (arch, count) in &arches {
+            println!("arch {arch} {count}");
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn run_db_list(args: DbShowArgs) -> Result<u8, CliError> {
+    let (_, entries) = db_entries(&args.db)?;
+    if args.json {
+        let rows: Vec<Value> = entries
+            .iter()
+            .map(|entry| {
+                let mut row: BTreeMap<String, Value> = BTreeMap::new();
+                row.insert("name".to_string(), Value::String(entry.name.clone()));
+                row.insert(
+                    "signature_id".to_string(),
+                    Value::String(entry.signature_id.clone()),
+                );
+                row.insert(
+                    "arches".to_string(),
+                    Value::Array(entry.arches.iter().cloned().map(Value::String).collect()),
+                );
+                row.insert(
+                    "confidence".to_string(),
+                    Value::String(entry.confidence.clone()),
+                );
+                Value::Object(row.into_iter().collect())
+            })
+            .collect();
+        let mut document: BTreeMap<String, Value> = BTreeMap::new();
+        document.insert("signatures".to_string(), Value::Array(rows));
+        print_json(&document)?;
+    } else {
+        for entry in &entries {
+            println!(
+                "{}  {}  {}  {}",
+                entry.name,
+                entry.signature_id,
+                entry.arches.join("+"),
+                entry.confidence
+            );
+        }
+    }
+    Ok(EXIT_OK)
+}
+
+fn print_json(document: &BTreeMap<String, Value>) -> Result<(), CliError> {
+    let text = serde_json::to_string_pretty(document)
+        .map_err(|error| CliError::input(format!("cannot encode JSON: {error}")))?;
+    println!("{text}");
+    Ok(())
 }
 
 fn run_db_build(args: DbBuildArgs) -> Result<u8, CliError> {
@@ -993,7 +1862,12 @@ fn sign_functions(
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let entries = load_function_list(functions)?;
-    let source = load_file(image)?;
+    let functions_identity = std::fs::read(functions)
+        .map(|data| identify(&data))
+        .map_err(|error| {
+            CliError::input(format!("cannot read {}: {error}", functions.display()))
+        })?;
+    let (source, identity) = load_file_with_identity(image)?;
     let context = ScanContext::build(&source);
     // Signing self-tests hinted, so only the context's indexes apply.
     let mut coverage = Coverage::new();
@@ -1077,6 +1951,22 @@ fn sign_functions(
         document.insert("failed".to_string(), Value::Number(failed.into()));
         document.insert("functions".to_string(), Value::Array(rows));
         document.insert("truncated".to_string(), coverage_value(&coverage));
+        document.insert("input".to_string(), identity_value(&identity));
+        // The list is part of what was built: the same image signed from
+        // another list is another DB.
+        let mut list: BTreeMap<String, Value> = BTreeMap::new();
+        list.insert(
+            "sha256".to_string(),
+            Value::String(functions_identity.sha256_hex()),
+        );
+        list.insert(
+            "size".to_string(),
+            Value::Number(functions_identity.size.into()),
+        );
+        document.insert(
+            "functions_list".to_string(),
+            Value::Object(list.into_iter().collect()),
+        );
         write_json(path, &document)?;
     }
     warn_coverage(&coverage);
@@ -1113,8 +2003,101 @@ fn load_file(path: &Path) -> Result<FileSource, CliError> {
     FileSource::from_path(path).map_err(classify_source_error)
 }
 
-/// Open the `--file` image or the `--pid` process (clap enforces exactly one).
-fn load_target(file: Option<&Path>, pid: Option<u32>) -> Result<Box<dyn ByteSource>, CliError> {
+/// Open an image and identify it from the same bytes, so the reported hash
+/// is of exactly what was signed. The module is named as
+/// [`FileSource::from_path`] names it.
+fn load_file_with_identity(path: &Path) -> Result<(FileSource, ImageIdentity), CliError> {
+    if !path.is_file() {
+        return Err(CliError::input(format!(
+            "no such image file: {}",
+            path.display()
+        )));
+    }
+    let data = std::fs::read(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?;
+    let source = FileSource::from_bytes(&data, &file_name(path)).map_err(classify_source_error)?;
+    Ok((source, identify(&data)))
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image")
+        .to_string()
+}
+
+/// The `input` JSON field of a report: `{"sha256", "size"}` plus
+/// `"build_id"` (ELF GNU build-id note) or `"pdb_guid"` and `"pdb_age"` (PE
+/// CodeView record) when the image carries one. Reports only: signatures and
+/// DBs never hold per-file data.
+fn identity_value(identity: &ImageIdentity) -> Value {
+    let mut object: BTreeMap<String, Value> = BTreeMap::new();
+    object.insert("sha256".to_string(), Value::String(identity.sha256_hex()));
+    object.insert("size".to_string(), Value::Number(identity.size.into()));
+    if let Some(build_id) = &identity.build_id {
+        object.insert("build_id".to_string(), Value::String(build_id.clone()));
+    }
+    if let Some(pdb) = &identity.pdb {
+        object.insert("pdb_guid".to_string(), Value::String(pdb.guid.clone()));
+        object.insert("pdb_age".to_string(), Value::Number(pdb.age.into()));
+    }
+    Value::Object(object.into_iter().collect())
+}
+
+/// Open the `--raw` blob and identify it from the same bytes, or `None`
+/// without `--raw`.
+fn load_raw(raw: &RawArgs) -> Result<Option<(FileSource, ImageIdentity)>, CliError> {
+    let (Some(path), Some(arch), Some(base)) = (&raw.raw, &raw.arch, &raw.base) else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Err(CliError::input(format!(
+            "no such raw file: {}",
+            path.display()
+        )));
+    }
+    let arch = Arch::parse(arch).ok_or_else(|| CliError::input(format!("unknown arch {arch}")))?;
+    let base = parse_address(base, "--base")?;
+    let size = std::fs::metadata(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?
+        .len();
+    // Refused before reading, so a huge file is never loaded.
+    if size > sigtool_native::elf::MAX_RAW_BYTES as u64 {
+        return Err(CliError::input(format!(
+            "{}: {size} bytes exceeds the raw blob limit of {} bytes",
+            path.display(),
+            sigtool_native::elf::MAX_RAW_BYTES
+        )));
+    }
+    let data = std::fs::read(path)
+        .map_err(|error| CliError::input(format!("cannot read {}: {error}", path.display())))?;
+    let source = FileSource::from_raw(&data, &file_name(path), arch, base)
+        .map_err(|error| CliError::input(format!("{}: {error}", path.display())))?;
+    Ok(Some((source, identify(&data))))
+}
+
+/// A raw blob has no symbols or bounds: only hint-free discovery can find
+/// anything in it, so asking for hints is refused rather than answered with
+/// an empty scan.
+fn check_raw_discovery(raw: &RawArgs, discovery: &str) -> Result<(), CliError> {
+    if raw.raw.is_some() && discovery == "hinted" {
+        return Err(CliError::input(
+            "--raw blobs have no symbols: use --discovery hint-free or auto",
+        ));
+    }
+    Ok(())
+}
+
+/// Open the `--file` image, the `--raw` blob, or the `--pid` process (clap
+/// enforces exactly one).
+fn load_target(
+    file: Option<&Path>,
+    pid: Option<u32>,
+    raw: &RawArgs,
+) -> Result<Box<dyn ByteSource>, CliError> {
+    if let Some((source, _)) = load_raw(raw)? {
+        return Ok(Box::new(source));
+    }
     match (file, pid) {
         (Some(path), _) => Ok(Box::new(load_file(path)?)),
         (None, Some(pid)) => ProcessSource::open(pid)
@@ -1311,11 +2294,13 @@ fn run_bench(args: BenchArgs) -> Result<u8, CliError> {
     let options = bench::BenchOptions {
         arches: args.arch.clone(),
         max_functions: args.max_functions,
+        sample_seed: args.sample_seed,
         discovery: args.discovery.clone(),
         skip_false_positives: args.no_fp,
         fp_report: args.fp_report.clone(),
         joint: args.joint,
         joint_report: args.joint_report.clone(),
+        process: args.process_like,
     };
     let report = bench::run_with(&args.corpus, &options).map_err(CliError::input)?;
     print!("{}", bench::render(&report));

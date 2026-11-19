@@ -101,6 +101,18 @@
      "value": "loops:0"
     },
     {
+     "kind": "const",
+     "value": "0xa"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffff6"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffff"
+    },
+    {
      "kind": "ops",
      "value": "arith:3"
     },
@@ -251,6 +263,10 @@
      "value": "0x7"
     },
     {
+     "kind": "const",
+     "value": "0xffffffff"
+    },
+    {
      "kind": "ops",
      "value": "arith:2"
     },
@@ -299,6 +315,10 @@
     {
      "kind": "cfg",
      "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
     },
     {
      "kind": "const",
@@ -386,7 +406,15 @@
     },
     {
      "kind": "const",
+     "value": "0x0"
+    },
+    {
+     "kind": "const",
      "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
     },
     {
      "kind": "ops",
@@ -706,6 +734,6 @@
    "name": ".got.plt"
   }
  ],
- "spec_version": "5",
+ "spec_version": "7",
  "target": "x86_64-linux-gnu"
 }

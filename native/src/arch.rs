@@ -75,6 +75,12 @@ pub fn detect(data: &[u8]) -> Result<Arch, String> {
         if data.len() < 20 {
             return Err("truncated ELF header".into());
         }
+        // `e_machine` is in the file's byte order: a big-endian ARM image
+        // read little-endian reports machine 0x2800, so name the real
+        // reason before reading it.
+        if data[5] == 2 {
+            return Err("big-endian ELF images are not supported yet".into());
+        }
         let machine = u16::from_le_bytes([data[18], data[19]]);
         return match machine {
             ELF_MACHINE_X86_64 => Ok(Arch::X64),
@@ -96,7 +102,11 @@ pub fn detect(data: &[u8]) -> Result<Arch, String> {
         return match machine {
             PE_MACHINE_AMD64 => Ok(Arch::X64),
             PE_MACHINE_ARM64 => Ok(Arch::Arm64),
-            PE_MACHINE_ARM | PE_MACHINE_ARMNT => Ok(Arch::Arm32),
+            PE_MACHINE_ARM => Ok(Arch::Arm32),
+            // Windows on 32-bit ARM runs Thumb-2 only, with `.pdata` in the
+            // ARM format and no mode map; decoding it as ARM32 gives
+            // garbage features, so refuse it until a corpus case exists.
+            PE_MACHINE_ARMNT => Err("32-bit Windows ARM (ARMNT) images are not supported".into()),
             PE_MACHINE_THUMB => Ok(Arch::Thumb),
             PE_MACHINE_I386 => Err("32-bit x86 images are not supported".into()),
             other => Err(format!("unsupported PE machine 0x{other:x}")),

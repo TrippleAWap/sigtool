@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import re
+import struct
 import sys
 import tempfile
 import types
@@ -19,14 +20,16 @@ def _load_plugin():
         "ida_funcs",
         "ida_idaapi",
         "ida_kernwin",
+        "ida_loader",
         "ida_nalt",
         "ida_name",
+        "ida_registry",
         "ida_segment",
         "idautils",
     ):
         sys.modules.setdefault(name, types.ModuleType(name))
     kernwin = sys.modules["ida_kernwin"]
-    for base in ("action_handler_t", "Choose", "UI_Hooks"):
+    for base in ("action_handler_t", "Choose", "Form", "UI_Hooks"):
         if not hasattr(kernwin, base):
             setattr(kernwin, base, type(base, (), {}))
     idaapi = sys.modules["ida_idaapi"]
@@ -115,6 +118,17 @@ class ChooseRenamesTests(unittest.TestCase):
         self.assertIn("user name", skipped[0][1])
         proposals, _ = choose(hits, names={0x200: "my_inflate"}, user={0x200}, overwrite=True)
         self.assertEqual([p.name for p in proposals], ["inflate"])
+        self.assertTrue(proposals[0].replaces_user_name)
+
+    def test_user_name_replacements_are_listed_but_not_preselected(self):
+        proposals, _ = choose(
+            [hit("inflate", 0x200), hit("deflate", 0x300)],
+            names={0x200: "my_inflate"},
+            user={0x200},
+            overwrite=True,
+        )
+        self.assertEqual([p.name for p in proposals], ["inflate", "deflate"])
+        self.assertEqual(plugin.default_selection(proposals), [1])
 
     def test_already_named_and_name_in_use_are_skipped(self):
         proposals, skipped = choose(
@@ -214,6 +228,144 @@ class MatchRowTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].ea, 0x140000200)
         self.assertEqual(rows[0].cells, ("0x140000200", "0.912", "identified", "inflate", "2"))
+
+
+class InputFileTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def test_candidates_continue_beside_the_idb(self):
+        idb = str(self.dir / "libz.so.i64")
+        self.assertEqual(
+            plugin.input_file_candidates(r"C:\work\build\libz.so", idb, "libz.so"),
+            [r"C:\work\build\libz.so", str(self.dir / "libz.so")],
+        )
+        self.assertEqual(
+            plugin.input_file_candidates("/old/a.out", str(self.dir / "renamed.i64"), "a.out"),
+            ["/old/a.out", str(self.dir / "a.out"), str(self.dir / "renamed")],
+        )
+        self.assertEqual(plugin.input_file_candidates("", "", ""), [])
+
+    def test_only_the_file_with_the_stored_hash_matches(self):
+        import hashlib
+
+        good = self.dir / "good.bin"
+        good.write_bytes(b"ELF" + bytes(60))
+        bad = self.dir / "bad.bin"
+        bad.write_bytes(b"ELF" + bytes(59) + b"")
+        digest = hashlib.sha256(good.read_bytes()).digest()
+        self.assertTrue(plugin.file_matches(str(good), digest, 64))
+        self.assertFalse(plugin.file_matches(str(bad), digest, 64))
+        self.assertFalse(plugin.file_matches(str(good), None, 65))
+        self.assertTrue(plugin.file_matches(str(bad), None, None))
+        self.assertFalse(plugin.file_matches(str(self.dir / "missing"), None, None))
+
+    def test_zero_digest_means_none_stored(self):
+        self.assertIsNone(plugin.known_digest(b""))
+        self.assertIsNone(plugin.known_digest(bytes(32)))
+        self.assertEqual(plugin.known_digest(b"" * 32), b"" * 32)
+
+
+class RebuildTests(unittest.TestCase):
+    def segments(self):
+        return [
+            plugin.Segment(".text", 0x1000, 0x1100, 0x1000, True, False),
+            plugin.Segment(".data", 0x2000, 0x2040, 0x1100, False, True),
+            plugin.Segment(".bss", 0x2040, 0x2080, None, False, True),
+        ]
+
+    def test_elf_gets_a_section_table_of_the_segments(self):
+        image = bytearray(0x1140)
+        image[:6] = b"ELF"
+        out = plugin.rebuild_elf(bytes(image), self.segments())
+        self.assertEqual(out[: len(image)][0x40:], bytes(image)[0x40:])
+        shoff = struct.unpack_from("<Q", out, 0x28)[0]
+        entsize, count, names_index = struct.unpack_from("<HHH", out, 0x3A)
+        self.assertEqual((entsize, count, names_index), (64, 5, 4))
+        rows = [struct.unpack_from("<IIQQQQIIQQ", out, shoff + 64 * i) for i in range(count)]
+        names = rows[names_index]
+        strings = out[names[4] : names[4] + names[5]]
+
+        def name(row):
+            return strings[row[0] : strings.index(b"\0", row[0])].decode()
+
+        self.assertEqual([name(row) for row in rows[1:]], [".text", ".data", ".bss", ".shstrtab"])
+        text, data, bss = rows[1:4]
+        self.assertEqual(
+            (text[1], text[2], text[3], text[4], text[5]), (1, 0x6, 0x1000, 0x1000, 0x100)
+        )
+        self.assertEqual((data[2], data[4]), (0x3, 0x1100))
+        self.assertEqual(bss[1], 8)
+
+    def test_elf_rejects_other_formats_and_segments_past_the_file(self):
+        self.assertIsNone(plugin.rebuild_elf(b"MZ" + bytes(0x100), self.segments()))
+        elf = b"ELF" + bytes(0x100)
+        self.assertIsNone(plugin.rebuild_elf(elf, self.segments()))
+
+    def test_pe_headers_are_appended_and_sections_keep_their_offsets(self):
+        header = bytearray(248)
+        header[:4] = b"PE\0\0"
+        struct.pack_into("<HH", header, 4, 0x8664, 3)
+        struct.pack_into("<I", header, 40, 0x1010)
+        struct.pack_into("<II", header, 120 + 8, 0x1080, 0x28)  # import directory
+        base = 0x180000000
+        segments = [
+            plugin.Segment(".text", base + 0x1000, base + 0x1100, 0x1000, True, False),
+            plugin.Segment(".data", base + 0x2000, base + 0x2040, 0x1100, False, True),
+        ]
+        image = bytes(0x1140)
+        out = plugin.rebuild_pe(image, segments, bytes(header), base)
+        self.assertEqual(out[:2], b"MZ")
+        lfanew = struct.unpack_from("<I", out, 0x3C)[0]
+        self.assertGreaterEqual(lfanew, len(image))
+        self.assertEqual(out[lfanew : lfanew + 4], b"PE\0\0")
+        machine, count = struct.unpack_from("<HH", out, lfanew + 4)
+        optional_size = struct.unpack_from("<H", out, lfanew + 20)[0]
+        self.assertEqual((machine, count, optional_size), (0x8664, 2, 240))
+        optional = lfanew + 24
+        self.assertEqual(struct.unpack_from("<H", out, optional)[0], 0x20B)
+        self.assertEqual(struct.unpack_from("<Q", out, optional + 24)[0], base)
+        self.assertEqual(struct.unpack_from("<II", out, optional + 112 + 8), (0x1080, 0x28))
+        table = optional + optional_size
+        name, vsize, rva, raw_size, raw_ptr = struct.unpack_from("<8sIIII", out, table)
+        self.assertEqual(
+            (name.rstrip(b"\0"), vsize, rva, raw_size, raw_ptr),
+            (b".text", 0x100, 0x1000, 0x100, 0x1000),
+        )
+        self.assertIsNone(plugin.rebuild_pe(image, segments, b"", base))
+
+
+class MenuHelperTests(unittest.TestCase):
+    def test_clipboard_signature_detection(self):
+        document = "spec_version: '5'\nname: inflate\nfeatures:\n- kind: str\n"
+        self.assertTrue(plugin.is_signature_text(document))
+        for text in ("", None, "48 8B ?? ?? 89", "name: inflate\nfeatures:\n"):
+            self.assertFalse(plugin.is_signature_text(text), text)
+
+    def test_outputs_go_to_a_sigtool_folder_beside_the_idb(self):
+        idb = str(Path("work") / "libz.so.i64")
+        self.assertEqual(
+            plugin.output_path(idb, "deflate<int>::run", ".yaml"),
+            str(Path("work") / "sigtool" / "deflate_int_run.yaml"),
+        )
+
+    def test_settings_are_distinct_bits_in_form_order(self):
+        flags = [flag for flag, _label in plugin.SETTINGS]
+        self.assertEqual(flags, [1 << index for index in range(len(flags))])
+        self.assertTrue(plugin.DEFAULT_SETTINGS & plugin.SET_COPY_TO_CLIPBOARD)
+        self.assertFalse(plugin.DEFAULT_SETTINGS & plugin.SET_PRESELECT_USER_NAMES)
+
+    def test_user_name_replacements_preselected_only_when_asked(self):
+        proposals, _ = choose(
+            [hit("inflate", 0x200), hit("deflate", 0x300)],
+            names={0x200: "my_inflate"},
+            user={0x200},
+            overwrite=True,
+        )
+        self.assertEqual(plugin.default_selection(proposals), [1])
+        self.assertEqual(plugin.default_selection(proposals, True), [0, 1])
 
 
 class NativeDiscoveryTests(unittest.TestCase):

@@ -1,5 +1,100 @@
 # Spec changelog
 
+## v7 — import callees without their module
+
+`SPEC_VERSION` is `7`. `callee` records of PE imports (and of calls into
+another module of a process) change from `dll!name` to `*!name`, so v6
+documents and DBs are refused (rule 16) and must be regenerated or rebuilt.
+
+* ELF never records the library that provides an import, so its imports were
+  already `*!memcpy`; a PE import named its DLL (`ucrtbase!memcpy`), and an
+  ELF signature and a PE target never shared an import callee (0 of 24 pairs
+  per arch on the mixed tier). The module is dropped in every format; labels
+  and provenance keep `dll!name`.
+* Label rule, no version change (labels are not part of the document): a
+  first match whose function's sole direct caller calls nothing else is a
+  `candidate` unless the signature itself has exactly one `in:` link (SPEC.md
+  §8, *wrapped*; without that exception a static helper called from one
+  place, signed where it was not inlined, lost its label in two CLI tests). Simulated first on the `--world`
+  tier's recall log (`--fp-report`, which now records the first match's
+  callers): 104 wrong identified answers had that shape and no correct one
+  (`lua_next` answered at `luaH_next`, signed from builds that inlined it).
+  Built: `--world` identified precision hint-free 0.972 -> 0.988, hinted
+  0.976 -> 0.997, correct answers unchanged (6212 / 5022), top-1 and FP
+  unchanged; real corpus identical. Lost in simulation: a size cut on the
+  wrapper (at most 96 bytes, at most 2 callees) removes 19 wrong and 48
+  correct answers; `LZ4_loadDict` -> `LZ4_loadDict_internal` (35) is a tail
+  call the caller index does not record and stays.
+* Mixed ELF/PE tier (`corpus/real.py --pe`, `corpus/build-pe-mixed`,
+  `--max-functions 4 --joint`), hint-free top-1: same arch other compiler
+  (ELF clang <-> PE clang, same level) 0.633 -> 0.667, merged other compiler
+  0.648 -> 0.686, cross arch other compiler 0.379 -> 0.400; 34 cells up, none
+  down; joint top-1 4534 -> 4591; every FP rate unchanged; identified precision
+  hint-free 0.938 -> 0.939. PE-only tier and real corpus unchanged apart from
+  the spec version (all their imports were already one form per corpus).
+
+## v6 — real-world targets
+
+`SPEC_VERSION` is `6`. x86-64 `const` records change (immediates of
+instructions using `rbp` as a register are kept) and acceptance changes for
+targets that name no function, so v5 documents and DBs are refused (rule 16)
+and must be regenerated or rebuilt (`db build --file IMAGE --functions F`).
+
+### x86-64 immediates beside `rbp`
+
+* The x86 constant rule skips instructions that touch the stack pointer
+  (stack adjustments are ABI). It counted `rbp`/`ebp` as the stack pointer
+  too, in every operand position, so immediates in `imul edi, ebp, K`, `cmp
+  ebp, K`, and `-O0`'s `mov dword [rbp-4], K` gave no record. gcc omits the
+  frame pointer from `-O1` up and allocates `rbp` like any register, and the
+  ARM decoders test only `sp`. Only `rsp`/`esp`/`sp` count now; the op-class
+  histogram (`ops:stack`) is unchanged. Golden vectors `x64-O0`,
+  `x64-cet-O0`, `x64-pic-O0` gain the records.
+* Real corpus (`--max-functions 4 --joint`): 290 top-1 cells up, 27 down;
+  hint-free top-1 other compiler 0.412 -> 0.427, cross arch 0.433 -> 0.446,
+  cross arch other compiler 0.287 -> 0.302; hinted cross arch 0.374 -> 0.386;
+  joint top-1 9338 -> 9421; strong FP 0.000, negative 0.000, hint-free
+  any-verdict 0.115 -> 0.112, hinted any-verdict 0.075 -> 0.083; identified
+  precision hint-free 0.995 (3163 -> 3203 correct), hinted 0.994 -> 0.995.
+  Dropped past tolerance (one function each of 16-18): merged->arm32 gcc-O0
+  -> clang-O0 / gcc-O2 / gcc-Os and merged->arm64 clang-O0 -> gcc-O2,
+  gcc-O0 -> clang-O2, hint-free. Real-world tier: hint-free top-1 hits 9672
+  -> 9905, every FP rate unchanged.
+
+### Packed relocations
+
+* `SHT_RELR`/`DT_RELR` and Android APS2 tables are part of the relocation
+  set (SPEC.md §2.2); an image packed with `-z pack-relative-relocs` or
+  `--pack-dyn-relocs=android` gives the features of its unpacked twin. No
+  corpus image is packed, so no measured number moves.
+
+### Callees in targets that name no function
+
+* A required `callee` without `!` is optional when the target's modules name
+  no defined function (SPEC.md §8, "Targets that name no function"), and stays
+  identifying for the anchoring floor.
+* Measured on the new real-world tier (`corpus/real.py --world`: the tuning
+  libraries built with gcc 12 as plain, `-O3`, hardened, LTO, PIE and static
+  executable, and the previous release; `bench --corpus ../corpus/build-world
+  --max-functions 4`), signing the plain `-O2` shared object, hint-free same
+  arch top-1: PIE 0.613 -> 0.700, static 0.525 -> 0.613, merged into PIE
+  0.542 -> 0.583; every shared-object target cell unchanged. Hint-free top-1
+  hits over the tier 9672 -> 9827. Strong FP 0.043 and hinted any-verdict FP
+  0.070 unchanged; hint-free any-verdict FP 0.105 -> 0.132 (within the 0.05
+  tolerance; the new hits are in unrelated PIE and static images); identified
+  precision hint-free 0.973 -> 0.972 (5968 -> 6099 correct). The real corpus
+  (`--max-functions 4 --joint`) is byte-identical apart from cost: every
+  target there is a shared object.
+* Lost: waiving a callee in any target that lacks its name. Unrelated
+  libraries lack it too, so on the real corpus any-verdict FP rose arm32 0.117
+  -> 0.217, arm64 0.083 -> 0.158, merged 0.019 -> 0.087, failing the gate.
+  Waived callees also left signatures with no identifying key, which the
+  anchoring floor then let through; they now stay identifying. Dropping the
+  keys from the comparison instead of making them optional: PIE / static
+  0.713 / 0.625 but hint-free any-verdict FP 0.167, past the tolerance;
+  dropping them only when other identifying keys remain: 0.625 / 0.537 at
+  0.134.
+
 ## v5 — in-module constants, matcher and trust rules
 
 `SPEC_VERSION` is `5`. `const` records change for ELF shared objects and

@@ -323,9 +323,23 @@ pub fn extract_own<S: ByteSource + ?Sized>(source: &S, func: &RecoveredFunction)
     // `__aeabi_memcpy` spelling), so decide it before canonicalising.
     let mut callee_values: BTreeMap<String, bool> = BTreeMap::new();
     for raw in callees {
-        if let Some(value) = canonical_callee(&raw) {
+        // A PE import (and a call into another module of a process) names
+        // its providing DLL, `ucrtbase!memcpy`; ELF never records the
+        // library, so its imports are `*!memcpy`. The module is dropped
+        // everywhere: the same source calling `memcpy` must give the same
+        // key on Linux and Windows. Measured on `corpus/real.py --pe`'s
+        // mixed tier, ELF and PE signatures shared no import callee before.
+        // An import by ordinal (`ws2_32!#23`) is a number only its DLL
+        // gives meaning to, so it keeps the DLL.
+        let symbol = match raw.rsplit_once('!') {
+            Some((_, symbol)) if !symbol.starts_with('#') => symbol,
+            _ => raw.as_str(),
+        };
+        if let Some(value) = canonical_callee(symbol) {
             let portable = is_portable_name(source, &raw);
-            let value = if is_external_import(source, &raw) && !value.contains('!') {
+            let value = if value.contains('!') {
+                value.to_string()
+            } else if raw.contains('!') || is_external_import(source, &raw) {
                 format!("{EXTERNAL_PREFIX}{value}")
             } else {
                 value.to_string()

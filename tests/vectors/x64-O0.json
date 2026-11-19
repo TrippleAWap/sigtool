@@ -104,7 +104,24 @@
     {
      "inherited": true,
      "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
      "value": "0x5678"
+    },
+    {
+     "kind": "const",
+     "value": "0xa"
+    },
+    {
+     "kind": "const",
+     "value": "0xfffffff6"
+    },
+    {
+     "kind": "const",
+     "value": "0xffffffff"
     },
     {
      "kind": "ops",
@@ -171,6 +188,11 @@
     {
      "inherited": true,
      "kind": "const",
+     "value": "0x1234"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
      "value": "0x5678"
     },
     {
@@ -218,6 +240,11 @@
     {
      "kind": "cfg",
      "value": "loops:0"
+    },
+    {
+     "inherited": true,
+     "kind": "const",
+     "value": "0x1234"
     },
     {
      "inherited": true,
@@ -275,6 +302,10 @@
      "value": "0x7"
     },
     {
+     "kind": "const",
+     "value": "0xffffffff"
+    },
+    {
      "kind": "ops",
      "value": "arith:2"
     },
@@ -323,6 +354,10 @@
     {
      "kind": "cfg",
      "value": "loops:0"
+    },
+    {
+     "kind": "const",
+     "value": "0x1234"
     },
     {
      "kind": "const",
@@ -410,7 +445,15 @@
     },
     {
      "kind": "const",
+     "value": "0x0"
+    },
+    {
+     "kind": "const",
      "value": "0x1"
+    },
+    {
+     "kind": "const",
+     "value": "0x3"
     },
     {
      "kind": "ops",
@@ -665,6 +708,6 @@
    "name": ".data"
   }
  ],
- "spec_version": "5",
+ "spec_version": "7",
  "target": "x86_64-linux-gnu"
 }

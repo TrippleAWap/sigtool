@@ -21,9 +21,12 @@ assertion holds; the renames' precision against ground truth is printed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import types
@@ -39,6 +42,12 @@ class FakeIdb:
 
     def __init__(self, image: Path, functions: dict[int, tuple[str | None, int]]) -> None:
         self.image = image
+        # Where IDA recorded the input file and where the IDB lives; a moved
+        # IDB records a path that no longer exists.
+        self.recorded = str(image)
+        self.idb_path = str(image) + ".i64"
+        self.sha256 = hashlib.sha256(image.read_bytes()).digest()
+        self.size = image.stat().st_size
         self.functions = functions
         self.code = executable_ranges(image)
         self.names = {ea: name for ea, (name, _size) in functions.items() if name}
@@ -49,6 +58,8 @@ class FakeIdb:
         self.infos: list[str] = []
         self.warnings: list[str] = []
         self.choosers: list = []
+        self.registry: dict = {}
+        self.clipboard = ""
 
     def answer(self, *values) -> None:
         self.answers.extend(values)
@@ -75,7 +86,7 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin = module("ida_kernwin")
     kernwin.AST_ENABLE_ALWAYS = 1
     kernwin.SETMENU_APP = 1
-    kernwin.BWN_DISASM = kernwin.BWN_FUNCS = kernwin.BWN_PSEUDOCODE = 0
+    kernwin.BWN_DISASM, kernwin.BWN_FUNCS, kernwin.BWN_PSEUDOCODE = 27, 3, 46
     kernwin.action_handler_t = type("action_handler_t", (), {})
     kernwin.UI_Hooks = type("UI_Hooks", (), {})
     kernwin.msg = lambda text: sys.stdout.write(f"  [ida] {text}")
@@ -114,10 +125,25 @@ def install_fakes(idb: FakeIdb) -> None:
             pass
 
     kernwin.Choose = Choose
+    kernwin.Form = type("Form", (), {})
+
+    registry = module("ida_registry")
+    registry.reg_read_int = lambda name, default, _key=None: idb.registry.get(name, default)
+    registry.reg_write_int = lambda name, value, _key=None: idb.registry.__setitem__(name, value)
+    registry.reg_read_string = lambda name, _key=None, default=None: idb.registry.get(name, default)
+    registry.reg_write_string = lambda name, value, _key=None: idb.registry.__setitem__(name, value)
 
     nalt = module("ida_nalt")
-    nalt.get_input_file_path = lambda: str(idb.image)
+    nalt.get_input_file_path = lambda: idb.recorded
+    nalt.get_root_filename = lambda: Path(idb.image).name
+    nalt.retrieve_input_file_sha256 = lambda: idb.sha256
+    nalt.retrieve_input_file_size = lambda: idb.size
+    nalt.set_root_filename = lambda path: setattr(idb, "recorded", path)
     nalt.get_imagebase = lambda: 0
+
+    loader = module("ida_loader")
+    loader.PATH_TYPE_IDB = 1
+    loader.get_path = lambda _kind: idb.idb_path
 
     class Func:
         def __init__(self, ea: int, size: int) -> None:
@@ -135,6 +161,7 @@ def install_fakes(idb: FakeIdb) -> None:
     funcs = module("ida_funcs")
     funcs.FUNC_THUNK = 0x80
     funcs.get_func = get_func
+    funcs.getn_func = lambda n: get_func(sorted(idb.functions)[n])
     funcs.get_func_name = lambda ea: idb.names.get(ea, f"sub_{ea:X}")
     # The fake IDB already holds every function IDA's analysis would find
     # (ground truth); code outside them is a chunk or tail of one of them, so
@@ -164,12 +191,47 @@ def install_fakes(idb: FakeIdb) -> None:
     bytes_.has_user_name = lambda ea: ea in idb.names
     bytes_.is_code = lambda ea: any(low <= ea < high for low, high in idb.code)
 
+    # Segments as IDA's ELF loader makes them: one per allocated section, at
+    # its file offset (none for `.bss`), with the file's bytes. The image's
+    # path stands in for the IDB's contents, so it is read even when the
+    # "input file" has moved away.
+    sections = elf_sections(idb.image)
+
+    class Seg:
+        def __init__(self, row) -> None:
+            self.name, self.start_ea, self.end_ea, self.offset, self.perm = row
+            self.type = 0
+
+    def segment_at(ea: int):
+        return next((Seg(row) for row in sections if row[1] <= ea < row[2]), None)
+
+    def file_offset(ea: int) -> int:
+        seg = segment_at(ea)
+        return -1 if seg is None or seg.offset is None else seg.offset + ea - seg.start_ea
+
+    content = idb.image.read_bytes()
     segment = module("ida_segment")
     segment.SEG_XTRN = 1
-    segment.getseg = lambda _ea: None
+    segment.SEGPERM_EXEC, segment.SEGPERM_WRITE = 1, 2
+    segment.getseg = segment_at
+    segment.get_segm_name = lambda seg: seg.name
+    loader.get_fileregion_offset = file_offset
+
+    def get_bytes(ea: int, size: int):
+        offset = file_offset(ea)
+        return None if offset < 0 else content[offset : offset + size]
+
+    bytes_.get_bytes = get_bytes
+    bytes_.visit_patched_bytes = lambda _start, _end, _callback: 0
 
     idautils = module("idautils")
     idautils.Functions = lambda: sorted(idb.functions)
+    idautils.Segments = lambda: [row[1] for row in sections]
+
+    def no_pe_header():
+        raise RuntimeError("not a PE database")
+
+    idautils.peutils_t = lambda: types.SimpleNamespace(header=no_pe_header)
 
 
 def ground_truth(corpus: Path, relative: str) -> dict[int, tuple[str, int]]:
@@ -178,6 +240,60 @@ def ground_truth(corpus: Path, relative: str) -> dict[int, tuple[str, int]]:
         if binary["path"] == relative:
             return {f["start"]: (f["name"], f["size"]) for f in binary["functions"]}
     raise SystemExit(f"{relative} is not in {corpus / 'ground_truth.json'}")
+
+
+def elf_sections(path: Path) -> list[tuple[str, int, int, int | None, int]]:
+    """``(name, start, end, file offset or None, perm)`` per allocated section
+    of a little-endian 64- or 32-bit ELF image, by address."""
+    data = path.read_bytes()
+    wide = data[4] == 2
+    if wide:
+        shoff = struct.unpack_from("<Q", data, 0x28)[0]
+        entsize, count, names_index = struct.unpack_from("<HHH", data, 0x3A)
+        layout = "<IIQQQQ"
+    else:
+        shoff = struct.unpack_from("<I", data, 0x20)[0]
+        entsize, count, names_index = struct.unpack_from("<HHH", data, 0x2E)
+        layout = "<IIIIII"
+    rows = [struct.unpack_from(layout, data, shoff + index * entsize) for index in range(count)]
+    names_row = rows[names_index]
+    names = data[names_row[4] : names_row[4] + names_row[5]]
+    out = []
+    for name_off, kind, flags, addr, offset, size in rows:
+        if not flags & 0x2 or not size or not addr:
+            continue
+        name = names[name_off : names.index(b"\0", name_off)].decode()
+        perm = (1 if flags & 0x4 else 0) | (2 if flags & 0x1 else 0) | 4
+        out.append((name, addr, addr + size, None if kind == 8 else offset, perm))
+    # IDA covers the rest of each PT_LOAD's file bytes (the ELF header and
+    # program headers among them) with segments named `LOAD`.
+    if wide:
+        phoff = struct.unpack_from("<Q", data, 0x20)[0]
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    else:
+        phoff = struct.unpack_from("<I", data, 0x1C)[0]
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x2A)
+    for index in range(phnum):
+        at = phoff + index * phentsize
+        if wide:
+            kind, flags, offset, vaddr, _paddr, filesz = struct.unpack_from("<IIQQQQ", data, at)
+        else:
+            kind, offset, vaddr, _paddr, filesz, _memsz, flags = struct.unpack_from(
+                "<IIIIIII", data, at
+            )
+        if kind != 1 or not filesz:
+            continue
+        perm = (1 if flags & 0x1 else 0) | (2 if flags & 0x2 else 0) | 4
+        cursor, end = vaddr, vaddr + filesz
+        for _name, start, stop, _offset, _perm in sorted(out, key=lambda row: row[1]):
+            if stop <= cursor or start >= end:
+                continue
+            if start > cursor:
+                out.append(("LOAD", cursor, start, offset + cursor - vaddr, perm))
+            cursor = max(cursor, stop)
+        if cursor < end:
+            out.append(("LOAD", cursor, end, offset + cursor - vaddr, perm))
+    return sorted(out, key=lambda row: row[1])
 
 
 def executable_ranges(path: Path) -> list[tuple[int, int]]:
@@ -293,6 +409,9 @@ def main() -> int:
     sys.path.insert(0, str(ROOT))
     import ida_plugin as plugin
 
+    plugin._clipboard_text = lambda: idb.clipboard
+    plugin._set_clipboard = lambda text: setattr(idb, "clipboard", text) or True
+
     by_name = {name: ea for ea, (name, _size) in sign_truth.items()}
     apply_by_name = {name: ea for ea, (name, _size) in apply_truth.items()}
     # The largest function both builds have: plenty of evidence to sign.
@@ -304,35 +423,116 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as temp_name:
         temp = Path(temp_name)
-        yaml = temp / f"{target}.yaml"
-        merged = temp / f"{target}.merged.yaml"
+        # Outputs land in `sigtool/` beside the IDB; keep that out of the corpus.
+        idb.idb_path = str(temp / f"{sign_image.name}.i64")
+        outputs = temp / "sigtool"
+        yaml = outputs / f"{target}.yaml"
+        merged = outputs / f"{target}.merged.yaml"
         idb.screen_ea = by_name[target] + 1
-        idb.answer(
-            str(yaml),  # save the signature
-            1,  # merge another sample
-            str(args.corpus / merge_rel),  # sample image
-            f"+{merge_by_name[target]:#x}",  # sample RVA
-            0,  # no further sample
-            str(merged),  # save the merged signature
-        )
         plugin.GenerateHandler().run()
-        check(yaml.exists() and "spec_version:" in yaml.read_text(), f"generate wrote {yaml.name}")
-        check(merged.exists(), "merge wrote the two-sample signature")
-        check(not idb.answers and len(idb.infos) == 2, "generate showed two reports")
+        check(
+            yaml.exists() and "spec_version:" in yaml.read_text(),
+            f"generate saved sigtool/{yaml.name} without a dialog",
+        )
+        check(
+            not idb.infos and idb.clipboard == yaml.read_text(encoding="utf-8"),
+            "generate copied the signature to the clipboard and showed no dialog",
+        )
 
-        idb.answer(str(yaml))
+        idb.answer(
+            str(args.corpus / merge_rel),  # other build
+            f"+{merge_by_name[target]:#x}",  # its RVA
+            0,  # no further build
+        )
+        plugin.MergeHandler().run()
+        check(
+            merged.exists() and merged.read_text().count("- arch:") == 2,
+            "merge saved the two-sample signature",
+        )
+
+        # The clipboard holds the merged signature now; locate takes it.
         plugin.LocateHandler().run()
         rows = idb.choosers[-1].rows if idb.choosers else []
         check(
-            bool(rows) and rows[0].ea == by_name[target] and idb.jumps[-1] == by_name[target],
-            f"locate lists {target} first and jumps to it ({len(rows)} rows)",
+            not idb.answers
+            and bool(rows)
+            and rows[0].ea == by_name[target]
+            and idb.jumps[-1] == by_name[target],
+            f"locate takes the clipboard, lists {target} first, and jumps ({len(rows)} rows)",
         )
+        idb.clipboard = "not a signature"
+        idb.answer(str(yaml))
+        plugin.LocateHandler().run()
+        check(not idb.answers, "without one on the clipboard, locate asks for a file")
 
-        db = temp / "signatures.db"
-        idb.answer(1, str(db))
+        db = outputs / f"{sign_image.name}.db"
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
+
+        # The Functions view's selection, not the cursor: three named rows
+        # (indices into the sorted function list) sign into one DB.
+        starts = sorted(idb.functions)
+        picked = [i for i, ea in enumerate(starts) if idb.names.get(ea)][:3]
+        selection = types.SimpleNamespace(
+            widget_type=sys.modules["ida_kernwin"].BWN_FUNCS, chooser_selection=picked
+        )
+        selected_db = temp / "selected.db"
+        plugin.GenerateHandler(str(selected_db)).run(selection)
+        check(
+            selected_db.exists() and idb.infos[-1].startswith("signed 3 of 3"),
+            "generate on a Functions-view selection signs those rows into the menu's DB",
+        )
+
+        # A moved IDB: the recorded path is gone, the binary sits beside the
+        # IDB. It is found by hash without a dialog and recorded in the IDB.
+        moved = temp / "moved"
+        moved.mkdir()
+        copy = moved / sign_image.name
+        shutil.copyfile(sign_image, copy)
+        idb.recorded = str(temp / "gone" / sign_image.name)
+        idb.idb_path = str(moved / f"{sign_image.name}.i64")
+        relocated = moved / "sigtool" / f"{target}.yaml"
+        plugin.GenerateHandler().run()
+        check(
+            relocated.exists() and not idb.answers and idb.recorded == str(copy),
+            "a moved IDB finds its input file beside it without asking",
+        )
+        # A same-named file with other bytes is not taken for it.
+        changed = bytearray(copy.read_bytes())
+        changed[-1] ^= 0xFF
+        copy.write_bytes(bytes(changed))
+        idb.recorded = str(temp / "gone" / sign_image.name)
+        plugin._verified_inputs.clear()
+        relocated.unlink()
+        # With no matching file anywhere, the image is rebuilt from the IDB,
+        # without a dialog, and signs like the stripped copy of the binary.
+        plugin.GenerateHandler().run()
+        reference = temp / "stripped.yaml"
+        stripped_copy = args.corpus / "stripped" / sign_rel
+        subprocess.run(
+            [
+                str(native),
+                "gen",
+                "--file",
+                str(stripped_copy),
+                "--rva",
+                hex(by_name[target]),
+                "--tool",
+                "IDA",
+                "--output",
+                str(reference),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        check(
+            not idb.answers
+            and idb.recorded != str(copy)
+            and relocated.exists()
+            and relocated.read_bytes() == reference.read_bytes(),
+            "without the binary, the IDB alone signs like the stripped file (no dialog)",
+        )
 
         # The other build, stripped: only its exported functions are named.
         exports = dynamic_functions(apply_image)
@@ -340,8 +540,10 @@ def main() -> int:
             ea: (exports.get(ea), size) for ea, (_name, size) in apply_truth.items()
         }
         idb.__init__(apply_image, apply_idb_functions)
-        idb.answer(str(db), 0)
-        plugin.ApplyNamesHandler().run()
+        idb.idb_path = str(temp / f"{apply_image.name}.i64")
+        # The menu hands apply-names the DB sign-all wrote: no dialog.
+        plugin.ApplyNamesHandler(str(db)).run()
+        check(not idb.answers, "apply-names takes the menu's DB without a dialog")
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
         right = sum(1 for ea, name in renamed.items() if apply_truth.get(ea, ("",))[0] == name)
         precision = right / len(renamed) if renamed else 0.0

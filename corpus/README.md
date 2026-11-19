@@ -65,3 +65,39 @@ cd native && cargo run --release -- bench --corpus ../corpus/build-heldout --max
 * zstd builds with `ZSTD_DISABLE_ASM` so every arch compiles the same C
   Huffman decoder; mbedtls leaves out `net_sockets.c` (BSD sockets are OS
   glue, like SQLite's VFS).
+
+## PE tier (`build-pe/`, `build-pe-mixed/`)
+
+```bash
+python corpus/real.py --pe                        # clang + lld-link, no Windows SDK
+cd native && cargo run --release -- bench --corpus ../corpus/build-pe --max-functions 4
+cargo run --release -- bench --corpus ../corpus/build-pe-mixed --max-functions 4 --joint
+cargo run --release --example start_recall -- ../corpus/build-pe   # .pdata start recall
+```
+
+* The tuning libraries as Windows DLLs for `x86_64-` and
+  `aarch64-pc-windows-msvc`, built by the host clang and linked by lld-link
+  (`lld -flavor link`, `/dll /noentry /Brepro`): `clang-O0`, `clang-O2`,
+  `clang-Os`, and `-O2` with `/GS` (`clang+gs-O2`) and `/guard:cf`
+  (`clang+cfg-O2`).
+* No Windows SDK: the libc shim plus `shim/include-win/` (UCRT-style errno
+  and streams, the few Win32 declarations the libraries' `_WIN32` paths
+  use). Import libraries are generated per DLL from the symbols its objects
+  leave undefined, so CRT calls are `ucrtbase.dll` imports through
+  `jmp [__imp_X]` thunks and Win32 calls direct `call [__imp_X]` to
+  `kernel32.dll`. The CRT pieces an MSVC DLL links statically (`_fltused`,
+  `__chkstk`, the `/GS` cookie, CFG pointers, `_load_config_used`) are
+  placeholders in `real.py` (`PE_CRT`).
+* Only the public API is exported, through each library's own Windows DLL
+  mechanism (zlib's `win32/zlib.def`, the others' `dllexport` macros); the
+  ELF builds export every non-static function.
+* Ground truth comes from the lld-link map (`LIB.map`): functions of the
+  library's objects in CODE sections, as virtual addresses, minus names
+  defined twice and functions folded by `/OPT:ICF`, restricted to names in
+  every build. A PE file has no symbol table, so `stripped` names the same
+  file. `LIB.functions.json` lists every defined function (CRT glue
+  included) for `start_recall`.
+* `build-pe-mixed/` pairs the clang ELF builds of `build-real/` (x64, arm64)
+  with the plain PE builds, renamed `clang+pe-<level>`, under one ground
+  truth (functions both list), so one bench run measures ELF signatures in
+  PE images and back. It needs `build-real/` first.

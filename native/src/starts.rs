@@ -432,6 +432,146 @@ pub fn x64_call_targets_checked(
     (found, truncated)
 }
 
+/// Starts for AArch64 PE images that `.pdata` does not list.
+///
+/// As on x86-64 ([`x64_call_targets`]), Windows on ARM64 needs no
+/// `RUNTIME_FUNCTION` for a leaf function that saves nothing, so leaves and
+/// exported leaf API functions have no entry, and the PE tier's arm64 start
+/// recall was 0.815 against x64's 0.954 (`corpus/real.py --pe`,
+/// `examples/start_recall`). A64 instructions are fixed 4-byte words, so the
+/// walk needs no decoder: each `table` extent and each export in `roots`
+/// (until a `ret` or `b` no forward branch jumps past) yields `bl` targets,
+/// and `b` tail calls out of an exact extent, that land in code outside every
+/// table extent. New targets are walked too, within the same budget.
+pub fn arm64_call_targets_checked(
+    regions: &[Region],
+    table: &[UnwindEntry],
+    roots: &[u64],
+) -> (Vec<u64>, bool) {
+    let code: Vec<&Region> = regions.iter().filter(|r| r.executable).collect();
+    let region_of = |address: u64| {
+        code.iter()
+            .find(|region| region.start <= address && address < region.end())
+    };
+    let inside_table = |address: u64| {
+        let index = table.partition_point(|(start, _)| *start <= address);
+        index > 0 && address < table[index - 1].1
+    };
+    // Branch offsets in words, sign-extended from their field.
+    let offset = |word: u32, bits: u32, shift: u32| -> i64 {
+        let field = (word >> shift) & ((1 << bits) - 1);
+        let value = ((field << (32 - bits)) as i32 >> (32 - bits)) as i64;
+        value * 4
+    };
+    let mut found: Vec<u64> = Vec::new();
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut work: Vec<(u64, u64)> = table.to_vec();
+    work.extend(roots.iter().map(|root| (*root, 0)));
+    let mut budget = MAX_START_SWEEP_BYTES as u64;
+    let mut truncated = false;
+    let mut cursor = 0usize;
+    while cursor < work.len() {
+        let (start, end) = work[cursor];
+        cursor += 1;
+        if !start.is_multiple_of(4) || !seen.insert(start) {
+            continue;
+        }
+        let Some(region) = region_of(start) else {
+            continue;
+        };
+        let limit = if end > start {
+            end.min(region.end())
+        } else {
+            region.end().min(start.saturating_add(MAX_X64_WALK_BYTES))
+        };
+        if limit <= start {
+            continue;
+        }
+        if budget < limit - start {
+            truncated = true;
+            continue;
+        }
+        budget -= limit - start;
+        let mut reach = start;
+        let mut pc = start;
+        while pc + 4 <= limit {
+            let at = (pc - region.start) as usize;
+            let word = u32::from_le_bytes([
+                region.data[at],
+                region.data[at + 1],
+                region.data[at + 2],
+                region.data[at + 3],
+            ]);
+            let next = pc + 4;
+            let target_of = |delta: i64| pc.checked_add_signed(delta);
+            let push = |target: u64, found: &mut Vec<u64>, work: &mut Vec<(u64, u64)>| {
+                if target.is_multiple_of(4)
+                    && region_of(target).is_some()
+                    && !inside_table(target)
+                    && found.len() < MAX_UNWIND_ENTRIES
+                {
+                    found.push(target);
+                    if work.len() < MAX_UNWIND_ENTRIES {
+                        work.push((target, 0));
+                    }
+                }
+            };
+            if word & 0xFC00_0000 == 0x9400_0000 {
+                // bl
+                if let Some(target) = target_of(offset(word, 26, 0)) {
+                    push(target, &mut found, &mut work);
+                }
+            } else if word & 0xFC00_0000 == 0x1400_0000 {
+                // b: a tail call out of an exact extent, else local flow.
+                if let Some(target) = target_of(offset(word, 26, 0)) {
+                    if end > start && (target < start || target >= end) {
+                        push(target, &mut found, &mut work);
+                    }
+                    if end == 0 && target > next && target < limit && target > reach {
+                        reach = target;
+                    } else if end == 0 && next > reach {
+                        break;
+                    }
+                }
+            } else if word & 0xFF00_0010 == 0x5400_0000 {
+                // b.cond
+                if let Some(target) = target_of(offset(word, 19, 5)) {
+                    if target > reach && target < limit {
+                        reach = target;
+                    }
+                }
+            } else if word & 0x7E00_0000 == 0x3400_0000 {
+                // cbz / cbnz
+                if let Some(target) = target_of(offset(word, 19, 5)) {
+                    if target > reach && target < limit {
+                        reach = target;
+                    }
+                }
+            } else if word & 0x7E00_0000 == 0x3600_0000 {
+                // tbz / tbnz
+                if let Some(target) = target_of(offset(word, 14, 5)) {
+                    if target > reach && target < limit {
+                        reach = target;
+                    }
+                }
+            } else if (word & 0xFFFF_FC1F == 0xD65F_0000 || word & 0xFFFF_FC1F == 0xD61F_0000)
+                && end == 0
+                && next > reach
+            {
+                // ret / br: the end of a walk from a root.
+                break;
+            } else if word == 0 && end == 0 {
+                // Zero padding between functions is `udf #0`.
+                break;
+            }
+            pc = next;
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    (found, truncated)
+}
+
 /// Merge `synthesized` starts into unwind `table` entries.
 ///
 /// Table entries always win. With `exact_ends` (`.eh_frame`, `.pdata`) each

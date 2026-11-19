@@ -31,7 +31,7 @@ costs their trust and can send an analysis the wrong way.
 ## 2. Goals for v1.0
 
 Every goal is a number the bench measures. "Now" is the current baseline
-(2026-11-18, spec v5, `integrate-matcher`; strong FP from `strong-fp-floor`). All recall figures are top-1: the expected function must be the
+(2026-11-19, spec v6, `real-world`). All recall figures are top-1: the expected function must be the
 single best match, and ties count as misses. Hint-free figures scan
 `strip --strip-all` copies.
 
@@ -39,29 +39,29 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Same arch, same build | 0.835 | 0.95 |
-| Same arch, other compiler, same level | 0.412 | 0.55 |
-| Same arch, other optimization level | 0.365 | 0.45 |
-| Other arch, same build settings | 0.433 | 0.60 |
-| Other arch, other compiler | 0.287 | 0.45 |
-| Other arch, other optimization level | 0.259 | 0.35 |
-| Merged x64+arm64 signature, held-out arch, same level | 0.558 | 0.70 |
+| Same arch, same build | 0.838 | 0.95 |
+| Same arch, other compiler, same level | 0.427 | 0.55 |
+| Same arch, other optimization level | 0.368 | 0.45 |
+| Other arch, same build settings | 0.446 | 0.60 |
+| Other arch, other compiler | 0.302 | 0.45 |
+| Other arch, other optimization level | 0.267 | 0.35 |
+| Merged x64+arm64 signature, held-out arch, same level | 0.565 | 0.70 |
 
 ### G2. Find: whole-module sets (real corpus, hint-free, `bench --joint`)
 
 | Search | Now | v1.0 |
 |---|---|---|
-| Other arch, same build settings | 0.810 | 0.85 |
-| Other arch, other compiler | 0.630 | 0.65 |
-| Other arch, other optimization level | 0.531 | 0.50 |
-| Same arch, other compiler | 0.714 | 0.70 |
+| Other arch, same build settings | 0.808 | 0.85 |
+| Other arch, other compiler | 0.634 | 0.65 |
+| Other arch, other optimization level | 0.533 | 0.50 |
+| Same arch, other compiler | 0.726 | 0.70 |
 
 ### G3. Trust
 
 | Measure | Now | v1.0 |
 |---|---|---|
-| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.993, hinted 0.994 | ≥ 0.98 |
-| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.115 | ≤ 0.05 |
+| Precision of `identified` top-1 answers (correct / all identified answers, including those in images without the function) | hint-free 0.993, hinted 0.995 | ≥ 0.98 |
+| Hint-free any-verdict false-positive rate (signatures with any accepted match in an unrelated library) | 0.112 | ≤ 0.05 |
 | Strong-signature false-positive rate, corpus | 0.000 | ≤ 0.01 |
 | Strong-signature false-positive rate, negative corpus | 0.000 | 0.000 |
 | Joint resolution false hits in unrelated libraries | equal to scanned alone in every library | no higher than the same set scanned alone |
@@ -70,7 +70,7 @@ single best match, and ties count as misses. Hint-free figures scan
 
 | Measure | Now | v1.0 |
 |---|---|---|
-| Held-out corpus (libraries never used for tuning, §5) vs. tuning corpus, every G1-G3 row | no held-out corpus | within 0.05 |
+| Held-out corpus (libraries never used for tuning, §5) vs. tuning corpus, every G1-G3 row | no row worse by more than 0.05 (v6, 2026-11-19) | within 0.05 |
 | Function-start recall on stripped images, every arch | 0.95-0.996 | ≥ 0.99 at ≥ 0.999 precision |
 
 ### G5. Cost
@@ -221,15 +221,22 @@ baselines.
 - CI: fmt, clippy, all tests (including live process tests on Windows), and
   the toy bench against its baseline with tolerance 0.05.
 - Before merging matcher, feature, or normalization work: the real corpus
-  with `--joint` against `tests/baseline/native-real-bench.json`.
+  with `--joint --process-like` against
+  `tests/baseline/native-real-bench.json`.
 - Weekly (`.github/workflows/real-bench.yml`): the real corpus built with
-  both compilers and benched with `--joint` against its baseline.
+  both compilers and benched with `--joint --process-like` against its
+  baseline.
 - Milestone exit: the held-out corpus, recorded in §8.
 
 ## 6. Milestones
 
 Ordered by what unblocks the most. Each has exit criteria; a milestone is
 done when they hold and are recorded in §8.
+
+The real-world plan ([`docs/real-world-plan.md`](docs/real-world-plan.md),
+2026-11-19) adds milestones RW1-RW8 for binaries the corpus does not yet
+cover (other versions, distro and hardened builds, executables, PE, large
+hosts, live processes) and orders them ahead of further M10 tuning.
 
 ### M8. Honest measurement (next)
 
@@ -342,13 +349,13 @@ documented.
 
 ## 8. Status
 
-As of 2026-11-18, `strong-fp-floor` branch, spec v5.
+As of 2026-11-19, `real-world` branch, spec v6.
 
 - Single signature, hint-free top-1: the "Now" column of G1. Hinted top-1:
-  same build 0.690, other arch 0.374, other arch other compiler 0.307.
+  same build 0.688, other arch 0.386, other arch other compiler 0.323.
 - Whole-module sets: the "Now" column of G2.
 - False positives: strong 0.000 (corpus) and 0.000 (negative), any-verdict
-  hinted 0.075, hint-free 0.115.
+  hinted 0.083, hint-free 0.112.
 - What moved the numbers, in order, with measurements:
   [`docs/history/PLAN-v0.5.md`](docs/history/PLAN-v0.5.md) §13 and
   [`spec/CHANGELOG.md`](spec/CHANGELOG.md).
@@ -386,6 +393,21 @@ As of 2026-11-18, `strong-fp-floor` branch, spec v5.
     the largest is x64 clang-O2 sqlite.
   - Open for M8 exit: the weekly workflow (`real-bench.yml`) has not run
     yet.
+  - RW2 bench honesty (2026-11-19, `rw/bench-honesty`): FP cells record
+    `targets` and `target_bytes`, and `compare` fails a gated FP cell that
+    scanned no image; every rate in the text report carries n and a 95%
+    Wilson interval (gating unchanged); `bench --sample-seed N` draws
+    another function sample; samples record their real compiler (gcc
+    samples had `tool: clang`), which changes only their `signature_id`.
+    Toy and real (`--max-functions 4 --joint`) reports are identical before
+    and after except for the new fields; two toy runs are identical. Real
+    corpus, per arch: corpus FP cells scan 30 images (7-11 MiB; merged 120,
+    38 MiB). The real corpus has no negative set, so its 10 negative FP
+    cells (strong and any verdict) scanned 0 images and now fail the real
+    baseline comparison; every other cell passes. They stay failing until
+    the real negative set (RW2) lands or the user agrees to drop them from
+    the baseline (rule 6). Example interval: hint-free identified precision,
+    toy corpus, 552/584 = 0.945 [0.924, 0.961].
 - M12, trust labels (2026-11-16, tuning corpus only): `identified` now
   needs an untied first match similar enough for its evidence, and
   shape-only matches need similarity 0.3 (hinted too, with 6 features).
@@ -630,5 +652,393 @@ As of 2026-11-18, `strong-fp-floor` branch, spec v5.
   unchanged. Dropped past tolerance: one hinted found-anywhere cell,
   merged->arm64 clang-O0 -> gcc-O2 0.562 -> 0.500 (a second-ranked true
   match at 0.193). Held-out strong FP was 0.113 at v4; not yet re-run.
-- Next: M8 exit (weekly workflow green), strong FP on the held-out corpus
-  (milestone exit), and pointer-width-dependent constants (M10).
+- RW8 workflows (2026-11-19, `rw/batch-scan` branch, spec v5, output only:
+  no feature, matcher, signature or DB byte changes):
+  - `scan --path DIR [--recursive] --jsonl OUT`: one signature load, one
+    JSON line per regular file sorted by relative path, status `ok`,
+    `unsupported`, `error` or `budget-exhausted` (from the `truncated`
+    budget report, never wall time); exit 0 once every file has a line.
+    Measured on the stripped real corpus (120 files, all four arches) with
+    a DB of 24 zlib clang-O2 x64 functions, auto (hint-free) discovery: 120
+    `ok`; the 24 zlib images all have identified hits (148 in total), the 96
+    other-library images have none (260 hits of other verdicts). Output
+    byte-identical across two runs and with `SIGTOOL_THREADS=1`. Wall time
+    not recorded: the shared server was at load 30+ on 4 cores.
+  - Reports (`gen --json-report`, `merge --json-report`, `db build
+    --report`) record the input's SHA-256 (in-tree, NIST vectors), size,
+    and ELF GNU build-id or PE CodeView GUID and age (`native/src/identity.rs`,
+    raw bounded reads, outside `elf.rs`); `db build --report` also hashes
+    the `--functions` list. Checked against `llvm-readelf -n` and
+    `llvm-readobj --coff-debug-directory` on clang + lld output.
+  - `db info` and `db list [--json]`; a spec-version refusal of a DB or
+    signature now names `db build --file IMAGE --functions F.json` or
+    regeneration (exit 2 as before).
+  - Not done from RW8: `--explain` / `--expect`, generation warnings, the
+    workflow pages, and the plugin smoke rerun (no plugin change).
+- RW7, ELF inputs (2026-11-19, `rw/elf-inputs` branch, spec v5
+  unchanged):
+  - Packed relocations: `SHT_RELR` / `DT_RELR` and Android `APS2`
+    (`SHT_ANDROID_REL[A]`, `DT_ANDROID_REL[A]`) are read into the same
+    relocation set as `RELA` / `REL` (SPEC.md §2.2). Built with clang and
+    lld for x64, arm64, arm32, and Thumb, a packed shared object and its
+    unpacked twin give identical signatures and hint-free matches for 6
+    functions each (`tests/elf_inputs.rs`).
+  - Section-less ELF (`e_shnum == 0`): read from `PT_LOAD`, `PT_DYNAMIC`,
+    `PT_GNU_EH_FRAME` (`.eh_frame` bounded by the `.eh_frame_hdr` search
+    table), and `PT_ARM_EXIDX`. On ARM and AArch64 the PLT is found from
+    its stubs and kept out of start synthesis, as `.plt` is with sections.
+    In the test, toy-corpus executables and a shared object for the four
+    architectures give the same tables and hint-free matches without
+    sections as `--strip-all` does, for 60 functions (59 found).
+  - Real corpus (`examples/sectionless`: 120 stripped images, the first 4
+    ground-truth functions each, signed on the unstripped image): the
+    module tables agree on 120 of 120 images. The first hint-free match is
+    the same for 453 of 480 signatures: 240 of 240 on clang+lld, 60 of 60 on
+    gcc x64, and 153 of 180 on gcc ARM32, Thumb, and AArch64. Identified at
+    the signed start: 219 with sections, 193 without, all of the loss on
+    gcc ARM (86 -> 60). GNU ld there maps `.dynsym` through `.rodata` and
+    `.eh_frame` in the one R+X segment, so the sweeps decode them as code
+    (877 to 4857 extra synthesized starts per arch over 15 images). Unwind
+    start lists are identical on 58 of 120 images: every x64 and lld arm64
+    image; the other lld ARM32 and Thumb images differ by one start, the
+    `.ARM.exidx` end-of-text sentinel, which a section table leaves outside
+    `.text`.
+  - `tests/hostile_inputs.rs` builds each ELF image also with `.relr.dyn`,
+    with an `APS2` table, and without section headers (release and debug
+    builds pass).
+  - Unchanged: toy bench report (byte-identical apart from the cost
+    lines), golden vectors, `elf_dynamic`; real bench (`--max-functions 4`,
+    both modes, FP) report identical to its base (d56505e) apart from the
+    cost lines (peak 1311 MiB both).
+  - Open: carve the tables `PT_DYNAMIC` and `PT_GNU_EH_FRAME` locate out of
+    executable segments, then measure what `.rodata` still costs.
+    `RawSource` (`--raw`) not started.
+- Real-world plan (2026-11-19, `real-world` branch, spec v6;
+  [`docs/real-world-plan.md`](docs/real-world-plan.md)):
+  - RW1: hostile-input hardening and fuzzing landed as #1; the IDA plugin
+    rework (#2, merged into `report-gaps` after #1 closed) carried over.
+  - RW2: bench FP cells record images scanned and fail when a measured cell
+    comes back empty, every rate prints n and a Wilson interval,
+    `--sample-seed`, real compiler names in sample provenance (ids only).
+    The gcc docker image is pinned by digest and apt snapshot (same gcc
+    12.2.0-14+deb12u1 / 12.2.0-14cross1, glibc 2.36). The weekly
+    `real-bench.yml` ran green once on `native-first` (run 44476342355,
+    2026-11-19), which closes the M8 exit.
+  - RW3: hinted `scan`/`locate` of files take the bench's indexed path, and
+    live-process scans get the hinted trust floors: the small-image
+    exemption counted symbol starts only, and a process has none, so every
+    process scan skipped them. No bench number moves (the bench already used
+    the indexed path); the process path has no bench cell yet. Big-endian ELF
+    and Windows ARMNT images are refused by name (exit 3).
+  - RW4 (first slice): `corpus/real.py --world`, 140 images (tuning
+    libraries x gcc 12 x plain `-O2`, `-O3`, Debian hardening, LTO, PIE,
+    static, previous release x 4 arches; stripped with each arch's binutils,
+    since llvm-strip refuses gcc's static ARM executables). Signing the
+    plain `-O2` shared object, hint-free same-arch top-1 at v5: same build
+    0.938, LTO 0.838, previous release 0.838, hardened 0.812, `-O3` 0.775,
+    PIE 0.613, static 0.525; identified precision hint-free 0.973, hinted
+    0.975; strong FP 0.043 (arm32 0.100, thumb 0.089, from static images
+    carrying libc). `examples/diagnose_cross` showed every executable
+    acceptance failure lacking a required feature lacked an exported
+    callee name, which an executable never has: spec v6 makes such callees
+    optional in targets that name no function (PIE 0.700, static 0.613; real
+    corpus unchanged; variants and losers in `spec/CHANGELOG.md`). The fixture
+    for its test exposed x86 immediates beside `rbp` being dropped; fixed in
+    v6 (real corpus: 290 top-1 cells up, 27 down, every G1 row up). World
+    tier at v6: hint-free top-1 hits 9672 -> 10046, hint-free any-verdict FP
+    0.105 -> 0.132, identified precision 0.972 / 0.976. Not yet: distro
+    packages, C++/ICF, joint drift, clang profiles.
+  - RW7: `SHT_RELR`/`DT_RELR` and APS2 packed relocations; section-less ELF
+    read from program headers (agreement with `--strip-all` 453/480 first
+    matches; GNU ld ARM images lose 26, open). Raw blobs not started.
+  - RW8: `scan --path DIR --jsonl OUT`, input identity (sha256, build-id, PE
+    GUID) in reports, `db info` / `db list`, spec-mismatch errors naming the
+    rebuild.
+  - RW6 measurement (2026-11-19, `rw/scale`, spec v6, no feature or
+    matcher change):
+    - `corpus/real.py --host`: the five tuning libraries' static archives
+      (gcc 12 `-O2`, `-ffunction-sections`, `--gc-sections`, a `main` taking
+      every export's address) linked into one static executable per arch
+      (code: x64 1.88 MB, arm64 1.60, arm32 1.51, Thumb 1.12), an LTO host,
+      one host per library leaving it out (the negative set), the plain
+      `-O2` shared objects (byte-identical to `build-world` `gcc-O2`), and an
+      x64 `-O0` host (2.42 MB of code) for the scale harness. Ground truth
+      lists the host once per library with `members`; the bench pairs such
+      an entry by its library, loads the image once, and never counts a hit
+      in an image linking the signature's own library as false.
+    - Hint-free same-arch top-1, signing the `-O2` shared object (bench
+      `--max-functions 0`, all four arches, 9530 signatures): into the host
+      1776/2768 = 0.642 [0.624, 0.659] (x64 0.708, arm64 0.767, arm32
+      0.551, Thumb 0.540; n = 692 each), into the LTO host 1074/2207 =
+      0.487 [0.466, 0.507] (x64 0.569, arm64 0.644, arm32 0.358, Thumb
+      0.375), same build 2506/2768 = 0.905. Other arch into the host 0.358,
+      merged 0.514.
+    - False hits, hint-free, accepted matches per signature per MB of
+      code scanned. Leave-one-out hosts (true negatives), shared-object
+      signatures: x64 0.176 (strong 0.006, weak 0.058, small 0.581), arm64
+      0.496 (strong 0.089), arm32 0.597 (strong 0.133), Thumb 0.943 (strong
+      0.303); 50-108 of 692 signatures per arch hit at all. Pooled over
+      every source, signatures signed in the hosts included, strong is
+      0.256 (inferred: host-signed signatures carry the libc callees both
+      hosts link). Identified answers in images without
+      the function: 81 of 74,455 scans, 0.0025 per signature per MB against
+      the 0.001 goal (G3). Identified precision 0.970 [0.968, 0.971].
+    - Scale (`examples/profile_scale.rs`, x64, signatures of the host's
+      own functions from `db build --functions`, scanning its stripped copy,
+      `SIGTOOL_THREADS=2`, median of 3, home server at load 1.2-1.8 of 4
+      cores): `-O0` host, 5299 unwind entries, 589,953 instructions per
+      index: 1 signature 0.61 s / 130 MB peak, 150 2.10 s / 134 MB, 1000
+      10.85 s (scan 6.92, joint 3.12) / 167 MB. `-O2` host (3855 entries):
+      0.50 / 1.62 / 8.02 s, 106-124 MB. `db build --functions`: 0.85 / 2.40
+      / 4.55 s for 1 / 150 / 1000 functions at 126 MB. Every hint-free scan
+      compares every unwind entry (candidates = signatures x entries, 5.30M
+      at 1000), digests agree across runs and with one thread.
+    - No budget runs out: 15% of the 4M-instruction caps, 8% of the
+      65,536-candidate cap, joint pairs 5.36M of 2^26. So the RW6 fixes were
+      not started. Inferred, not measured: the instruction caps stop at
+      about 16 MB of x64 code at this density (4.1 bytes per instruction),
+      and on an image at the candidate cap a 1000-signature module would
+      cost about 85 s of scan on 2 threads and sit at the joint pair limit.
+      These hosts are 1-3 MB; the 10-150 MB targets the plan names need
+      sources beyond the tuning libraries (wild negatives).
+  - Not yet run on held-out at v6. Open from the plan: RW5 (PE corpus), RW6
+    (large haystacks and scale), a process-path bench cell, `--explain`.
+- Held-out at v6 (2026-11-19, `real-world`, measured once at the RW
+  milestone exit, nothing tuned on it; `bench --corpus
+  ../corpus/build-heldout --max-functions 4 --joint`), held-out vs tuning,
+  hint-free top-1: same build 0.962 / 0.838, other compiler 0.618 / 0.427,
+  cross opt 0.574 / 0.368, other arch 0.646 / 0.446, other arch other
+  compiler 0.520 / 0.302, other arch cross opt 0.501 / 0.267, merged
+  held-out arch 0.717 / 0.565 (v4 held-out: 0.896, 0.368, 0.374, 0.414,
+  0.307, 0.302, 0.413). Strong FP 0.000 (0/87; 0.113 at v4, the G4 row that
+  was outside 0.05), any-verdict 0.078, hint-free 0.126 (tuning 0.112);
+  identified precision hint-free 0.991, hinted 0.993. Joint, hint-free: other
+  arch same build 0.792, other compiler 0.677, cross opt 0.622, same arch
+  other compiler 0.739. No held-out row is worse than tuning by more than
+  0.05 (G4 met at v6); the held-out libraries are easier than SQLite and Lua
+  at this sample size, so the gap is not evidence of headroom.
+- Real-world tier precision (2026-11-19, `real-world`, spec v6, diagnosis
+  only; `bench --corpus ../corpus/build-world --max-functions 4 --fp-report`,
+  which now logs whether each recall answer is `identified`): 181 of 6393
+  hint-free identified answers are wrong (0.972). 104 are `lua_next` answered
+  at `luaH_next`, 35 `LZ4_loadDict` at `LZ4_loadDict_internal`, 16
+  `sqlite3PagerSharedLock` at `walIndexReadHdr`, 4 `LZ4F_compressFrameBound`
+  at `LZ4F_compressBound_internal`: a thin wrapper signed from a build that
+  inlined its callee carries the callee's evidence, and in a build that keeps
+  the call the callee is the function holding it. 18 more are `LZ4_loadDict`
+  at libc's `stpcpy` in static images. 120 of the wrong answers match a
+  string, which `MIN_ANSWER_SIMILARITY`'s "a string needs no floor" assumed
+  never happens (it held on the shared-object corpora). Similarity does not
+  separate them: a 0.5 floor on string answers keeps 888 of 1616 correct
+  and 39 of 120 wrong. Candidate rule, not built: an identified first match
+  whose direct caller is a thin wrapper around it is a `candidate` (labels
+  only; needs the call graph in the recall log to simulate, and costs every
+  correctly found function that has such a wrapper).
+- Real-world plan, second round (2026-11-19):
+  - 2026-11-19, `rw/trust-tools`:
+    - RW3 process-path cell: `bench --process-like` scans each stripped
+      target as a live process sees a module (no symbol starts, unwind-table
+      bounds as hints with synthesized starts dropped, the incremental
+      `SignatureScanner` of `scan --pid`), discovery `process`; not in the
+      gated baseline (absent without the flag). Real corpus, spec v6,
+      `--max-functions 4`: top-1 140/14088 = 0.010 (file hinted 0.353,
+      hint-free 0.358); same arch same build x64 18/120 = 0.150 and 0 on
+      arm64, arm32 and Thumb (file hinted 0.658-0.717, hint-free
+      0.825-0.850); every hit in an x64 target. Identified precision 36/107
+      = 0.336 (hinted 0.995, hint-free 0.993); strong FP 0/121, any-verdict
+      FP 1/587 (hinted 49/587, hint-free 66/587): it abstains because it
+      finds nothing. `examples/diagnose_process` (x64 + arm64, every
+      same-arch build pair): the true function has unwind bounds but is
+      never a candidate. Without symbol starts and a reference index (the
+      scanner builds one and never hands it to the matcher) candidates come
+      only from anchor bytes found in code, which AArch64 and ARM constants
+      never are; passing a reference index lifts top-1 from 0 to 72 of 720
+      on arm64 and 44 to 116 on x64, against 332 / 320 file hinted, so the
+      missing piece is the candidate list, not a gate. Same-arch x64
+      identified answers were 18 of 19 right; the wrong ones are in
+      cross-arch and merged cells, where the scanner path computes no rival
+      (not diagnosed one by one). This is the measured case for RW3's "route
+      `scan` and `locate` through `scan_in` with a per-module context".
+      No matcher rule changed.
+    - RW8 `locate --explain` / `--expect RVA`: matched, inherited and missed
+      keys, shared neighbour keys, chance estimate, and each gate in scan
+      order to the first failure, with `scan_in`'s rank, evidence label,
+      rival and why the answer is not identified; `explain` under `--json`.
+      The gates were split into named functions that the scan and explain
+      share (`acceptance_gates`, `hinted_floor`, `hint_free_floors`,
+      `answer_gate`); the real corpus bench is identical to the committed
+      baseline apart from cost.
+    - RW7 raw blobs: `--raw FILE --arch A --base ADDR` on `gen`, `locate`,
+      `scan` (`FileSource::from_raw`): hint-free, module-range pointer test,
+      starts from code. The `.text` of clang-built arm64, Thumb and x64
+      executables: 40/40 functions signed from the ELF found first in each
+      blob. ARM32/Thumb blobs must end below 4 GiB: at the top of the
+      address space the ARM start sweep's realigning steps wrapped and hung
+      (found by the new hostile cases; no ELF32 can place code there).
+  - RW5a PE tier (2026-11-19, `rw/pe-tier`): `corpus/real.py --pe` builds
+    the tuning libraries as DLLs with the pinned clang for x64 and arm64
+    `windows-msvc`, linked by lld-link with no Windows SDK (shim plus
+    `corpus/shim/include-win`, generated `ucrtbase`/`kernel32` import
+    libraries, so CRT calls go through `jmp [__imp_X]` thunks and Win32
+    calls through the IAT), exporting only the public API by each library's
+    own Windows mechanism; builds `-O0/-O2/-Os` plus `-O2` with `/GS` and
+    with `/guard:cf` (50 DLLs, 48 MB; two clean rebuilds byte-identical).
+    Ground truth from the lld-link map; a PE has no `.symtab`, so the bench
+    scans the same file in both modes. `corpus/build-pe-mixed` pairs them
+    with the `build-real` clang ELF builds (x64, arm64) under one ground
+    truth, so ELF<->PE needs no bench change. Spec v6, `--max-functions 4`,
+    tuning libraries only; nothing in the tool changed, so the toy and real
+    baselines are untouched.
+    - PE tier (`bench --corpus ../corpus/build-pe`, 288 signatures, 0
+      refused): hint-free top-1 same arch same build 0.725 (145/200), other
+      profile (`/GS`, `/guard:cf` vs plain, same level) 0.658 (158/240),
+      cross opt 0.266, other arch same build 0.415, other arch other
+      profile 0.450, other arch cross opt 0.163, merged same build 0.699.
+      `/GS` and `/guard:cf` move a plain `-O2` signature by at most 1 of 20
+      per cell. Strong FP 0.000 (x64 0/29, arm64 0/15, merged 0/15; 25 or 50
+      images, 7.2-15 MiB); hint-free any-verdict FP x64 0.080, arm64 0.080,
+      merged 0.068; identified precision hint-free 0.948 (843/889), hinted
+      0.669 (113/169). Hinted top-1 same build 0.070: see the first finding.
+      Cost 50.5 s, peak 800 MiB (4 threads, shared machine).
+    - Same function sample, same cells, plain levels only (x64, arm64,
+      hint-free top-1, ELF clang baseline vs PE): x64 same build 0.817 vs
+      0.817, arm64 same build 0.850 vs 0.683, x64 cross opt 0.350 vs 0.283,
+      x64->arm64 same build 0.467 vs 0.367 (60 or 120 attempts each, samples
+      differ by corpus).
+    - Mixed (`bench --corpus ../corpus/build-pe-mixed --joint`, same level,
+      hint-free top-1, 120 attempts): ELF->ELF 0.833, PE->PE 0.767,
+      ELF->PE 0.533 (x64 0.567, arm64 0.500), PE->ELF 0.733 (x64 0.700,
+      arm64 0.767); other arch same level ELF->PE 0.333, PE->ELF 0.425;
+      cross level ELF->PE 0.225, PE->ELF 0.292 (240 each). Joint, whole x64
+      clang-O2 ELF module resolved in PE x64 clang+pe-O2: 0.731 -> 0.871
+      (643); in PE arm64 at O2: 0.403 -> 0.667. Identified precision
+      hint-free 0.929 (1143/1230), hinted 0.864; strong FP 0.000.
+    - `.pdata` start recall (`examples/start_recall`, now with a PE path):
+      x64 0.954 (13633/14292, precision 0.949), arm64 0.815 (11643/14288,
+      precision 0.998); at `-O2` x64 0.937, arm64 0.748.
+    - Findings (diagnosed, not fixed here: each is a discovery, feature, or
+      acceptance change for its own package):
+      1. Hinted discovery on a PE file has no function list:
+         `FileSource::function_starts` is empty for PE (exports carry no
+         bounds) and hinted mode ignores unwind entries (`matcher.rs`
+         `use_hints`), so it sees only landmark sweeps. `--discovery auto`
+         picks hint-free for PE files (`symbols_stripped`), so CLI users
+         are not affected unless they force `hinted`; the hinted PE cells
+         measure only this.
+      2. ARM64 PE exports are not function starts: the export roots and
+         the call-target sweep are x64-only (`elf.rs`, `pe_roots`), so
+         leaf functions without `.pdata` (arm64 omits it for frameless
+         leaves) are missed, exported API included (`adler32`,
+         `crc32`, `compressBound` in zlib `-O2`). Probably most of the
+         arm64 same-build gap (inferred, not measured).
+      3. ELF and PE never share an import callee: ELF writes
+         `callee:*!memcpy` and PE `callee:ucrtbase!memcpy` (SPEC.md §2.1),
+         so of 24 ELF->PE pairs per arch whose signature requires an
+         external callee, none matches it. 12 of 34 same-level ELF->PE
+         rejections lack a required callee (that one, or a function the
+         ELF build exports and the DLL keeps static, such as
+         `LZ4_loadDict_internal`); 20 lack a required constant, mostly
+         struct offsets that LLP64's 32-bit `long` moves (zlib
+         `inflate_state`: 0x558 on ELF, 0x550 on PE).
+      4. 696 of the 728 x64 false starts are lld-link's import thunks,
+         which the call-target sweep finds after the last function.
+    - Not done: MinGW gcc builds, real MSVC (RW5b), PDB ground truth (no
+      `llvm-pdbutil` in the pinned toolchain on the home server; the map
+      gives the same addresses), `.reloc` and delay-load imports.
+- PE follow-ups (2026-11-19, `real-world`):
+  - Spec v7: import callees drop their providing module (`ucrtbase!memcpy`
+    -> `*!memcpy`, as ELF already wrote them). Mixed ELF/PE tier hint-free
+    top-1, same arch ELF <-> PE same level 0.633 -> 0.667, merged 0.648 ->
+    0.686; 34 cells up, none down; joint top-1 4534 -> 4591; every FP rate
+    unchanged. PE-only tier and real corpus unchanged.
+  - AArch64 PE starts: a `bl`/tail-`b` sweep from `.pdata` extents and
+    exports (`starts::arm64_call_targets_checked`, the x64 sweep's
+    counterpart), and unpacked `.pdata` entries' lengths read from `.xdata`
+    (they had no end, so tail calls out of them were never seen). PE start
+    recall arm64 0.815 -> 0.950 (precision 0.998 -> 0.950, the same import
+    thunks as x64's 0.949). PE tier hint-free top-1: same arch same build
+    0.725 -> 0.795, other profile 0.658 -> 0.767, cross arch 0.415 -> 0.455,
+    merged 0.699 -> 0.778; 60 cells up, none down; identified precision
+    0.960 -> 0.982; hint-free any-verdict FP 0.076 -> 0.090. Mixed tier: 31
+    cells up, none down, identified precision 0.939 -> 0.984, joint top-1
+    4591 -> 4734. Real corpus identical.
+- Wrapped label (2026-11-19, `real-world`, labels only): an identified-looking
+  first match whose function's sole caller calls nothing else is a
+  `candidate`, unless the signature itself has exactly one caller (SPEC.md §8,
+  *wrapped*). Simulated on the `--world` recall log first (new
+  `first_callers` field). `--world` identified precision hint-free 0.972 ->
+  0.988, hinted 0.976 -> 0.997 (G3 met on that tier), correct answers, top-1
+  and FP unchanged; real corpus identical. 35 `LZ4_loadDict` answers at
+  `LZ4_loadDict_internal` (a tail call the caller index does not record)
+  remain.
+  - RW3 process path (2026-11-19, `rw/process-path`): `scan --pid` and
+    `locate --pid` scan a process hint-free one module at a time
+    (`source::ModuleView`: one module's regions, its `Module`, its unwind
+    entries, no symbol starts, reads confined to its span;
+    `scanner::scan_modules`: a `ScanContext` per module, `scan_in` and
+    joint resolution per module, budgets into `truncated`). `--discovery
+    auto` picks it (`ProcessSource::symbols_stripped` is now true);
+    `--discovery hinted` keeps the anchor-only scanner. New `--module NAME`
+    on `scan`/`locate` with `--pid`. Per-signature lists of several modules
+    merge by each module's best rank, and another module's identified-looking
+    best match is the first's rival (SPEC.md §8, "Sources with several
+    modules"; no version change: documents and per-image acceptance are
+    unchanged). `bench --process-like` now calls `scan_modules` on the
+    stripped target's process view (one path, rule 13). Real corpus, spec
+    v6, `--max-functions 4 --joint --process-like` (before -> after,
+    process rows only; every file cell identical to the committed baseline
+    apart from cost):
+    - top-1 140/14088 = 0.010 -> 3437/14088 = 0.244 (file hinted 0.353,
+      hint-free 0.358); same arch same build 18/480 -> 273/480 (x64
+      100/120 and arm64 102/120, the file hint-free numbers; arm32 36/120,
+      Thumb 35/120 against 99 and 101); cross arch 99/11208 -> 2562/11208.
+    - By target arch, top-1 of 3522 each: x64 1217, arm64 1351 (both equal
+      to file hint-free), arm32 474 (file 1271), Thumb 395 (file 1198).
+      `--arch x64 --arch arm64`: every process row, identified count and FP
+      cell equals the hint-free one (top-1 1819/4164, identified 1154/1158,
+      any-verdict FP 31/347, strong 0/71).
+    - Identified precision 36/107 = 0.336 -> 2402/2486 = 0.966 (hint-free
+      0.993); strong FP 0/121 -> 2/121 (merged signatures on ARM targets),
+      any-verdict FP 1/587 -> 93/587 (hint-free 66/587; arm32 24 vs 16,
+      Thumb 23 vs 17, merged 21 vs 8, x64 and arm64 equal). The old path's
+      low FP was abstention: it found nothing.
+    - The ARM gap is the start list: `examples/diagnose_process` (same-arch
+      pairs) finds the expected function without a covering table entry in
+      925 of the 1274 ARM32/Thumb pairs it does not answer correctly. The
+      `.ARM.exidx` table alone lists few functions (lld merges adjacent
+      `EXIDX_CANTUNWIND` entries); the file source synthesizes the rest from
+      code, which a process source cannot (synthesis reads ELF pointer slots
+      and PE export roots). `proc_win` reads x64 and arm64 only, so no live
+      process meets it; it would matter for a Linux `/proc` source (M9).
+    - Cost (bench, 2 threads on a shared 4-core machine): recall 46.8 ->
+      53.2 s, FP 42.4 -> 43.5 s, peak 1.30 -> 2.05 GiB (a second context per
+      image). A live process decodes every mapped module and recovers every
+      `.pdata` function once per scan; not measured on Windows here
+      (`--module` bounds it).
+    - Process rows are now in the gated real baseline (file cells
+      unchanged), and the weekly job runs `--process-like`. Windows live
+      tests (`live_proc_win.rs`, with a new `--module` case) were
+      cross-checked with `cargo clippy --target x86_64-pc-windows-gnu` only,
+      not run. `tests/process_modules.rs` runs the path on clang + lld shared
+      objects mapped as two modules of one source. Determinism: the real
+      bench twice on 2 threads and once on 1 gives identical reports apart
+      from cost; `tests/ida_cli_smoke.py` passes.
+- Branch review (2026-11-19, `rw/review-fixes`): four area reviewers plus a
+  refuting verifier per finding over `native-first...real-world`; 9 of 13
+  findings confirmed and fixed. The rule for targets that name no function
+  read `.symtab` names in hint-free mode (rule 10) and counted data exports
+  (a PIE's copy-relocated `stderr`) as names; it now counts code exports,
+  plus function symbols when hinted (`--world`: 19 top-1 cells up, 2 down,
+  FP and precision unchanged, 8 more correct answers). PE ordinal imports
+  keep their DLL; PT_DYNAMIC relocation tables are read when the symbol table
+  cannot be sized (rule 4); batch scans check the magic before reading a file
+  and hash non-images in chunks (rule 11); `bench` refuses a baseline drawn
+  with another `--sample-seed`; SPEC §3 no longer says frame-pointer
+  immediates are dropped. Real corpus and mixed PE tier identical.
+- Next: ARM32/Thumb process targets (no inferred starts: 925 of 1274 missed
+  pairs have no unwind entry; out of reach of the Windows process source
+  anyway), the remaining PE findings (hinted PE has no function list, import
+  thunks counted as starts), identified answers in hosts without the
+  function (0.0025 per signature per MB), wrapper answers reached by a tail
+  call (`LZ4_loadDict`), RW4 distro packages and C++, and
+  pointer-width-dependent constants (M10).

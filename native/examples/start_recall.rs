@@ -8,7 +8,10 @@
 //! `stripped/ARCH/BUILD/LIB.so`). The function list a hint-free scan sees
 //! (`unwind_entries` of the stripped copy) is compared with the `.symtab`
 //! FUNC symbols of the unstripped copy, which serve only as labels. A
-//! symbol counts when it lies in scanned code (not the PLT). `--misses`
+//! symbol counts when it lies in scanned code (not the PLT). In a PE corpus
+//! (`corpus/real.py --pe`: `ARCH/BUILD/LIB.dll`) the image is its own
+//! stripped copy, and the labels come from `LIB.functions.json`, written
+//! from the linker map, since a PE file has no symbol table. `--misses`
 //! prints every missed start and every false start with the nearest symbol,
 //! so misses can be sorted by cause.
 
@@ -90,8 +93,12 @@ fn main() {
             .to_vec();
     }
     for arch in &arches {
-        let mut builds: Vec<_> = std::fs::read_dir(corpus.join(arch))
-            .expect("arch dir")
+        // A PE corpus has no ARM32 or Thumb builds (Windows ARMNT is refused).
+        let Ok(dir) = std::fs::read_dir(corpus.join(arch)) else {
+            println!("{arch:6} no builds");
+            continue;
+        };
+        let mut builds: Vec<_> = dir
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .collect();
@@ -107,20 +114,45 @@ fn main() {
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.file_name().to_string_lossy().to_string())
                 .collect();
+            // Build directories also hold PE linker maps and function lists.
+            libraries.retain(|name| {
+                [".so", ".elf", ".dll"]
+                    .iter()
+                    .any(|ext| name.ends_with(ext))
+            });
             libraries.sort();
             let (mut truth_n, mut hit_n, mut found_n, mut false_n) = (0, 0, 0, 0);
             for library in &libraries {
-                let full = FileSource::from_path(corpus.join(arch).join(build).join(library))
-                    .expect("unstripped image");
-                let stripped = FileSource::from_path(
-                    corpus.join("stripped").join(arch).join(build).join(library),
-                )
-                .expect("stripped image");
-                let names: BTreeMap<u64, String> = full.modules()[0]
-                    .functions
-                    .iter()
-                    .filter(|(address, _)| scanned(&full, **address))
-                    .map(|(address, name)| (*address, name.clone()))
+                let image = corpus.join(arch).join(build).join(library);
+                let full = FileSource::from_path(&image).expect("unstripped image");
+                let pe = library.ends_with(".dll");
+                let stripped = if pe {
+                    FileSource::from_path(&image).expect("image")
+                } else {
+                    FileSource::from_path(
+                        corpus.join("stripped").join(arch).join(build).join(library),
+                    )
+                    .expect("stripped image")
+                };
+                let labels: Vec<(u64, String)> = if pe {
+                    let text = std::fs::read_to_string(image.with_extension("functions.json"))
+                        .expect("function list (corpus/real.py --pe)");
+                    let listing: Vec<serde_json::Value> =
+                        serde_json::from_str(&text).expect("function list JSON");
+                    listing
+                        .iter()
+                        .filter_map(|f| Some((f["start"].as_u64()?, f["name"].as_str()?.into())))
+                        .collect()
+                } else {
+                    full.modules()[0]
+                        .functions
+                        .iter()
+                        .map(|(address, name)| (*address, name.clone()))
+                        .collect()
+                };
+                let names: BTreeMap<u64, String> = labels
+                    .into_iter()
+                    .filter(|(address, _)| scanned(&full, *address))
                     .collect();
                 let truth: BTreeSet<u64> = names.keys().copied().collect();
                 let found: BTreeSet<u64> = stripped

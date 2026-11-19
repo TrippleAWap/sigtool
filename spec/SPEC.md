@@ -1,4 +1,4 @@
-# Signature spec v5
+# Signature spec v7
 
 Status: draft for M1 (extraction). Generation, scoring, and matching fields are
 specified in outline and completed in M2/M3.
@@ -164,9 +164,12 @@ reaches. Names are the only callee form: an unnamed target's address (or a
   `__aeabi_memcpy*` is `memcpy`, `__aeabi_memmove*` is `memmove`, and
   `__aeabi_memset*` / `__aeabi_memclr*` are `memset`.
 * **Calls into other images are low-information.** An import the image does
-  not define itself (no `.dynsym` definition; every PE import) is written in
-  the `module!import` form; ELF does not record the providing library, so the
-  module is `*` (`*!memcpy`). A shared object's call to its own export
+  not define itself (no `.dynsym` definition; every PE import, and in a
+  process a call into another module) is written `*!import`: ELF does not
+  record the providing library, and the module a PE import names
+  (`ucrtbase!memcpy`) is dropped so the same call gives the same key in every
+  format. An import by ordinal keeps its DLL (`ws2_32!#23`): the number means
+  nothing without it. A shared object's call to its own export
   through the PLT keeps the plain name. A callee value containing `!` is never
   an anchor and, like a small constant, does not make a signature
   high-information or corroborate a match (§8): `memcpy` and `free` are
@@ -211,7 +214,11 @@ still base-independent there; reading PE base relocations would let PE use
 the relocation test too.
 
 The decision uses only the relocation table, which `strip --strip-all` keeps,
-so hint-free discovery may apply it. Two loads of the same shared object at
+so hint-free discovery may apply it. That table is every place the dynamic
+relocations name, however they are stored: `REL`, `RELA`, packed `RELR`
+(`-z pack-relative-relocs`), and Android's `APS2` packing, found through the
+section headers or, in an image without them, through `PT_DYNAMIC`. Packing
+or dropping the section headers never changes the set. Two loads of the same shared object at
 different bases give identical features (`tests/golden.rs`, the `*-pic-*`
 vectors).
 
@@ -247,7 +254,8 @@ vectors).
   literal-pool words, and immediate operands of the same comparison and
   arithmetic mnemonics (condition suffixes stripped).
 * Immediates that encode ABI or addressing are excluded: anything touching the
-  stack or frame pointer, and shift amounts.
+  stack pointer (x86-64 `rsp`/`esp`/`sp`, ARM `sp`; `rbp`, `r11` and `x29` are
+  ordinary registers here since v6), and shift amounts.
 
 ## 4. Buckets
 
@@ -482,6 +490,22 @@ generation and never decodes with its own tables.
 * **Tier 2 — comparison.** Accepted only when every gate passes:
   `score >= thresholds.match`, `matched_required >= min_distinct`, and, for a
   low-information signature, shape corroboration.
+* **Targets that name no function.** An executable (PIE or static) or an
+  image built with hidden visibility exports none of its own functions, so a
+  call to one has no name there (§2.1). When the target's modules name no
+  defined function at all (no export pointing into code, and, in hinted
+  scans only, no function symbol; data exports such as a PIE's copy-relocated
+  `stderr` name no function),
+  every required `callee` without `!` is optional for that scan: it still
+  earns its weight when present, but no longer counts in the required weight
+  or `min_distinct`. It stays an identifying key for the anchoring floor, so a
+  match holding none of the signature's other identifying keys still needs
+  `MIN_UNANCHORED_SIMILARITY`. A signature with no required feature left
+  scores against all its weights, these callees included, so one identified
+  by callee names alone stays out of reach there. A target
+  that names some functions but not
+  this one keeps the requirement: there, the missing name is evidence the
+  function is absent.
 * **Shape corroboration.** A signature is low-information when none of its
   required features is a `str`, a `callee` without `!`, or a `const` whose magnitude
   (either sign, as a 32-bit word per §3) is at least `0x100`. Constants such as loop steps, field offsets, and
@@ -557,7 +581,8 @@ hint-free match already has: a distinctive-looking constant such as
 **Evidence labels.** Each match in a ranked list carries one label:
 
 * `identified`: the first match, not tied with the second, not a waived
-  match and without a close rival (both unless joint resolution placed it
+  match, not *wrapped*, and without a close rival (all three unless joint
+  resolution placed it
   with `joint:N`, `N ≥ 1`), with an identifying key, and with similarity at least 0.42 when no `str` matched
   but a direct neighbour key (`near:in:`, `near:out:`) or a `joint:N` key
   with `N ≥ 1` did, or at least 0.7 when only callees, constants, or two-hop neighbour
@@ -576,6 +601,14 @@ frequency estimates. A rival whose similarity to the signature is at least
 the match's minus 0.1 makes the match a `candidate`: the evidence cannot
 tell the two apart, only shape does (source twins such as a function and its
 case-sensitive variant).
+
+A first match is *wrapped* when its function has exactly one direct caller,
+that caller calls nothing else, and the signature does not itself have
+exactly one caller (`in:` link) in its own image. A wrapper signed from a
+build that inlined this callee carries the callee's evidence, so the
+evidence names both functions (`lua_next` and `luaH_next`): such a match is
+a `candidate`. A signature of the callee itself has that one caller, and
+keeps the label.
 
 The candidate's neighbour keys are computed the same way as at generation, on
 the target. Shared keys are reported in `matched` as `near:HOP:KIND:VALUE` and
@@ -625,6 +658,22 @@ A joint placement ranks above every other match (`joint:N` ranks by `1 + N`
 before neighbour keys). `joint:N` with `N ≥ 1` counts as identifying, with
 the 0.3 answer floor of direct neighbour keys; `joint:0` (placed by
 similarity and the one-to-one constraint alone) does not.
+
+**Sources with several modules.** A live process maps many images into one
+address space; it is matched one module at a time, hint-free by default
+(it names no local function). Each module is an image of its own: its
+regions, unwind entries, exports, imports, and relocations, no symbol
+starts, and reads confined to its span. Frequencies, the acceptance gates,
+rivals, and joint resolution count that module only, exactly as for a
+stripped file of it. A signature's per-module lists are then merged: modules
+ordered by the rank of their best match (ties in address order), each
+module's list kept in its own order. When another module's best match is
+also identified-looking, its similarity counts as a rival of the first
+match, so the same function loaded twice (a library linked into the
+executable and also loaded as a DLL) is a `candidate` unless one copy is
+clearly closer. A file is a single module and is unaffected; signature
+documents and acceptance per image are unchanged, so this is no version
+change.
 
 **Self-test.** Generation runs the matcher on the same source and requires an
 accepted match at the recovered function start; a signature that cannot be

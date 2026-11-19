@@ -20,7 +20,9 @@ packaging/     ida-plugin.json (HCLI / Plugin Manager manifest) and package.py, 
                builds the per-platform plugin zip and CLI archive for a release
 spec/          signature spec and changelog
 corpus/        build scripts (build.py: toy corpus; real.py: pinned real libraries
-               with clang and gcc), ground truth; binaries are never committed
+               with clang and gcc, and as PE DLLs with clang + lld-link), the libc
+               shim (shim/include, shim/include-win), ground truth; binaries are
+               never committed
 tests/         vectors/ (golden, generated), baseline/ (bench baselines)
 ```
 
@@ -67,27 +69,45 @@ cargo test --release                # golden, scanner, merge, CLI addressing, to
 cargo run --release -- gen --file IMAGE --addr A          # or --rva R (from the image base), --module M
 cargo run --release -- gen --pid P --addr A               # or --module M --rva R; live Windows process, read-only
 cargo run --release -- locate --signature S.yaml --file IMAGE --json M.json   # or --pid P; --discovery auto|hinted|hint-free
+cargo run --release -- locate --signature S.yaml --file IMAGE --explain --expect RVA   # matched/missed keys, deciding gate
+cargo run --release -- locate --signature S.yaml --raw BLOB --arch thumb --base 0x8000   # raw code blob (also gen, scan)
+cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --process-like   # + live-process path rows
+cargo run --release --example diagnose_process -- ../corpus/build-real 4 x64 arm64   # process-path misses
 cargo run --release -- scan --file IMAGE --signature S.yaml   # or --db signatures.db, --pid P
+cargo run --release -- scan --pid P --db signatures.db --module M   # hint-free per module (scanner::scan_modules);
+                                    # --discovery hinted keeps the old anchor-only scanner path
+cargo run --release -- scan --path DIR --recursive --db signatures.db --jsonl OUT.jsonl
+                                    # batch: one sorted JSON line per file; exit 0 once every file has one
 cargo run --release -- merge --sample IMAGE1:ADDR --sample IMAGE2:+RVA --name N
 cargo run --release -- db build --signature S.yaml --output signatures.db
 cargo run --release -- db build --file IMAGE --functions F.json --report R.json --output signatures.db
                                     # sign a [{"rva", "name"}] list in one run (the IDA plugin's sign-all)
+cargo run --release -- db info signatures.db              # spec, counts by confidence and arch (--json)
+cargo run --release -- db list signatures.db --json       # name, signature id, arches, confidence; sorted
 cargo run --release -- bench --baseline ../tests/baseline/native-bench.json       # toy corpus gate
 cargo run --release -- bench --save-baseline ../tests/baseline/native-bench.json  # intentional improvement
-cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --joint \
-    --baseline ../tests/baseline/native-real-bench.json   # real corpus (stripped targets, both modes, joint sets)
+cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --joint --process-like \
+    --baseline ../tests/baseline/native-real-bench.json   # real corpus (stripped targets, both modes, joint
+                                    # sets, process path); the baseline has process rows, so keep --process-like
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --discovery hint-free \
     --fp-report fp.jsonl                                  # log FP hits and recall scans for offline simulation
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --discovery hint-free \
     --arch x64 --arch arm64 --no-fp                         # quick hint-free slice
+cargo run --release -- bench --corpus ../corpus/build-real --max-functions 24 --sample-seed N \
+    --joint                                                 # fresh function sample (milestone exits)
 cargo run --release -- bench --corpus ../corpus/build-real --max-functions 4 --joint --discovery hint-free \
     --no-fp --joint-report joint.jsonl                    # log joint cells (pairs, call graph) for offline simulation
 cargo run --release --example profile_scan                  # scan cost
 cargo run --release --example profile_gen -- IMAGE ADDR [TARGET]   # gen / hint-free phase timings
 cargo run --release --example profile_g5 -- gen IMAGE SIGS.db [COUNT]   # then: scan STRIPPED SIGS.db (G5 cost)
+cargo run --release --example profile_scale -- functions IMAGE COUNT F.json   # COUNT evenly spaced starts,
+                                    # then `db build --file IMAGE --functions F.json --output S.db`, then:
+cargo run --release --example profile_scale -- run STRIPPED S.db 3   # median wall, peak RSS, instructions,
+                                    # candidates, joint pairs, budgets that ran out (scale harness, RW6)
 cargo run --release --example cross_fp -- ../corpus/build-real 4 [HITS.jsonl]   # cross-ISA false hits
                                     # (bench FP scans are same-arch only); run for any cross-ISA matcher rule
 cargo run --release --example in_module_consts -- ../corpus/build-real   # in-range constants kept per arch
+cargo run --release --example sectionless -- ../corpus/build-real SCRATCH 4   # --strip-sections copies vs --strip-all
 SIGTOOL_THREADS=1 cargo run --release -- bench ...          # one thread (determinism checks)
 SIGTOOL_REQUIRE_TOOLS=1 cargo test --release   # fail, not skip, tests whose LLVM tools are missing (CI)
 cargo test --release --test hostile_inputs      # deterministic hostile images, signatures, DBs, raw code
@@ -101,6 +121,14 @@ python packaging/package.py --platform windows-x86_64 --binary native/target/rel
 python corpus/build.py              # toy corpus + ground truth (clang + ld.lld + llvm-readelf)
 python corpus/real.py               # real libraries: clang on the host, gcc via corpus/docker
 python corpus/real.py --heldout     # held-out libraries into corpus/build-heldout (milestone exits only)
+python corpus/real.py --world       # real-world profiles (hardened, -O3, LTO, PIE, static, previous release)
+                                    # into corpus/build-world; bench it with --corpus ../corpus/build-world
+python corpus/real.py --host --jobs 2   # all five tuning libraries in one static executable per arch
+                                    # (plain, LTO, one leave-one-out negative per library; x64 -O0 under
+                                    # scale/) into corpus/build-host; bench it with --corpus ../corpus/build-host
+python corpus/real.py --pe          # PE DLLs (clang + lld-link, x64/arm64, /GS, /guard:cf) into
+                                    # corpus/build-pe, plus corpus/build-pe-mixed (ELF clang + PE, needs build-real)
+cargo run --release --example start_recall -- ../corpus/build-pe   # .pdata start recall (also ELF corpora)
 python tests/vectors/generate.py    # regenerate golden vectors (clang + ld.lld), then bless
 SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the extractor
 ```
@@ -111,10 +139,11 @@ SIGTOOL_BLESS=1 cargo test --test golden   # rewrite expected records from the e
 
 - **Golden vectors** (`tests/vectors/`): bytes in, feature records out, for x64, x64 with CET, arm64, arm64 with PAC, arm32, and thumb at `-O0/-O2/-Os`, plus `-fPIC -shared` objects (`*-pic-*`, with their relocation slots) for all four architectures, from real clang + lld output. `golden.rs` loads each PIC vector at two bases and requires identical features. Never hand-edit; regenerate and bless, and justify every record change in the commit or PR.
 - **Toy corpus gate** (`native/tests/corpus.rs`, `bench --baseline tests/baseline/native-bench.json`): recall per discovery mode and false-positive rates against the baseline with a 0.05 tolerance. The baseline is compiler-specific (currently LLVM 22.1.5, which CI installs from the pinned release archive), because even patch releases move small cells by more than the tolerance. Update the baseline only for an intentional improvement or a compiler change, with `--save-baseline`, and review the diff.
-- **Real corpus** (`corpus/build-real`, `tests/baseline/native-real-bench.json`): zlib, lz4, cJSON, Lua, and SQLite built with clang and gcc at `-O0/-O2/-Os` for all four architectures. This is the corpus the cross-arch and hint-free numbers are read from; run it before and after any matcher, feature, or normalization change and report the deltas. It is not in the per-push CI (it needs the gcc cross image); `.github/workflows/real-bench.yml` builds it and runs the `--joint` bench against the baseline weekly.
+- **Real corpus** (`corpus/build-real`, `tests/baseline/native-real-bench.json`): zlib, lz4, cJSON, Lua, and SQLite built with clang and gcc at `-O0/-O2/-Os` for all four architectures. This is the corpus the cross-arch and hint-free numbers are read from; run it before and after any matcher, feature, or normalization change and report the deltas. It is not in the per-push CI (it needs the gcc cross image); `.github/workflows/real-bench.yml` builds it and runs the `--joint --process-like` bench against the baseline weekly.
 - **Held-out corpus** (`corpus/build-heldout`, `real.py --heldout`): zstd, libyaml, and mbedtls, same matrix. Never tune on it or read it while choosing a rule; run it only at milestone exits and record the numbers in `PLAN.md` §8.
-- **Property and robustness:** normalization is idempotent; the same code at two bases yields identical features (`relocatable_vectors_give_identical_features_at_two_bases`); random bytes never crash recovery or start synthesis. `native/tests/hostile_inputs.rs` (stable, fixed seeds, no new dependencies) builds minimal ELF64 x86-64/AArch64, ELF32 ARM, and PE32+ images, a signature, and a DB, sets every recorded header field to edge values, corrupts and truncates them, and feeds golden-vector code to recovery; nothing may panic. The cargo-fuzz targets in `native/fuzz` (`image`, `signature`, `db`, `code`) call the same drivers (`native/tests/hostile/mod.rs`), and the `fuzz` CI job runs each for 60 s on every push.
-- **Live tests** (`native/tests/live_proc_win.rs`, Windows): a spawned helper process with a known function; checks read-only access, WOW64 rejection, and that `gen`/`locate`/`scan --pid` find it.
+- **Property and robustness:** normalization is idempotent; the same code at two bases yields identical features (`relocatable_vectors_give_identical_features_at_two_bases`); random bytes never crash recovery or start synthesis. `native/tests/hostile_inputs.rs` (stable, fixed seeds, no new dependencies) builds minimal ELF64 x86-64/AArch64, ELF32 ARM (each also with `.relr.dyn`, with an `APS2` table, and without section headers), and PE32+ images, a signature, and a DB, sets every recorded header field to edge values, corrupts and truncates them, and feeds golden-vector code to recovery and, as `--raw` blobs at edge bases, to `FileSource::from_raw` and the scan indexes; nothing may panic. `native/tests/raw_blobs.rs` cuts the `.text` of clang-built arm64, Thumb, and x64 executables with `llvm-objcopy -O binary` and requires functions signed from the ELF to be found first in the blob. The cargo-fuzz targets in `native/fuzz` (`image`, `signature`, `db`, `code`) call the same drivers (`native/tests/hostile/mod.rs`), and the `fuzz` CI job runs each for 60 s on every push.
+- **Live tests** (`native/tests/live_proc_win.rs`, Windows): a spawned helper process with a known function; checks read-only access, WOW64 rejection, and that `gen`/`locate`/`scan --pid` find it. `native/tests/process_modules.rs` runs the same per-module path on every platform: clang + lld shared objects at different bases mapped into one source the way `ProcessSource` maps modules, found in the right module at the right `module+rva`, unchanged by other modules, and a second copy of a module withholding `identified`.
+- **ELF inputs** (`native/tests/elf_inputs.rs`): packed relocations (`-z pack-relative-relocs`, `--pack-dyn-relocs=android`) must give the same features and hint-free matches as their unpacked twins, and an `llvm-objcopy --strip-sections` copy the same tables and hint-free matches as the `--strip-all` copy, all built with clang and lld for the four architectures.
 - New normalization rules need a vector or corpus case from real compiler output, not just a hand-written snippet.
 
 ## Workflow for agents

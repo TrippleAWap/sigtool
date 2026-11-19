@@ -4,6 +4,7 @@
 //! same extractor runs against a live process, an image file, or IDA without
 //! knowing which. Sources own all OS- and tool-specific access.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::arch::Arch;
@@ -166,10 +167,9 @@ pub trait ByteSource: Sync {
         Vec::new()
     }
 
-    /// An image file whose symbols name only exports (`strip --strip-all`,
-    /// or a PE file): symbol hints miss every local function, so front-ends
-    /// default to hint-free discovery. Live processes answer `false`: their
-    /// `.pdata` bounds already serve as hints.
+    /// An image whose symbols name only exports (`strip --strip-all`, a PE
+    /// file, a live process): symbol hints miss every local function, so
+    /// front-ends default to hint-free discovery.
     fn symbols_stripped(&self) -> bool {
         false
     }
@@ -400,4 +400,182 @@ pub fn read_regions(regions: &[Region], addr: u64, size: usize) -> Result<Vec<u8
         )));
     }
     Ok(out)
+}
+
+/// An image file seen the way [`crate::proc_win::ProcessSource`] sees a
+/// loaded module, so the bench can measure the live-process scan path on
+/// files with ground truth (`bench --process-like`). A process names no
+/// symbol starts, only unwind-table bounds (which a forced `--discovery
+/// hinted` scan takes for symbol bounds), so it answers `symbols_stripped()`
+/// as the process does; exports, imports, and relocations stay as the
+/// module gives them. Scans see it one module at a time ([`ModuleView`]).
+pub struct ProcessView<'a, S: ByteSource + ?Sized> {
+    inner: &'a S,
+    unwind: Vec<(u64, u64)>,
+}
+
+impl<'a, S: ByteSource + ?Sized> ProcessView<'a, S> {
+    /// View `inner` with `unwind` as its only function table: what the
+    /// image's own tables list, without starts a file source synthesized
+    /// from code, because a process source reads `.pdata` and synthesizes
+    /// nothing.
+    pub fn new(inner: &'a S, mut unwind: Vec<(u64, u64)>) -> ProcessView<'a, S> {
+        unwind.sort_unstable();
+        unwind.dedup_by_key(|(start, _)| *start);
+        ProcessView { inner, unwind }
+    }
+}
+
+impl<S: ByteSource + ?Sized> ByteSource for ProcessView<'_, S> {
+    fn arch(&self) -> Arch {
+        self.inner.arch()
+    }
+
+    fn read(&self, addr: u64, size: usize) -> Result<Vec<u8>, ReadError> {
+        self.inner.read(addr, size)
+    }
+
+    fn regions(&self) -> &[Region] {
+        self.inner.regions()
+    }
+
+    fn modules(&self) -> &[Module] {
+        self.inner.modules()
+    }
+
+    fn symbols_stripped(&self) -> bool {
+        true
+    }
+
+    fn unwind_entries(&self) -> &[(u64, u64)] {
+        &self.unwind
+    }
+
+    /// As `ProcessSource::hint_function`: an entry without a known end gives
+    /// no hint.
+    fn hint_function(&self, addr: u64) -> Option<(u64, u64)> {
+        self.unwind_function(addr).filter(|(_, end)| *end != 0)
+    }
+
+    fn is_thumb(&self, addr: u64) -> bool {
+        self.inner.is_thumb(addr)
+    }
+}
+
+/// One module of a source, seen as a stripped image of its own: only the
+/// regions that start inside the module, only its [`Module`], only its
+/// unwind entries, no symbol starts or bounds, and reads confined to the
+/// module's span.
+///
+/// A live process maps many modules into one address space, while every
+/// whole-image rule assumes one image: feature frequencies and the trust
+/// gates count one image's functions, a rival is another function of the
+/// same image, and joint resolution maps one module's call graph
+/// (`matcher::scan_in`, `joint::resolve`). Scanning each module through its
+/// own view gives a process the hint-free path a stripped file of the same
+/// module gets (`scanner::scan_modules`). The view also hides everything
+/// hint-free discovery may not read (AGENTS.md rule 10): what is left is the
+/// module's code and data, its unwind table, its exports and imports, and
+/// its relocations, as the inner source gives them.
+pub struct ModuleView<'a, S: ByteSource + ?Sized> {
+    inner: &'a S,
+    module: &'a Module,
+    regions: Cow<'a, [Region]>,
+    unwind: &'a [(u64, u64)],
+}
+
+impl<'a, S: ByteSource + ?Sized> ModuleView<'a, S> {
+    pub fn new(inner: &'a S, module: &'a Module) -> ModuleView<'a, S> {
+        let all = inner.regions();
+        let inside = |region: &Region| module.contains(region.start, 1);
+        // Sources keep regions sorted by start, so one module's regions are
+        // one run of the list and are borrowed; any other order is copied
+        // and sorted, as `regions` users expect.
+        let regions = match all.iter().position(inside) {
+            None => Cow::Borrowed(&all[..0]),
+            Some(first) => {
+                let count = all[first..].iter().take_while(|r| inside(r)).count();
+                if all[first + count..].iter().any(inside) {
+                    let mut owned: Vec<Region> =
+                        all.iter().filter(|r| inside(r)).cloned().collect();
+                    owned.sort_by_key(|region| region.start);
+                    Cow::Owned(owned)
+                } else {
+                    Cow::Borrowed(&all[first..first + count])
+                }
+            }
+        };
+        // `unwind_entries` is sorted by start (its contract).
+        let entries = inner.unwind_entries();
+        let end = module.base.saturating_add(module.size);
+        let low = entries.partition_point(|(start, _)| *start < module.base);
+        let high = entries.partition_point(|(start, _)| *start < end).max(low);
+        ModuleView {
+            inner,
+            module,
+            regions,
+            unwind: &entries[low..high],
+        }
+    }
+
+    pub fn module(&self) -> &'a Module {
+        self.module
+    }
+}
+
+impl<S: ByteSource + ?Sized> ByteSource for ModuleView<'_, S> {
+    fn arch(&self) -> Arch {
+        self.inner.arch()
+    }
+
+    fn read(&self, addr: u64, size: usize) -> Result<Vec<u8>, ReadError> {
+        if size > 0 && !self.module.contains(addr, size) {
+            return Err(ReadError(format!(
+                "read of {size} bytes at 0x{addr:x} is outside module {}",
+                self.module.name
+            )));
+        }
+        self.inner.read(addr, size)
+    }
+
+    fn regions(&self) -> &[Region] {
+        &self.regions
+    }
+
+    fn modules(&self) -> &[Module] {
+        std::slice::from_ref(self.module)
+    }
+
+    fn symbols_stripped(&self) -> bool {
+        true
+    }
+
+    fn unwind_entries(&self) -> &[(u64, u64)] {
+        self.unwind
+    }
+
+    fn start_sweep_truncated(&self) -> bool {
+        self.inner.start_sweep_truncated()
+    }
+
+    fn is_thumb(&self, addr: u64) -> bool {
+        self.inner.is_thumb(addr)
+    }
+
+    fn read_partial(&self, addr: u64, size: usize) -> Vec<u8> {
+        if !self.module.contains(addr, 1) {
+            return Vec::new();
+        }
+        let room = self.module.base.saturating_add(self.module.size) - addr;
+        let size = size.min(usize::try_from(room).unwrap_or(usize::MAX));
+        self.inner.read_partial(addr, size)
+    }
+
+    fn is_mapped(&self, addr: u64, size: usize) -> bool {
+        self.module.contains(addr, size) && self.inner.is_mapped(addr, size)
+    }
+
+    fn is_executable(&self, addr: u64) -> bool {
+        self.module.contains(addr, 1) && self.inner.is_executable(addr)
+    }
 }

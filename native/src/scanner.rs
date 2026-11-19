@@ -20,14 +20,128 @@
 //! persisted.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
+use crate::coverage::Coverage;
 use crate::errors::SignatureError;
 use crate::matcher::{
-    region_anchor_hits, scan_candidates, Match, RecoveryBudget, ReferenceIndex,
-    MAX_CANDIDATE_STARTS,
+    hinted_floors, identified, rank_key, region_anchor_hits, scan_candidates, scan_in, Match,
+    RecoveryBudget, ReferenceIndex, ScanContext, MAX_CANDIDATE_STARTS,
 };
 use crate::sigfile::Signature;
-use crate::source::{ByteSource, Region};
+use crate::source::{ByteSource, ModuleView, Region};
+
+/// Every signature against one image's shared context, best match first per
+/// signature, in signature order. Hint-free, the signatures of one module
+/// are then resolved jointly through their call-graph links (measured
+/// hint-free only, `bench --joint`). The path of `scan --file` and of each
+/// module of a process ([`scan_modules`]).
+pub fn scan_all<S: ByteSource + ?Sized>(
+    source: &S,
+    context: &ScanContext,
+    signatures: &[Signature],
+    hints: bool,
+) -> Vec<Vec<Match>> {
+    // Signatures share only the context's caches, so they scan in parallel;
+    // results keep signature order.
+    if signatures.len() > 1 {
+        context.prepare_frequencies(source, hints);
+    }
+    let mut all: Vec<Vec<Match>> = crate::parallel::map(signatures.len(), |index| {
+        scan_in(source, &signatures[index], context, hints)
+    });
+    if !hints {
+        crate::joint::resolve(source, context, signatures, &mut all, false);
+    }
+    all
+}
+
+/// [`scan_all`], hint-free, over each module of `source` on its own
+/// ([`ModuleView`]), merged into one ranked list per signature: the path
+/// `scan --pid` and `locate --pid` take, and the one `bench --process-like`
+/// measures. A process names no local function, so per module this is the
+/// scan a stripped file of that module gets, minus the starts a file source
+/// synthesizes from code.
+///
+/// `only` keeps the module with that base. `contexts`, one cell per entry of
+/// `source.modules()`, keeps each module's context for a caller that scans
+/// the same source again (the bench); without it each module's context is
+/// dropped before the next is built, so a process holds one at a time.
+/// Every module's budgets go to `coverage`.
+pub fn scan_modules<S: ByteSource + ?Sized>(
+    source: &S,
+    signatures: &[Signature],
+    only: Option<u64>,
+    contexts: Option<&[OnceLock<ScanContext>]>,
+    coverage: &mut Coverage,
+) -> Vec<Vec<Match>> {
+    let mut per_module: Vec<Vec<Vec<Match>>> = Vec::new();
+    for (index, module) in source.modules().iter().enumerate() {
+        if only.is_some_and(|base| base != module.base) {
+            continue;
+        }
+        let view = ModuleView::new(source, module);
+        // A module none of whose code was read (a data-only image, or pages
+        // past the source's read budget) has nothing to match.
+        if !view.regions().iter().any(|region| region.executable) {
+            continue;
+        }
+        let built;
+        let context = match contexts.and_then(|cells| cells.get(index)) {
+            Some(cell) => cell.get_or_init(|| ScanContext::build(&view)),
+            None => {
+                built = ScanContext::build(&view);
+                &built
+            }
+        };
+        coverage.add_context(context);
+        coverage.add_source(&view, false);
+        per_module.push(scan_all(&view, context, signatures, false));
+    }
+    let mut lists: Vec<Vec<Vec<Match>>> = signatures.iter().map(|_| Vec::new()).collect();
+    for module in per_module {
+        for (list, matches) in lists.iter_mut().zip(module) {
+            if !matches.is_empty() {
+                list.push(matches);
+            }
+        }
+    }
+    lists.into_iter().map(merge_modules).collect()
+}
+
+/// One signature's per-module lists (each ranked, in module order) as one
+/// list: modules ordered by their best match's rank, ties in module order,
+/// each module's own order kept, so a single module's list is unchanged.
+///
+/// Each module was judged as its own image, so two modules can each hold an
+/// identified best match (a library linked into the executable and loaded
+/// as a DLL too). The other modules' identified best matches are then the
+/// first one's rivals ([`crate::matcher::RIVAL_MARGIN`]): the answer stands
+/// only when it is clearly the better match, as within one image.
+fn merge_modules(mut lists: Vec<Vec<Match>>) -> Vec<Match> {
+    if lists.len() <= 1 {
+        return lists.pop().unwrap_or_default();
+    }
+    lists.sort_by(|left, right| {
+        rank_key(&right[0])
+            .partial_cmp(&rank_key(&left[0]))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let rival = lists[1..]
+        .iter()
+        .map(|list| &list[0])
+        .filter(|best| identified(best))
+        .map(|best| best.similarity)
+        .reduce(f64::max);
+    let mut merged: Vec<Match> = lists.into_iter().flatten().collect();
+    if let Some(rival) = rival {
+        let first = &mut merged[0];
+        if identified(first) {
+            first.rival = Some(first.rival.map_or(rival, |own| own.max(rival)));
+        }
+    }
+    merged
+}
 
 pub const PAGE_BITS: u32 = 12;
 pub const PAGE_SIZE: usize = 1 << PAGE_BITS;
@@ -150,6 +264,17 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
         &self.index
     }
 
+    /// The ranked matches the last pass left for the `index`-th signature
+    /// (in the order given to [`SignatureScanner::new`]), with the
+    /// similarity and matched keys a [`ScanHit`] drops; empty before the
+    /// first pass or past the end.
+    pub fn matches(&self, index: usize) -> &[Match] {
+        self.signatures
+            .get(index)
+            .and_then(|(_, id)| self.states.get(id))
+            .map_or(&[], |state| state.matches.as_slice())
+    }
+
     /// Run one incremental pass; unchanged regions carry matches over.
     pub fn scan_pass(&mut self) -> ScanReport {
         self.pass += 1;
@@ -191,7 +316,10 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                 .values()
                 .flat_map(|per_region| per_region.iter().cloned())
                 .collect();
-            state.matches = scan_candidates(
+            // The floors `scan_in` applies to hinted file scans; without them
+            // a process scan accepted shape-only lookalikes the bench's
+            // precision numbers never saw.
+            let candidates = scan_candidates(
                 self.source,
                 signature,
                 &flat,
@@ -201,6 +329,7 @@ impl<'a, S: ByteSource + ?Sized> SignatureScanner<'a, S> {
                 None,
                 Some(&mut budget),
             );
+            state.matches = hinted_floors(self.source, signature, candidates);
             for matched in &state.matches {
                 state.first_seen.entry(matched.address).or_insert(self.pass);
             }
