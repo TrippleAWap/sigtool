@@ -1709,22 +1709,19 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
     }
 
     let sym_size: u64 = if is64 { 24 } else { 16 };
-    let (Some(&symtab), Some(&strtab)) = (tags.get(&DT_SYMTAB), tags.get(&DT_STRTAB)) else {
-        return Vec::new();
-    };
-    let Some(strsz) = tags.get(&DT_STRSZ).copied() else {
-        return Vec::new();
-    };
-    let Some(strtab_offset) = to_offset(strtab, strsz) else {
-        return Vec::new();
-    };
-    let count = symbol_count(data, &tags, symtab, strtab, sym_size, is64, &to_offset);
-    let Some(count) = count.filter(|count| *count > 0) else {
-        return Vec::new();
-    };
-    let Some(symtab_offset) = to_offset(symtab, count * sym_size) else {
-        return Vec::new();
-    };
+    // The symbol table is optional here: relocation tables are read even
+    // when it cannot be sized, because the module then claims a relocation
+    // set (SPEC.md §2.2), and dropping every table would let addresses
+    // through as constants (hard rule 4).
+    let symbols = (|| {
+        let (&symtab, &strtab) = (tags.get(&DT_SYMTAB)?, tags.get(&DT_STRTAB)?);
+        let strsz = tags.get(&DT_STRSZ).copied()?;
+        let strtab_offset = to_offset(strtab, strsz)?;
+        let count = symbol_count(data, &tags, symtab, strtab, sym_size, is64, &to_offset)
+            .filter(|count| *count > 0)?;
+        let symtab_offset = to_offset(symtab, count * sym_size)?;
+        Some((symtab, strtab, strsz, strtab_offset, count, symtab_offset))
+    })();
 
     let unallocated =
         |kind: u32, addr: u64, offset: u64, size: u64, link: u32, entsize: u64| Section {
@@ -1739,13 +1736,16 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
             entsize,
         };
     let strtab_index = first_index as u32;
-    let symtab_index = strtab_index + 1;
-    let mut sections = vec![
-        (
+    let mut sections = Vec::new();
+    // Relocation tables link to the symbol table; without one, to section 0.
+    let mut symtab_index = 0;
+    if let Some((symtab, strtab, strsz, strtab_offset, count, symtab_offset)) = symbols {
+        symtab_index = strtab_index + 1;
+        sections.push((
             unallocated(ELF_SHT_STRTAB, strtab, strtab_offset, strsz, 0, 0),
             ".dynstr",
-        ),
-        (
+        ));
+        sections.push((
             unallocated(
                 ELF_SHT_DYNSYM,
                 symtab,
@@ -1755,8 +1755,8 @@ fn dynamic_sections(data: &[u8], is64: bool, first_index: usize) -> Vec<(Section
                 sym_size,
             ),
             ".dynsym",
-        ),
-    ];
+        ));
+    }
     let rela_size: u64 = if is64 { 24 } else { 12 };
     let rel_size: u64 = if is64 { 16 } else { 8 };
     let relr_size: u64 = if is64 { 8 } else { 4 };
