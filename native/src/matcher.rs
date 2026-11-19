@@ -1292,7 +1292,16 @@ pub fn scan_in<S: ByteSource + ?Sized>(
     if let Some(first) = matches.first() {
         if identified(first) {
             let rival = context.rival(source, signature, first, hints);
-            let wrapped = context.sole_wrapper(source, first.address, hints);
+            // A signature that is itself a sole callee (one `in:` link in
+            // its own image) describes the callee, not a wrapper around it:
+            // a static helper called from one place is found as itself.
+            let sole_callee = signature
+                .links
+                .iter()
+                .filter(|link| link.starts_with("in:"))
+                .count()
+                == 1;
+            let wrapped = !sole_callee && context.sole_wrapper(source, first.address, hints);
             matches[0].rival = rival;
             matches[0].wrapped = wrapped;
         }
