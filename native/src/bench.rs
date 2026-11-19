@@ -90,6 +90,15 @@ pub struct FalsePositiveCell {
     pub signatures: usize,
     pub signatures_with_hits: usize,
     pub hits: usize,
+    /// Distinct images the cell's signatures were scanned against. A cell
+    /// that scanned nothing has rate 0 by construction, so [`compare`] fails
+    /// it instead of letting it pass. Baselines saved before it was recorded
+    /// load as 0; only the current run's count is checked.
+    #[serde(default)]
+    pub targets: usize,
+    /// File bytes of those images (the stripped copies for hint-free scans).
+    #[serde(default)]
+    pub target_bytes: u64,
 }
 
 impl FalsePositiveCell {
@@ -290,6 +299,9 @@ struct Target {
     context: OnceLock<ScanContext>,
     /// The same image after `strip --strip-all`, when the corpus has one.
     stripped: Option<(FileSource, OnceLock<ScanContext>)>,
+    /// File size of the image and of its stripped copy, for FP cell sizes.
+    bytes: u64,
+    stripped_bytes: Option<u64>,
 }
 
 impl Target {
@@ -299,6 +311,14 @@ impl Target {
     fn scan(&self, signature: &Signature, hints: bool) -> Vec<Match> {
         let (source, context) = self.scan_source(hints);
         scan_in(source, signature, context, hints)
+    }
+
+    /// File size of the image [`Target::scan`] reads in this mode.
+    fn scanned_bytes(&self, hints: bool) -> u64 {
+        match (self.stripped_bytes, hints) {
+            (Some(bytes), false) => bytes,
+            _ => self.bytes,
+        }
     }
 
     fn scan_source(&self, hints: bool) -> (&FileSource, &ScanContext) {
@@ -360,6 +380,13 @@ fn load_targets(
         }
         let source =
             FileSource::from_path(corpus.join(path)).map_err(|error| format!("{path}: {error}"))?;
+        let file_size = |path: &str| {
+            std::fs::metadata(corpus.join(path))
+                .map(|metadata| metadata.len())
+                .map_err(|error| format!("{path}: {error}"))
+        };
+        let bytes = file_size(path)?;
+        let stripped_bytes = entry["stripped"].as_str().map(file_size).transpose()?;
         let stripped = match entry["stripped"].as_str() {
             Some(stripped) => Some((
                 FileSource::from_path(corpus.join(stripped))
@@ -393,6 +420,8 @@ fn load_targets(
             all_functions,
             context: OnceLock::new(),
             stripped,
+            bytes,
+            stripped_bytes,
         });
     }
     targets
@@ -790,7 +819,7 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         !options.skip_false_positives && options.discovery.as_deref() != Some(HINT_FREE);
     let hint_free_fp =
         !options.skip_false_positives && options.discovery.as_deref() != Some(HINTED);
-    let (corpus_counts, negative_counts) = if hinted_fp {
+    let (corpus_hits, negative_hits) = if hinted_fp {
         let corpus_hits = false_positive_hits(&all, corpus_targets, true);
         let negative_hits = false_positive_hits(&all, negative_targets, true);
         if let Some(path) = &options.fp_report {
@@ -799,16 +828,19 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
             let both: Vec<_> = corpus_hits.iter().chain(&negative_hits).cloned().collect();
             write_fp_report(Path::new(&hinted_path), &all, &both)?;
         }
-        let (corpus_counts, corpus_scans, corpus_answers) =
-            false_positive_counts(all.len(), &corpus_hits);
-        let (negative_counts, negative_scans, negative_answers) =
-            false_positive_counts(all.len(), &negative_hits);
         let cell = identified_cell(&mut answers, HINTED);
-        cell.unrelated_scans += corpus_scans + negative_scans;
-        cell.unrelated_answers += corpus_answers + negative_answers;
-        (corpus_counts, negative_counts)
+        for hits in [&corpus_hits, &negative_hits] {
+            cell.unrelated_scans += hits.len();
+            cell.unrelated_answers += hits
+                .iter()
+                .filter(|(_, _, matches)| identified_answer(matches))
+                .count();
+        }
+        (corpus_hits, negative_hits)
     } else {
-        (vec![0; all.len()], vec![0; all.len()])
+        // Not measured: the hinted cells report zero targets and fail a
+        // baseline comparison rather than pass with an unmeasured rate.
+        (Vec::new(), Vec::new())
     };
     // Hint-free scans see every function in a stripped image, so their
     // precision is its own number: any verdict, unrelated sources and the
@@ -826,24 +858,23 @@ pub fn run_with(corpus: &Path, options: &BenchOptions) -> Result<BenchReport, St
         if let Some(path) = &options.fp_report {
             write_fp_report(path, &all, &hits)?;
         }
-        let mut counts = vec![0usize; all.len()];
         let cell = identified_cell(&mut answers, HINT_FREE);
-        for (index, _, matches) in &hits {
-            counts[*index] += matches.len();
+        for (_, _, matches) in &hits {
             cell.unrelated_scans += 1;
             if identified_answer(matches) {
                 cell.unrelated_answers += 1;
             }
         }
-        false_positive_cells(&all, &counts, None)
+        false_positive_cells(&all, &hits, false, None)
     } else {
         Vec::new()
     };
     let is_strong: Vec<bool> = all.iter().map(|s| s.verdict == "strong").collect();
-    let false_positives = false_positive_cells(&all, &corpus_counts, Some(&is_strong));
-    let negative_false_positives = false_positive_cells(&all, &negative_counts, Some(&is_strong));
-    let any_false_positives = false_positive_cells(&all, &corpus_counts, None);
-    let any_negative_false_positives = false_positive_cells(&all, &negative_counts, None);
+    let false_positives = false_positive_cells(&all, &corpus_hits, true, Some(&is_strong));
+    let negative_false_positives =
+        false_positive_cells(&all, &negative_hits, true, Some(&is_strong));
+    let any_false_positives = false_positive_cells(&all, &corpus_hits, true, None);
+    let any_negative_false_positives = false_positive_cells(&all, &negative_hits, true, None);
 
     phases.done("false positives");
     let (joint, joint_false_positives) = if options.joint {
@@ -1060,21 +1091,6 @@ fn measure_joint(
     Ok((cells, false_positives))
 }
 
-/// Accepted matches per sample summed over the targets it must not match,
-/// plus the number of scans and of scans whose first match is identified.
-fn false_positive_counts(
-    samples: usize,
-    hits: &[(usize, &Target, Vec<Match>)],
-) -> (Vec<usize>, usize, usize) {
-    let mut per_sample = vec![0usize; samples];
-    let mut answers = 0;
-    for (index, _, matches) in hits {
-        per_sample[*index] += matches.len();
-        answers += usize::from(identified_answer(matches));
-    }
-    (per_sample, hits.len(), answers)
-}
-
 /// Every accepted match per `(sample, target)` pair, for reporting.
 fn false_positive_hits<'t, F>(
     samples: &[&Sample],
@@ -1163,13 +1179,30 @@ fn write_fp_report(
     std::fs::write(path, out).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// One cell per sample arch from the accepted matches of every
+/// `(sample, target)` scan; `only` keeps a subset of the samples.
 fn false_positive_cells(
     samples: &[&Sample],
-    counts: &[usize],
+    hits: &[(usize, &Target, Vec<Match>)],
+    hints: bool,
     only: Option<&[bool]>,
 ) -> Vec<FalsePositiveCell> {
+    let mut counts = vec![0usize; samples.len()];
+    // Images per arch, by identity: a negative image may share its
+    // `(arch, opt, stem)` with a corpus image.
+    let mut scanned: BTreeMap<&str, BTreeMap<*const Target, u64>> = BTreeMap::new();
+    for (index, target, matches) in hits {
+        if only.is_some_and(|keep| !keep[*index]) {
+            continue;
+        }
+        counts[*index] += matches.len();
+        scanned
+            .entry(samples[*index].arch.as_str())
+            .or_default()
+            .insert(*target as *const Target, target.scanned_bytes(hints));
+    }
     let mut cells: BTreeMap<String, FalsePositiveCell> = BTreeMap::new();
-    for (index, (sample, count)) in samples.iter().zip(counts).enumerate() {
+    for (index, (sample, count)) in samples.iter().zip(&counts).enumerate() {
         if only.is_some_and(|keep| !keep[index]) {
             continue;
         }
@@ -1180,11 +1213,19 @@ fn false_positive_cells(
                 signatures: 0,
                 signatures_with_hits: 0,
                 hits: 0,
+                targets: 0,
+                target_bytes: 0,
             });
         cell.signatures += 1;
         cell.hits += count;
         if *count > 0 {
             cell.signatures_with_hits += 1;
+        }
+    }
+    for cell in cells.values_mut() {
+        if let Some(images) = scanned.get(cell.arch.as_str()) {
+            cell.targets = images.len();
+            cell.target_bytes = images.values().sum();
         }
     }
     cells.into_values().collect()
@@ -1267,6 +1308,13 @@ pub fn compare(baseline: &BenchReport, current: &BenchReport, tolerance: f64) ->
                 failures.push(format!("missing {label} cell {}", cell.arch));
                 continue;
             };
+            if current.targets == 0 {
+                failures.push(format!(
+                    "{label} {}: scanned 0 targets; an empty cell cannot pass",
+                    cell.arch
+                ));
+                continue;
+            }
             if current.rate() > cell.rate() + tolerance {
                 failures.push(format!(
                     "{label} {}: {:.3} > baseline {:.3} + {tolerance:.2}",
@@ -1580,12 +1628,14 @@ pub fn render(report: &BenchReport) -> String {
         for cell in cells {
             let _ = writeln!(
                 text,
-                "  {}: {}/{} = {:.3}, total hits {}",
+                "  {}: {}/{} = {:.3}, total hits {}, {} targets ({:.1} MiB)",
                 cell.arch,
                 cell.signatures_with_hits,
                 cell.signatures,
                 cell.rate(),
-                cell.hits
+                cell.hits,
+                cell.targets,
+                cell.target_bytes as f64 / (1024.0 * 1024.0)
             );
         }
     }
@@ -1781,7 +1831,42 @@ mod tests {
         baseline.identified.clear();
         baseline.library_recall.clear();
         baseline.cost = None;
+        // A run compared against it scanned targets in every FP cell.
+        for cell in fp_cells(&mut baseline) {
+            cell.targets = 1;
+        }
         baseline
+    }
+
+    fn fp_cells(report: &mut BenchReport) -> impl Iterator<Item = &mut FalsePositiveCell> {
+        [
+            &mut report.false_positives,
+            &mut report.negative_false_positives,
+            &mut report.any_false_positives,
+            &mut report.any_negative_false_positives,
+            &mut report.hint_free_false_positives,
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    #[test]
+    fn baselines_without_target_counts_load() {
+        let mut baseline: BenchReport =
+            serde_json::from_str(include_str!("../../tests/baseline/native-real-bench.json"))
+                .expect("baseline loads");
+        assert!(fp_cells(&mut baseline).all(|cell| cell.targets == 0));
+    }
+
+    #[test]
+    fn empty_false_positive_cells_fail() {
+        let baseline = old_baseline();
+        let mut current = baseline.clone();
+        // A zero rate from a cell that scanned nothing is not a measurement.
+        current.negative_false_positives[0].targets = 0;
+        let failures = compare(&baseline, &current, DEFAULT_TOLERANCE);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("scanned 0 targets"), "{failures:?}");
     }
 
     fn answers(discovery: &str, correct: usize, unrelated_answers: usize) -> IdentifiedCell {
