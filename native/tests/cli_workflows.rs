@@ -882,8 +882,9 @@ fn joint_resolution_reports_a_group_past_the_pair_cap() {
 }
 
 /// `gen`, `merge`, and `db build --output` replace an existing file with the
-/// complete output and leave no temporary file next to it; a write that
-/// fails (the target is a directory) leaves none either.
+/// complete output through a temporary file and a rename, and leave no
+/// temporary file next to it; a write that fails (the target is a
+/// directory) leaves none either.
 #[test]
 fn outputs_replace_the_old_file_whole() {
     if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
@@ -943,6 +944,47 @@ fn outputs_replace_the_old_file_whole() {
         ],
         &[],
     );
+    // Only a write through a temporary file and a rename replaces a
+    // read-only target in a writable directory (an in-place write cannot
+    // open it), and a symlinked output keeps its link and updates the file
+    // it points at.
+    #[cfg(unix)]
+    let (locked_text, link_kept, linked_text) = {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = out.join("locked.yaml");
+        std::fs::write(&locked, b"stale").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
+        run(&[
+            "gen",
+            "--file",
+            x64.to_str().unwrap(),
+            "--rva",
+            &x64_rva,
+            "--output",
+            locked.to_str().unwrap(),
+        ]);
+        let shared = dir.join("shared.yaml");
+        std::fs::write(&shared, b"stale").unwrap();
+        let link = out.join("link.yaml");
+        std::os::unix::fs::symlink(&shared, &link).unwrap();
+        run(&[
+            "gen",
+            "--file",
+            x64.to_str().unwrap(),
+            "--rva",
+            &x64_rva,
+            "--output",
+            link.to_str().unwrap(),
+        ]);
+        (
+            std::fs::read_to_string(&locked).unwrap(),
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            std::fs::read_to_string(&shared).unwrap(),
+        )
+    };
     let gen_text = std::fs::read_to_string(&gen_yaml).unwrap();
     let merge_text = std::fs::read_to_string(&merge_yaml).unwrap();
     let same_db = std::fs::read(&db).unwrap() == std::fs::read(&rebuilt).unwrap();
@@ -958,8 +1000,17 @@ fn outputs_replace_the_old_file_whole() {
     assert_eq!(merge_text, merge_stdout, "merge --output");
     assert!(same_db, "db build --output over a stale file");
     assert_eq!(refused.status.code(), Some(2), "a directory as --output");
+    #[cfg(unix)]
+    {
+        assert_eq!(
+            locked_text, gen_stdout,
+            "gen --output over a read-only file"
+        );
+        assert!(link_kept, "gen --output replaced the symlink itself");
+        assert_eq!(linked_text, gen_stdout, "gen --output through a symlink");
+    }
     assert!(
-        left.iter().all(|name| !name.contains(".tmp-")),
+        left.iter().all(|name| !name.contains("sigtool-tmp")),
         "temporary files left behind: {left:?}"
     );
 }

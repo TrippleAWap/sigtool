@@ -2377,33 +2377,78 @@ fn write_json(path: &Path, document: &BTreeMap<String, Value>) -> Result<(), Cli
         .map_err(|error| CliError::input(format!("cannot write {}: {error}", path.display())))
 }
 
-/// Write `bytes` to `path` through `NAME.tmp-PID` in the same directory,
-/// renamed over `path` once complete, so a crash, a full disk, or a cancel
-/// mid-write leaves the previous file whole: a DB a front-end rebuilds in
-/// place is otherwise truncated, and every later scan of it refused.
+/// Write `bytes` to `path` through `.NAME.sigtool-tmp` in the same
+/// directory, renamed over `path` once complete, so a crash, a full disk, or
+/// a cancel mid-write leaves the previous file whole: a DB a front-end
+/// rebuilds in place is otherwise truncated, and every later scan of it
+/// refused. The temporary name is fixed per target, so a killed run leaves at
+/// most one stale file, which the next run replaces.
+///
+/// Only a regular file (or a missing one) is replaced this way. A symlink is
+/// followed and its target replaced, so the link survives; a device, FIFO,
+/// or Windows device name (`NUL`) is written in place as before, since a
+/// rename would replace the node itself.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     use std::io::Write;
     let fail = |error: std::io::Error| {
         CliError::input(format!("cannot write {}: {error}", path.display()))
     };
-    let Some(name) = path.file_name() else {
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::canonicalize(path) {
+            Ok(resolved) => resolved,
+            // A dangling link: write through it as the old code did.
+            Err(_) => return std::fs::write(path, bytes).map_err(fail),
+        },
+        Ok(meta) if !meta.is_file() => return std::fs::write(path, bytes).map_err(fail),
+        _ if is_windows_device(path) => return std::fs::write(path, bytes).map_err(fail),
+        _ => path.to_path_buf(),
+    };
+    let Some(name) = target.file_name() else {
         return Err(CliError::input(format!(
             "cannot write {}: not a file name",
             path.display()
         )));
     };
-    let mut temporary_name = name.to_os_string();
-    temporary_name.push(format!(".tmp-{}", std::process::id()));
-    let temporary = path.with_file_name(temporary_name);
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(name);
+    temporary_name.push(".sigtool-tmp");
+    let temporary = target.with_file_name(temporary_name);
     let written = std::fs::File::create(&temporary).and_then(|mut file| {
         file.write_all(bytes)?;
         file.sync_all()
     });
-    if let Err(error) = written.and_then(|()| std::fs::rename(&temporary, path)) {
-        std::fs::remove_file(&temporary).ok();
-        return Err(fail(error));
+    let renamed = written.and_then(|()| std::fs::rename(&temporary, &target));
+    match renamed {
+        Ok(()) => Ok(()),
+        // Windows refuses to rename over a file another process holds open
+        // without FILE_SHARE_DELETE (a reader that keeps the DB open); the
+        // in-place write that worked before still does.
+        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            std::fs::remove_file(&temporary).ok();
+            std::fs::write(&target, bytes).map_err(fail)
+        }
+        Err(error) => {
+            std::fs::remove_file(&temporary).ok();
+            Err(fail(error))
+        }
     }
-    Ok(())
+}
+
+/// Whether `path` names a Windows device (`NUL`, `CON`, `COM1`, ...), which
+/// Windows opens as the device whatever the directory or extension.
+fn is_windows_device(path: &Path) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    let stem = stem.trim_end_matches([' ', '.']).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
 }
 
 fn json_number(value: f64) -> Value {
