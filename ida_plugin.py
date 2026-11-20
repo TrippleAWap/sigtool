@@ -1759,6 +1759,17 @@ def _sigtool_owned(ea: int) -> bool:
     )
 
 
+def _revertible(ea: int, base: int) -> bool:
+    """Whether sigtool can give ``ea`` back its old name: it still has the
+    name sigtool gave it, and its provenance line records the old one (lines
+    written before sigtool recorded old names do not)."""
+    reverts, _skipped = revert_plan(
+        [(ea - base, str(ida_name.get_ea_name(ea) or ""), _function_comment(ea))],
+        _validated_name,
+    )
+    return bool(reverts)
+
+
 def _revert_function(ea: int, base: int) -> Revert | None:
     """Undo sigtool's last rename of the function at ``ea``; what was done."""
     reverts, _skipped = revert_plan(
@@ -1769,10 +1780,11 @@ def _revert_function(ea: int, base: int) -> Revert | None:
         return None
     item = reverts[0]
     if not ida_name.set_name(ea, item.old, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
-        # The old name is in use elsewhere now; a dummy name is never wrong.
-        if not item.old or not ida_name.set_name(ea, "", ida_name.SN_NOWARN):
-            return None
-        item = Revert(item.rva, item.current, "", item.comment)
+        # The old name is held elsewhere (often by a function a later apply
+        # gave it). Clearing the name and dropping the provenance line here
+        # would lose the analyst's name for good, so both stay as they are;
+        # the caller retries once other reverts have freed names.
+        return None
     function = ida_funcs.get_func(ea)
     if function is not None:
         ida_funcs.set_func_cmt(function, item.comment, False)
@@ -2431,7 +2443,7 @@ class ApplyNamesHandler(_Handler):
             # A name an earlier apply gave another function may move here:
             # the newer match wins, and that function gets its old name back.
             ea = ida_name.get_name_ea(ida_idaapi.BADADDR, name)
-            if ea == ida_idaapi.BADADDR or _sigtool_owned(int(ea)):
+            if ea == ida_idaapi.BADADDR or _revertible(int(ea), base):
                 return None
             return int(ea) - base
 
@@ -2485,8 +2497,17 @@ class ApplyNamesHandler(_Handler):
                 ida_kernwin.msg(f"sigtool: not renaming {item.name}: {problem}\n")
                 continue
             holder = ida_name.get_name_ea(ida_idaapi.BADADDR, item.name)
-            if holder != ida_idaapi.BADADDR and int(holder) != ea and _sigtool_owned(int(holder)):
-                _revert_function(int(holder), base)
+            if (
+                holder != ida_idaapi.BADADDR
+                and int(holder) != ea
+                and _sigtool_owned(int(holder))
+                and _revert_function(int(holder), base) is None
+            ):
+                ida_kernwin.msg(
+                    f"sigtool: not renaming {item.name}: {int(holder):#x} holds it and "
+                    "its old name is in use, so it cannot be reverted\n"
+                )
+                continue
             # SN_NOCHECK replaces characters IDA does not allow in names (a
             # name from another toolchain's mangling) instead of failing.
             if not ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
@@ -2555,14 +2576,28 @@ class RevertNamesHandler(_Handler):
         ):
             return
         rows = []
-        for item in reverts:
-            ea = base + item.rva
-            done = _revert_function(ea, base)
-            if done is None:
-                ida_kernwin.msg(f"sigtool: IDA refused to revert {ea:#x} ({item.current})\n")
-                continue
-            restored = done.old or str(ida_name.get_ea_name(ea) or "")
-            rows.append(Row(ea=ea, cells=(f"{ea:#x}", done.current, restored)))
+        pending = list(reverts)
+        # Two passes: an old name held by another function being reverted is
+        # free once that function has its own old name back.
+        for _attempt in range(2):
+            failed = []
+            for item in pending:
+                ea = base + item.rva
+                done = _revert_function(ea, base)
+                if done is None:
+                    failed.append(item)
+                    continue
+                restored = done.old or str(ida_name.get_ea_name(ea) or "")
+                rows.append(Row(ea=ea, cells=(f"{ea:#x}", done.current, restored)))
+            if not failed or len(failed) == len(pending):
+                pending = failed
+                break
+            pending = failed
+        for item in pending:
+            ida_kernwin.msg(
+                f"sigtool: left {base + item.rva:#x} as {item.current}: its old name "
+                f"{item.old!r} is used by another function; rename that one and revert again\n"
+            )
         ida_kernwin.msg(f"sigtool: reverted {len(rows)} of {len(reverts)} sigtool names\n")
         ida_kernwin.refresh_idaview_anyway()
         if rows:

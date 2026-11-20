@@ -454,6 +454,50 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual([name for name, _ in skipped], ["crc", "deflate"])
         self.assertIn("renamed since", dict(skipped)["deflate"])
 
+    def test_revert_keeps_name_and_comment_when_the_old_name_is_taken(self):
+        # X was `foo`, sigtool named it `baz`; a later apply gave `foo` to Y.
+        # Reverting X must not clear it to a dummy name and drop the only
+        # record of `foo`.
+        names = {0x1200: "baz", 0x1300: "foo"}
+        comments = {0x1200: "sigtool: baz (was foo) from a.db (s)"}
+
+        def set_name(ea, name, _flags=0):
+            if name and name in names.values() and names.get(ea) != name:
+                return False
+            names[ea] = name
+            return True
+
+        function = types.SimpleNamespace(start_ea=0x1200)
+        written = []
+        with (
+            mock.patch.object(plugin.ida_name, "get_ea_name", names.get, create=True),
+            mock.patch.object(plugin.ida_name, "set_name", set_name, create=True),
+            mock.patch.object(plugin.ida_name, "SN_NOWARN", 1, create=True),
+            mock.patch.object(plugin.ida_name, "SN_NOCHECK", 2, create=True),
+            mock.patch.object(plugin.ida_funcs, "get_func", lambda _ea: function, create=True),
+            mock.patch.object(
+                plugin.ida_funcs,
+                "get_func_cmt",
+                lambda f, _r: comments.get(f.start_ea),
+                create=True,
+            ),
+            mock.patch.object(
+                plugin.ida_funcs,
+                "set_func_cmt",
+                lambda f, text, _r: written.append((f.start_ea, text)),
+                create=True,
+            ),
+            mock.patch.object(plugin, "_validated_name", lambda name: name),
+        ):
+            self.assertIsNone(plugin._revert_function(0x1200, 0x1000))
+            self.assertEqual(names[0x1200], "baz")
+            self.assertEqual(written, [])
+            # Once `foo` is free, the second pass restores it.
+            names[0x1300] = "sub_1300"
+            done = plugin._revert_function(0x1200, 0x1000)
+        self.assertEqual((done.old, names[0x1200]), ("foo", "foo"))
+        self.assertEqual(written, [(0x1200, "")])
+
     def test_proposals_carry_the_signature_id(self):
         proposals, _ = choose([hit("inflate", 0x200, signature_id="sig-1")])
         self.assertEqual(proposals[0].signature_id, "sig-1")
