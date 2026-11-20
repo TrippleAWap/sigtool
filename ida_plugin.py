@@ -536,11 +536,18 @@ def is_signature_text(text: str | None) -> bool:
 MAX_FILE_STEM = 96
 
 
+_WINDOWS_DEVICE = re.compile(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])")
+
+
 def safe_file_name(name: str) -> str:
     """``name`` usable as a file name (mangled names hold characters file systems
     refuse); a long one is cut and keeps a hash of the whole, so two long names
     sharing a prefix stay apart."""
     safe = re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+    # Windows opens CON, NUL, COM1, ... as the device whatever the folder or
+    # extension (`nul.so.db` too), so `sigtool/nul.yaml` would vanish.
+    if _WINDOWS_DEVICE.fullmatch(safe.split(".")[0]):
+        safe = f"_{safe}"
     if len(safe) <= MAX_FILE_STEM:
         return safe
     digest = hashlib.blake2b(name.encode("utf-8", "replace"), digest_size=4).hexdigest()

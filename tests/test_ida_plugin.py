@@ -133,6 +133,12 @@ class NameTests(unittest.TestCase):
         self.assertEqual(plugin.own_stem("", "libz.so.1"), "libz.so.1")
         self.assertEqual(plugin.own_stem("C:\\w\\libz.so.i64", "x"), "libz.so")
 
+    def test_windows_device_names_are_not_file_names(self):
+        for name in ("nul", "CON", "com1", "aux.so", "Lpt9"):
+            self.assertTrue(plugin.safe_file_name(name).startswith("_"), name)
+        for name in ("console", "nullify", "com0", "auxiliary"):
+            self.assertEqual(plugin.safe_file_name(name), name)
+
     def test_build_summary_lists_skipped(self):
         text = plugin.summarize_build(
             {
