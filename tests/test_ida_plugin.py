@@ -114,6 +114,16 @@ class NameTests(unittest.TestCase):
         self.assertEqual(status.error(2), "skipped 0x10 f: no\nerror: bad")
         self.assertEqual(plugin.WaitStatus("x").error(3), "exit code 3")
 
+    def test_own_db_is_named_after_the_idb_not_the_input(self):
+        folder = Path("work")
+        x64_idb, arm_idb = str(folder / "libz-x64.i64"), str(folder / "libz-arm64.i64")
+        x64 = plugin.own_db_paths(x64_idb, plugin.own_stem(x64_idb, "libz.so.1"))
+        arm = plugin.own_db_paths(arm_idb, plugin.own_stem(arm_idb, "libz.so.1"))
+        self.assertEqual(x64[0], str(folder / "sigtool" / "libz-x64.db"))
+        self.assertNotEqual(x64, arm)
+        self.assertEqual(plugin.own_stem("", "libz.so.1"), "libz.so.1")
+        self.assertEqual(plugin.own_stem("C:\\w\\libz.so.i64", "x"), "libz.so")
+
     def test_build_summary_lists_skipped(self):
         text = plugin.summarize_build(
             {

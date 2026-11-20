@@ -1883,7 +1883,7 @@ def _db_signature_count(path: str) -> int | None:
 def _confirm_replace(path: str, what: str) -> None:
     """Ask before ``db build`` replaces a DB that is not this IDB's own."""
     own = {
-        os.path.normcase(os.path.abspath(item)) for item in own_db_paths(_idb_path(), _image_stem())
+        os.path.normcase(os.path.abspath(item)) for item in own_db_paths(_idb_path(), _own_stem())
     }
     if not os.path.exists(path) or os.path.normcase(os.path.abspath(path)) in own:
         return
@@ -1983,6 +1983,18 @@ def _image_stem() -> str:
     return Path(ida_nalt.get_root_filename() or Path(_idb_path()).stem or "image").name
 
 
+def own_stem(idb_path: str, image_stem: str) -> str:
+    """The name this IDB's own DBs take: the IDB's file name without its
+    extension (``libz-x64.i64`` -> ``libz-x64``), so two IDBs in one folder
+    made from same-named inputs (one library per arch) keep separate DBs;
+    the input's name when there is no IDB path."""
+    return Path(_basename(idb_path)).stem if idb_path else image_stem
+
+
+def _own_stem() -> str:
+    return own_stem(_idb_path(), _image_stem())
+
+
 class GenerateHandler(_Handler):
     """Sign the function under the cursor, or the Functions view's selection to a DB."""
 
@@ -2005,7 +2017,7 @@ class GenerateHandler(_Handler):
                     "(see the Output window)"
                 )
             what = f"{len(functions)} selected functions"
-            _sign_to_db(image, functions, what, f"{_image_stem()}.selection", self.db)
+            _sign_to_db(image, functions, what, f"{_own_stem()}.selection", self.db)
             return
         ea = starts[0]
         label = _function_label(ea)
@@ -2239,7 +2251,7 @@ class SignAllHandler(_Handler):
             ida_kernwin.warning("sigtool: no named functions to sign (only sub_* and stubs)")
             return
         what = f"{len(functions)} named functions"
-        _sign_to_db(_input_file(), functions, what, _image_stem(), self.db)
+        _sign_to_db(_input_file(), functions, what, _own_stem(), self.db)
 
 
 class ResultChooser(ida_kernwin.Choose):
@@ -2706,7 +2718,7 @@ class MenuHandler(_Handler):
         choice = int(_remembered("choice", "0") or 0)
         # The field shows the DB to apply; apply-names remembers it, the
         # menu does not, so a path typed for signing does not become it.
-        shown = _remembered("apply_db", "") or own_db_paths(_idb_path(), _image_stem())[0]
+        shown = _remembered("apply_db", "") or own_db_paths(_idb_path(), _own_stem())[0]
         db = shown
         while True:
             picked = show_menu(choice, db)
@@ -2718,7 +2730,7 @@ class MenuHandler(_Handler):
             if name != "rSettings":
                 break
             show_settings()
-        idb, stem = _idb_path(), _image_stem()
+        idb, stem = _idb_path(), _own_stem()
         handlers = {
             "rGen": lambda: GenerateHandler(signing_db_path(db, shown, idb, stem, True)),
             "rMerge": MergeHandler,

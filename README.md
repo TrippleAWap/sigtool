@@ -164,8 +164,8 @@ spec than it expects.
 menu. It has one radio row per action, the signatures DB that apply-names
 reads, and **Configure settings**, and it remembers the last action and the
 last DB applied or signed. Sign-all and generate on a selection write this
-IDB's own DB (`sigtool/<input>.db` beside the IDB, `<input>.selection.db`
-for a selection) unless you type another
+IDB's own DB (`sigtool/<IDB name>.db` beside the IDB, `<IDB name>.selection.db`
+for a selection, so two IDBs of same-named inputs keep separate DBs) unless you type another
 path into the field, and they ask before replacing a DB that is not this
 IDB's own.
 The actions also appear in a top-level `sigtool` menu (or under Edit >
