@@ -2457,20 +2457,28 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
 }
 
 /// Whether `path` names a Windows device (`NUL`, `CON`, `COM1`, ...), which
-/// Windows opens as the device whatever the directory or extension.
+/// Windows opens as the device whatever the directory or extensions
+/// (`nul.so.db` too, so the name up to its first dot decides).
 fn is_windows_device(path: &Path) -> bool {
     if !cfg!(windows) {
         return false;
     }
-    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let stem = stem.trim_end_matches([' ', '.']).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit()
-            && stem.as_bytes()[3] != b'0')
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.len() == 4
+        && stem.as_bytes()[3].is_ascii_digit()
+        && stem.as_bytes()[3] != b'0')
 }
 
 fn json_number(value: f64) -> Value {
