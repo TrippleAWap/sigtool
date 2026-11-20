@@ -1799,6 +1799,17 @@ def _sigtool_owned(ea: int) -> bool:
     )
 
 
+def _name_holder(name: str) -> int | None:
+    """The address holding ``name``, also as IDA stored it: an earlier
+    rename went through ``SN_NOCHECK``, which replaces characters IDA
+    refuses, so the raw spelling alone may find nothing."""
+    for spelling in dict.fromkeys((name, _validated_name(name))):
+        ea = ida_name.get_name_ea(ida_idaapi.BADADDR, spelling)
+        if ea != ida_idaapi.BADADDR:
+            return int(ea)
+    return None
+
+
 def _revertible(ea: int, base: int) -> bool:
     """Whether sigtool can give ``ea`` back its old name: it still has the
     name sigtool gave it, and its provenance line records the old one (lines
@@ -2480,10 +2491,10 @@ class ApplyNamesHandler(_Handler):
         def name_owner(name: str) -> int | None:
             # A name an earlier apply gave another function may move here:
             # the newer match wins, and that function gets its old name back.
-            ea = ida_name.get_name_ea(ida_idaapi.BADADDR, name)
-            if ea == ida_idaapi.BADADDR or _revertible(int(ea), base):
+            ea = _name_holder(name)
+            if ea is None or _revertible(ea, base):
                 return None
-            return int(ea) - base
+            return ea - base
 
         proposals, skipped = choose_renames(
             hits,
@@ -2539,15 +2550,15 @@ class ApplyNamesHandler(_Handler):
             if problem is not None:
                 ida_kernwin.msg(f"sigtool: not renaming {item.name}: {problem}\n")
                 continue
-            holder = ida_name.get_name_ea(ida_idaapi.BADADDR, item.name)
+            holder = _name_holder(item.name)
             if (
-                holder != ida_idaapi.BADADDR
-                and int(holder) != ea
-                and _sigtool_owned(int(holder))
-                and _revert_function(int(holder), base) is None
+                holder is not None
+                and holder != ea
+                and _sigtool_owned(holder)
+                and _revert_function(holder, base) is None
             ):
                 ida_kernwin.msg(
-                    f"sigtool: not renaming {item.name}: {int(holder):#x} holds it and "
+                    f"sigtool: not renaming {item.name}: {holder:#x} holds it and "
                     "its old name is in use, so it cannot be reverted\n"
                 )
                 continue
