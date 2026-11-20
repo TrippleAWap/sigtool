@@ -6,7 +6,8 @@ what comes back, so a signature made here is byte-identical to one made with
 ``sigtool-native gen --file IMAGE --rva RVA``. Addresses cross the boundary as
 RVAs (``ea - imagebase``), which keeps rebased databases correct.
 
-Install (IDA 8.4+ / 9.x, Python 3.10+, no extra packages):
+Install (IDA 9.x from the release zip; IDA 8.4 as a flat copy, untested;
+Python 3.10+, no extra packages; not yet run in a real IDA, see README):
 
     cargo build --release --manifest-path native/Cargo.toml
     # copy this file into %IDAUSR%/plugins and native/target/release/sigtool-native
@@ -38,9 +39,11 @@ A file dialog asks for the input file only when neither works (an IDB of
 another format).
 
 Ctrl-Alt-G (or Edit > Plugins > sigtool) opens the action menu, laid out
-like IDA-Fusion's: one radio row per action, the signatures DB that sign-all
-writes and apply-names reads, and "Configure settings", whose checkboxes are
-kept in IDA's registry. The menu remembers the last action and DB. By
+like IDA-Fusion's: one radio row per action, the signatures DB apply-names
+reads, and "Configure settings", whose checkboxes are kept in IDA's
+registry. The menu remembers the last action and the last DB applied or
+signed; sign-all writes this IDB's own DB unless another path is typed in,
+and asks before replacing a DB that is not this IDB's own. By
 default nothing asks for a file: a new signature is copied to the clipboard
 and saved as ``sigtool/<function>.yaml`` beside the IDB, DBs go to the same
 folder, locate takes the signature on the clipboard, and the best match is
@@ -54,22 +57,35 @@ pseudocode, and Functions views, where they act on the selected rows.
 * ``sigtool: merge with another build``: sign the function together with the
   same function in other image files (at an address or RVA) into one
   multi-arch signature.
-* ``sigtool: locate signature in this IDB``: scan the input file with the
-  signature on the clipboard (else a saved one), list the matches, and jump to
-  the best one.
+* ``sigtool: locate signature in this IDB``: scan the input file hint-free
+  with the signature on the clipboard (else a saved one), list the matches
+  under the IDB's names, and jump to the best one when it is ``identified``
+  (otherwise the list opens for review). A row's right-click menu has
+  ``sigtool: explain this row``.
+* ``sigtool: explain the locate result at the cursor``: ``locate --explain
+  --expect`` on the function under the cursor, shown in a text view: the
+  deciding gate, every gate, and the matched, inherited, and missed keys.
 * ``sigtool: sign all named functions to a DB``: sign every function with a
   meaningful name (not ``sub_*`` or another IDA dummy name, not a thunk, an
   extern, or a stub under five bytes) into one signatures DB, in a single
   ``sigtool-native db build --file IMAGE --functions LIST`` run with progress
-  and cancel. Functions the CLI cannot sign are listed and skipped.
+  and cancel. Functions the CLI cannot sign are listed and skipped; the
+  summary counts verdicts and confidence.
 * ``sigtool: apply names from a DB``: scan the input file with a signatures DB
   (``scan --db --discovery hint-free``, which resolves signatures from one
   module jointly through their call graph) and propose renames for functions
   whose match is ``identified``. The proposals open in a chooser with every
   row selected except those that would replace a user name (both settings);
-  the selected rows are renamed. A name already used elsewhere in the IDB,
-  two signatures claiming one address, or one name claiming two addresses is
-  skipped.
+  ``candidate`` (and, with a setting, ``shape-only``) matches follow,
+  unselected, for review; the selected rows are renamed. A name already used
+  elsewhere in the IDB, two signatures claiming one address, or one name
+  claiming two addresses is skipped. Each rename records ``sigtool: NEW (was
+  OLD) from DB`` in the function comment; a later apply treats such a name as
+  sigtool's, not the analyst's.
+* ``sigtool: revert sigtool names``: restore the old names those comment lines
+  record, where the function still has the name sigtool gave it.
+* ``sigtool: show a DB's contents``: ``db list`` in a chooser, ``db info`` as
+  its title.
 
 File dialogs that remain start beside the IDB, or at the file last used.
 
@@ -79,8 +95,10 @@ another" workflow: sign the analysed IDB, then apply the DB in the other one.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import hashlib
+import importlib
 import json
 import os
 import queue
@@ -88,8 +106,10 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,6 +138,14 @@ SIGN_ALL_ACTION = "sigtool:sign_all"
 SIGN_ALL_LABEL = "sigtool: sign all named functions to a DB"
 APPLY_ACTION = "sigtool:apply_names"
 APPLY_LABEL = "sigtool: apply names from a DB"
+REVERT_ACTION = "sigtool:revert_names"
+SHOW_DB_ACTION = "sigtool:show_db"
+SHOW_DB_LABEL = "sigtool: show a DB's contents"
+EXPLAIN_ACTION = "sigtool:explain"
+EXPLAIN_LABEL = "sigtool: explain the locate result at the cursor"
+EXPLAIN_ROW_ACTION = "sigtool:explain_row"
+EXPLAIN_ROW_LABEL = "sigtool: explain this row"
+REVERT_LABEL = "sigtool: revert sigtool names"
 OPEN_ACTION = "sigtool:open"
 OPEN_LABEL = "sigtool: open menu"
 # One hotkey opens the action menu, as IDA-Fusion does with Ctrl-Alt-S
@@ -136,15 +164,17 @@ SET_AUTO_JUMP = 1 << 4
 SET_LIST_MATCHES = 1 << 5
 SET_CONFIRM_RENAMES = 1 << 6
 SET_PRESELECT_USER_NAMES = 1 << 7
+SET_REVIEW_SHAPE_ONLY = 1 << 8
 SETTINGS = (
     (SET_COPY_TO_CLIPBOARD, "Copy created signatures to the clipboard"),
     (SET_SAVE_BESIDE_IDB, "Save signatures and DBs in a sigtool folder beside the IDB (no dialog)"),
     (SET_SHOW_REPORT, "Show the quality report in a dialog after signing"),
     (SET_LOCATE_CLIPBOARD, "Locate the signature on the clipboard when there is one"),
-    (SET_AUTO_JUMP, "Auto jump to the best match"),
+    (SET_AUTO_JUMP, "Auto jump to the best match when it is identified"),
     (SET_LIST_MATCHES, "List every match in a window"),
     (SET_CONFIRM_RENAMES, "Confirm renames in a list before applying them"),
     (SET_PRESELECT_USER_NAMES, "Also replace user names when applying (preselected)"),
+    (SET_REVIEW_SHAPE_ONLY, "Also list shape-only matches for review when applying (often wrong)"),
 )
 DEFAULT_SETTINGS = (
     SET_COPY_TO_CLIPBOARD
@@ -154,10 +184,8 @@ DEFAULT_SETTINGS = (
     | SET_LIST_MATCHES
     | SET_CONFIRM_RENAMES
 )
-# Generation decodes one function; locating sweeps the image. Both are bounded
-# so a pathological input cannot hang the IDA UI thread forever. Whole-IDB
-# runs have no fixed bound; they show a wait box with a cancel button instead.
-TIMEOUT_SECONDS = 300
+# CLI runs have no time limit: a large image legitimately takes minutes, so
+# every run shows a wait box whose Cancel button kills it instead.
 # The signature spec this plugin was released with (native/src/spec.rs
 # SPEC_VERSION; a unit test keeps them equal). A CLI writing another spec
 # still runs, but its signatures and DBs will not load in a matching build.
@@ -177,8 +205,13 @@ _DUMMY_NAME = re.compile(
     r"_[0-9A-Fa-f]+(?:_\d+)?$"
 )
 # Only an `identified` match is a trusted answer (spec: untied first match on
-# naming evidence); `candidate` and `shape-only` are never applied as names.
+# naming evidence); `candidate` and `shape-only` are never applied as names
+# unless the analyst selects them in the rename chooser.
 ACCEPTED_EVIDENCE = frozenset({"identified"})
+# Listed for review in the rename chooser, unselected. Shape-only matches
+# need a setting: in a sqlite self-apply 18 of their 95 best hits were wrong.
+REVIEW_EVIDENCE = ("candidate",)
+SHAPE_ONLY_EVIDENCE = ("shape-only",)
 
 
 class SigtoolError(Exception):
@@ -201,18 +234,142 @@ def is_meaningful_name(name: str | None) -> bool:
     return _DUMMY_NAME.search(name) is None
 
 
+def name_arguments(name: str | None) -> list[str]:
+    """``--name`` for ``gen`` or ``merge`` when IDA's name for the function is
+    a resolved one; none for a made-up name, so the CLI falls back to the
+    image's symbol, else ``sub_<module>+<rva>``."""
+    return ["--name", str(name)] if is_meaningful_name(name) else []
+
+
 def parse_progress(line: str) -> tuple[int, int] | None:
-    """``progress DONE/TOTAL`` lines that ``db build --functions`` prints."""
+    """``progress DONE/TOTAL`` lines that ``db build --functions`` and
+    ``scan --progress`` print."""
     match = re.fullmatch(r"progress (\d+)/(\d+)", line.strip())
     if match is None:
         return None
     return int(match.group(1)), int(match.group(2))
 
 
+def parse_phase(line: str) -> str | None:
+    """``phase NAME`` lines that ``scan --progress`` prints as a phase starts."""
+    match = re.fullmatch(r"phase ([A-Za-z0-9_-]+)", line.strip())
+    return None if match is None else match.group(1)
+
+
+class WaitStatus:
+    """What the wait box shows for one CLI run, fed the run's stderr lines.
+
+    Progress and phase lines update the status and are kept out of the
+    collected stderr, so a failure's message is the CLI's error, not a
+    thousand progress lines in front of it.
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.progress: tuple[int, int] | None = None
+        self.phase: str | None = None
+        self.collected: list[str] = []
+
+    def feed(self, line: str) -> None:
+        progress = parse_progress(line)
+        if progress is not None:
+            self.progress = progress
+            return
+        phase = parse_phase(line)
+        if phase is not None:
+            self.phase = phase
+            return
+        self.collected.append(line)
+
+    def text(self, elapsed: float) -> str:
+        parts = []
+        if self.phase:
+            parts.append(self.phase)
+        if self.progress is not None:
+            parts.append(f"{self.progress[0]} / {self.progress[1]}")
+        parts.append(f"{int(elapsed)} s")
+        return f"{self.message}\n{', '.join(parts)}"
+
+    def stderr(self) -> str:
+        return "".join(self.collected)
+
+    def error(self, returncode: int) -> str:
+        # `db build` prints a `skipped RVA NAME: reason` line per function it
+        # could not sign; a failure's message is the CLI's error after them.
+        lines = [line for line in self.collected if not line.startswith("skipped ")]
+        return "".join(lines).strip() or f"exit code {returncode}"
+
+
+def describe_truncation(document: dict) -> str | None:
+    """Which work budgets ran out, from a ``truncated`` array of CLI JSON, or ``None``.
+
+    A scan past a budget (README "Limits") misses functions it never reached,
+    so "no match" or a short rename list is not a real negative then.
+    """
+    parts, joint = [], []
+    for entry in _truncated(document):
+        budget = str(entry.get("budget") or "?")
+        limit = entry.get("limit")
+        if budget in _JOINT_BUDGETS:
+            # The code was scanned; only joint resolution of one module's
+            # signatures was left out, so its matches were judged alone.
+            pairs = entry.get("count")
+            size = f"{pairs} pairs, " if pairs is not None else ""
+            joint.append(f"joint resolution skipped a module ({size}limit {limit})")
+            continue
+        budget = budget.replace("_", " ")
+        parts.append(f"{budget} (limit {limit})" if limit is not None else budget)
+    text = [f"incomplete: budgets ran out: {', '.join(parts)}"] if parts else []
+    if joint:
+        text.append(f"{'; '.join(joint)}, so matches there were judged alone")
+    return "; ".join(text) or None
+
+
+# `joint_pairs` is the CLI's key; `joint pairs` what the first plugin build expected.
+_JOINT_BUDGETS = ("joint_pairs", "joint pairs")
+
+
+def _truncated(document: dict) -> list[dict]:
+    entries = document.get("truncated") or []
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def truncation_skips_code(document: dict) -> bool:
+    """Whether a budget that ran out left code unscanned (every budget but
+    the joint pair cap, which only leaves out joint resolution)."""
+    return any(str(entry.get("budget")) not in _JOINT_BUDGETS for entry in _truncated(document))
+
+
+def _counts(values: Iterable[str]) -> str:
+    """``a 3, b 1``: each distinct value with how often it occurs, by name."""
+    tally: dict[str, int] = {}
+    for value in values:
+        tally[value] = tally.get(value, 0) + 1
+    return ", ".join(f"{value} {count}" for value, count in sorted(tally.items()))
+
+
+def report_quality(report: str) -> str | None:
+    """``weak, single-arch``: the verdict and confidence a ``gen`` or ``merge``
+    report states, or ``None`` when it states neither."""
+    match = re.search(r"verdict (\S+)\s+confidence (\S+)", report)
+    return None if match is None else f"{match.group(1)}, {match.group(2)}"
+
+
 def summarize_build(report: dict) -> str:
     """A short text summary of a ``db build --report`` document."""
     rows = report.get("functions", [])
     lines = [f"signed {report.get('signed', 0)} of {len(rows)} functions"]
+    # Most signatures are weak or small by design, so the counts are shown
+    # rather than warned about: they say what the DB can be expected to name.
+    signed = [row for row in rows if row.get("status") == "signed"]
+    if signed:
+        lines.append(f"verdicts: {_counts(str(row.get('verdict') or '?') for row in signed)}")
+        lines.append(f"confidence: {_counts(str(row.get('confidence') or '?') for row in signed)}")
+    truncation = describe_truncation(report)
+    if truncation:
+        lines.append(truncation)
     skipped = [row for row in rows if row.get("status") != "signed"]
     if skipped:
         lines.append(f"skipped {len(skipped)}:")
@@ -238,6 +395,28 @@ class Proposal:
     signature_id: str = ""
     # The function already carries a user name this rename would replace.
     replaces_user_name: bool = False
+    # Why the CLI withheld the answer (``scan --json`` ``answer_withheld``;
+    # empty when identified or when the CLI does not say).
+    withheld: str = ""
+    # Required features the match hit, when the CLI reports it.
+    matched: int | None = None
+
+    @property
+    def trusted(self) -> bool:
+        """An ``identified`` answer; anything else is listed for review only."""
+        return self.evidence in ACCEPTED_EVIDENCE
+
+
+def _matched_count(hit: dict) -> int | None:
+    # `scan --json` gives a count; `locate --json` a list of keys.
+    value = hit.get("matched")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, list):
+        return len(value)
+    return None
 
 
 def choose_renames(
@@ -246,13 +425,21 @@ def choose_renames(
     user_named: Callable[[int], bool],
     name_owner: Callable[[str], int | None],
     overwrite_user: bool = False,
+    review: Iterable[str] = (),
 ) -> tuple[list[Proposal], list[tuple[str, str]]]:
     """Renames to propose from ``scan --json`` hits, and what was skipped why.
 
     ``hits`` are best first per signature, so a signature's first hit is its
     answer. ``current_name`` and ``user_named`` describe the IDB at an RVA;
     ``name_owner`` gives the RVA already carrying a name, or ``None``.
+
+    Best hits whose evidence is in ``review`` (``candidate``, ``shape-only``)
+    follow the identified proposals, for review only: they pass the same
+    checks among themselves, and one that claims an address or a name an
+    identified hit claims is dropped, so reviewing them never contradicts an
+    identified answer. The identified proposals do not depend on them.
     """
+    review = frozenset(review) - ACCEPTED_EVIDENCE
     skipped: list[tuple[str, str]] = []
     best: dict[str, dict] = {}
     for hit in hits:
@@ -260,71 +447,98 @@ def choose_renames(
         best.setdefault(key, hit)
 
     claims: dict[int, list[dict]] = {}
+    unsure: dict[int, list[dict]] = {}
     for hit in best.values():
         name = str(hit.get("name") or "")
-        if hit.get("evidence") not in ACCEPTED_EVIDENCE:
-            skipped.append((name, f"best match is {hit.get('evidence')}"))
-            continue
+        evidence = hit.get("evidence")
         if not name or hit.get("rva") is None:
             skipped.append((name, "hit has no name or rva"))
             continue
-        claims.setdefault(int(str(hit["rva"]), 16), []).append(hit)
+        rva = int(str(hit["rva"]), 16)
+        if evidence in ACCEPTED_EVIDENCE:
+            claims.setdefault(rva, []).append(hit)
+        elif evidence in review:
+            unsure.setdefault(rva, []).append(hit)
+        else:
+            skipped.append((name, f"best match is {evidence} at +{rva:#x}"))
 
-    # One name per address and one address per name, or the answer is unsure.
-    by_name: dict[str, set[int]] = {}
-    for rva, group in claims.items():
-        for hit in group:
-            by_name.setdefault(str(hit["name"]), set()).add(rva)
-
-    proposals: list[Proposal] = []
-    for rva in sorted(claims):
-        group = claims[rva]
-        names = sorted({str(hit["name"]) for hit in group})
-        if len(names) > 1:
-            for name in names:
-                skipped.append((name, f"{len(names)} signatures claim +{rva:#x}"))
-            continue
-        name = names[0]
-        if len(by_name[name]) > 1:
-            skipped.append((name, f"matched {len(by_name[name])} addresses"))
-            continue
-        hit = max(group, key=lambda item: float(item.get("score") or 0.0))
-        current = current_name(rva)
-        if current == name:
-            skipped.append((name, "already named"))
-            continue
-        replaces_user_name = user_named(rva)
-        if replaces_user_name and not overwrite_user:
-            skipped.append((name, f"+{rva:#x} already has user name {current!r}"))
-            continue
-        owner = name_owner(name)
-        if owner is not None and owner != rva:
-            skipped.append((name, f"name already used at +{owner:#x}"))
-            continue
-        proposals.append(
-            Proposal(
-                rva=rva,
-                name=name,
-                score=float(hit.get("score") or 0.0),
-                evidence=str(hit.get("evidence")),
-                current=current,
-                signature_id=str(hit.get("signature_id") or ""),
-                replaces_user_name=replaces_user_name,
+    def resolve(claims: dict[int, list[dict]], taken: Callable[[int, str], str | None]):
+        # One name per address and one address per name, or the answer is unsure.
+        by_name: dict[str, set[int]] = {}
+        for rva, group in claims.items():
+            for hit in group:
+                by_name.setdefault(str(hit["name"]), set()).add(rva)
+        out: list[Proposal] = []
+        for rva in sorted(claims):
+            group = claims[rva]
+            names = sorted({str(hit["name"]) for hit in group})
+            if len(names) > 1:
+                for name in names:
+                    skipped.append((name, f"{len(names)} signatures claim +{rva:#x}"))
+                continue
+            name = names[0]
+            if len(by_name[name]) > 1:
+                skipped.append((name, f"matched {len(by_name[name])} addresses"))
+                continue
+            hit = max(group, key=lambda item: float(item.get("score") or 0.0))
+            conflict = taken(rva, name)
+            if conflict is not None:
+                skipped.append((name, conflict))
+                continue
+            current = current_name(rva)
+            if current == name:
+                skipped.append((name, "already named"))
+                continue
+            replaces_user_name = user_named(rva)
+            if replaces_user_name and not overwrite_user:
+                skipped.append((name, f"+{rva:#x} already has user name {current!r}"))
+                continue
+            owner = name_owner(name)
+            if owner is not None and owner != rva:
+                skipped.append((name, f"name already used at +{owner:#x}"))
+                continue
+            out.append(
+                Proposal(
+                    rva=rva,
+                    name=name,
+                    score=float(hit.get("score") or 0.0),
+                    evidence=str(hit.get("evidence")),
+                    current=current,
+                    signature_id=str(hit.get("signature_id") or ""),
+                    replaces_user_name=replaces_user_name,
+                    withheld=str(hit.get("answer_withheld") or ""),
+                    matched=_matched_count(hit),
+                )
             )
-        )
+        return out
+
+    proposals = resolve(claims, lambda _rva, _name: None)
+    claimed_names = {str(hit["name"]): rva for rva, group in claims.items() for hit in group}
+
+    def against_identified(rva: int, name: str) -> str | None:
+        if rva in claims:
+            return f"unsure match at +{rva:#x}, which an identified match claims"
+        if name in claimed_names:
+            other = claimed_names[name]
+            return f"unsure match at +{rva:#x}; an identified match is at +{other:#x}"
+        return None
+
+    proposals += resolve(unsure, against_identified)
     return proposals, sorted(skipped)
 
 
 def default_selection(proposals: list[Proposal], include_user_names: bool = False) -> list[int]:
-    """Rows the rename chooser starts with selected: all but user-name replacements.
+    """Rows the rename chooser starts with selected: identified proposals but
+    user-name replacements.
 
     Replacing an analyst's name is shown, so it is one click away, but never
-    applied by just confirming the dialog, unless the setting says so.
+    applied by just confirming the dialog, unless the setting says so. A
+    ``candidate`` or ``shape-only`` row is never preselected.
     """
     return [
         index
         for index, item in enumerate(proposals)
-        if include_user_names or not item.replaces_user_name
+        if item.trusted and (include_user_names or not item.replaces_user_name)
     ]
 
 
@@ -338,15 +552,53 @@ def is_signature_text(text: str | None) -> bool:
     )
 
 
+# A mangled C++ name can run to hundreds of characters; file systems refuse a
+# component past 255 bytes, and Windows a path past 260 characters.
+MAX_FILE_STEM = 96
+
+
+_WINDOWS_DEVICE = re.compile(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])")
+
+
 def safe_file_name(name: str) -> str:
-    """``name`` usable as a file name (mangled names hold characters file systems refuse)."""
-    return re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+    """``name`` usable as a file name (mangled names hold characters file systems
+    refuse); a long one is cut and keeps a hash of the whole, so two long names
+    sharing a prefix stay apart."""
+    safe = re.sub(r'[<>:"/\\|?*\s]+', "_", name).strip("._") or "signature"
+    # Windows opens CON, NUL, COM1, ... as the device whatever the folder or
+    # extension (`nul.so.db` too), so `sigtool/nul.yaml` would vanish.
+    if _WINDOWS_DEVICE.fullmatch(safe.split(".")[0]):
+        safe = f"_{safe}"
+    if len(safe) <= MAX_FILE_STEM:
+        return safe
+    digest = hashlib.blake2b(name.encode("utf-8", "replace"), digest_size=4).hexdigest()
+    return f"{safe[:MAX_FILE_STEM].rstrip('._')}_{digest}"
 
 
 def output_path(idb_path: str, name: str, suffix: str) -> str:
     """Where an output named ``name`` goes without asking: ``sigtool/`` beside the IDB."""
     folder = os.path.join(os.path.dirname(idb_path) or os.getcwd(), "sigtool")
     return os.path.join(folder, safe_file_name(name) + suffix)
+
+
+def own_db_paths(idb_path: str, stem: str) -> tuple[str, str]:
+    """This IDB's own DBs: sign-all's, and generate-on-selection's."""
+    return output_path(idb_path, stem, ".db"), output_path(idb_path, f"{stem}.selection", ".db")
+
+
+def signing_db_path(field: str, shown: str, idb_path: str, stem: str, selection: bool) -> str:
+    """Where sign-all (``selection`` false) or generate on a selection, run
+    from the menu, writes its DB.
+
+    The menu's DB field starts as ``shown``: the DB apply-names last read,
+    which may be another IDB's reference DB, and signing replaces a DB
+    outright. So signing goes to this IDB's own DB unless the user typed
+    another path into the field.
+    """
+    typed = field.strip()
+    if typed and typed != shown.strip():
+        return typed
+    return own_db_paths(idb_path, stem)[1 if selection else 0]
 
 
 def _basename(path: str) -> str:
@@ -422,6 +674,63 @@ class Segment:
 
 _SHT_PROGBITS, _SHT_STRTAB, _SHT_NOBITS = 1, 3, 8
 _SHF_WRITE, _SHF_ALLOC, _SHF_EXECINSTR = 0x1, 0x2, 0x4
+_PT_LOAD = 1
+# More program headers than any linker writes; a corrupt count is not walked.
+_MAX_PROGRAM_HEADERS = 4096
+
+
+def _elf_loads(image: bytes, is64: bool) -> list[tuple[int, int, int]]:
+    """``(p_offset, p_vaddr, p_filesz)`` of each ``PT_LOAD`` in ``image``'s
+    program headers; empty when the table is missing or out of bounds."""
+    if is64:
+        phoff = struct.unpack_from("<Q", image, 0x20)[0]
+        entsize, count = struct.unpack_from("<HH", image, 0x36)
+        layout, need = "<IIQQQQ", 48
+    else:
+        phoff = struct.unpack_from("<I", image, 0x1C)[0]
+        entsize, count = struct.unpack_from("<HH", image, 0x2A)
+        layout, need = "<IIIIII", 24
+    if entsize < need or count > _MAX_PROGRAM_HEADERS or phoff + entsize * count > len(image):
+        return []
+    loads = []
+    for index in range(count):
+        row = struct.unpack_from(layout, image, phoff + index * entsize)
+        if is64:
+            kind, _flags, offset, vaddr, _paddr, filesz = row
+        else:
+            kind, offset, vaddr, _paddr, filesz, _memsz = row
+        if kind == _PT_LOAD and filesz:
+            loads.append((offset, vaddr, filesz))
+    return loads
+
+
+def _elf_filed(loads: list[tuple[int, int, int]], file_size: int, offset: int, size: int) -> int:
+    """How many of a segment's ``size`` bytes at file ``offset`` the file
+    holds: up to the end of the ``PT_LOAD`` data that holds them (its
+    ``p_filesz``), else the end of the file."""
+    for load_offset, _vaddr, filesz in loads:
+        if load_offset <= offset < load_offset + filesz:
+            return max(0, min(size, load_offset + filesz - offset, file_size - offset))
+    return max(0, min(size, file_size - offset))
+
+
+def rebase_delta(image: bytes, segments: Iterable[Segment], is64: bool) -> int | None:
+    """How far the IDB moved ``image`` from its own addresses (IDA's Rebase
+    program), from where its file-backed segments sit against the ``PT_LOAD``
+    that holds their bytes: 0 when nothing says otherwise, ``None`` when the
+    segments disagree."""
+    loads = _elf_loads(image, is64)
+    deltas = set()
+    for segment in segments:
+        if segment.file_offset is None or segment.end <= segment.start:
+            continue
+        for offset, vaddr, filesz in loads:
+            if offset <= segment.file_offset < offset + filesz:
+                deltas.add(segment.start - (vaddr + segment.file_offset - offset))
+                break
+    if len(deltas) > 1:
+        return None
+    return deltas.pop() if deltas else 0
 
 
 def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
@@ -433,12 +742,21 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
     section table), plus how IDA merged unnamed sections into ``LOAD``
     segments; ``sigtool-native`` reads the dynamic symbols and relocations
     from the dynamic segment when the section table does not describe them.
+
+    A rebased IDB maps every segment above the addresses the program headers
+    give; the sections are written at the file's own addresses, since
+    ``sigtool-native`` takes the image base from the lowest ``PT_LOAD``.
     """
     if len(image) < 0x40 or image[:4] != b"\x7fELF" or image[5] != 1:
         return None
     is64 = image[4] == 2
     if not is64 and image[4] != 1:
         return None
+    segments = list(segments)
+    delta = rebase_delta(image, segments, is64)
+    if delta is None:
+        return None
+    loads = _elf_loads(image, is64)
     entry = struct.Struct("<IIQQQQIIQQ" if is64 else "<IIIIIIIIII")
     names = bytearray(b"\0")
     rows = [entry.pack(*([0] * 10))]
@@ -454,16 +772,35 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
         flags = _SHF_ALLOC
         flags |= _SHF_EXECINSTR if segment.executable else 0
         flags |= _SHF_WRITE if segment.writable else 0
-        kind = _SHT_NOBITS if segment.file_offset is None else _SHT_PROGBITS
-        offset = segment.file_offset or 0
         size = segment.end - segment.start
-        if kind == _SHT_PROGBITS and offset + size > len(image):
+        offset = segment.file_offset or 0
+        if segment.file_offset is not None and offset >= len(image):
             return None
-        rows.append(
-            entry.pack(
-                name_offset(segment.name), kind, flags, segment.start, offset, size, 0, 0, 1, 0
+        filed = 0 if segment.file_offset is None else _elf_filed(loads, len(image), offset, size)
+        address = segment.start - delta
+        if address < 0 or address + size > (1 << (64 if is64 else 32)):
+            return None
+        name = name_offset(segment.name)
+        if filed:
+            rows.append(entry.pack(name, _SHT_PROGBITS, flags, address, offset, filed, 0, 0, 1, 0))
+        if filed < size:
+            # A LOAD whose memory size exceeds its file size (.bss merged into
+            # the data segment, as a section-less image keeps it): the tail is
+            # zero-fill, not the file bytes that follow.
+            rows.append(
+                entry.pack(
+                    name,
+                    _SHT_NOBITS,
+                    flags,
+                    address + filed,
+                    offset + filed,
+                    size - filed,
+                    0,
+                    0,
+                    1,
+                    0,
+                )
             )
-        )
     table_name = name_offset(".shstrtab")
     names_offset = len(image)
     rows.append(entry.pack(table_name, _SHT_STRTAB, 0, 0, names_offset, len(names), 0, 0, 1, 0))
@@ -480,6 +817,27 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
         struct.pack_into("<I", out, 0x20, table_offset)
         struct.pack_into("<HHH", out, 0x2E, entry.size, len(rows), len(rows) - 1)
     return bytes(out)
+
+
+def file_extents(segments: list[Segment], file_size: int) -> list[int]:
+    """How many of the file's bytes each of ``segments`` holds, in order.
+
+    A PE section's virtual size can exceed its raw data (`.data` with
+    uninitialized space), and IDA maps the whole virtual size; the bytes past
+    the raw data are not in the file, and an offset past them is the next
+    section's. So a segment holds the file only up to the next file-backed
+    segment's offset and the end of the file. Zero-fill segments hold none.
+    """
+    offsets = sorted({item.file_offset for item in segments if item.file_offset is not None})
+    extents = []
+    for segment in segments:
+        if segment.file_offset is None:
+            extents.append(0)
+            continue
+        following = offsets[bisect.bisect_right(offsets, segment.file_offset) :]
+        limit = min(following[0] if following else file_size, file_size)
+        extents.append(max(0, min(segment.end - segment.start, limit - segment.file_offset)))
+    return extents
 
 
 # IDA keeps the PE headers it parsed (`peutils_t().header()`) in its own
@@ -508,12 +866,14 @@ def rebuild_pe(
     is64 = machine in _PE64_MACHINES
 
     sections = []
-    for segment in sorted(segments, key=lambda item: item.start):
+    ordered = sorted(segments, key=lambda item: item.start)
+    extents = file_extents(ordered, len(image))
+    for index, segment in enumerate(ordered):
+        raw_size = extents[index]
         size = segment.end - segment.start
         if size <= 0 or segment.start < image_base:
             continue
         raw_ptr = segment.file_offset or 0
-        raw_size = min(size, max(0, len(image) - raw_ptr)) if segment.file_offset is not None else 0
         flags = 0x4000_0000  # IMAGE_SCN_MEM_READ
         if segment.executable:
             flags |= 0x2000_0000 | 0x20  # MEM_EXECUTE, CNT_CODE
@@ -595,15 +955,20 @@ def rename_blocker(
     return None
 
 
-def provenance_comment(existing: str, proposal: Proposal, source: str) -> str:
+def provenance_comment(
+    existing: str, proposal: Proposal, source: str, replaced: str | None = None
+) -> str:
     """``existing`` function comment plus a line recording where a rename came from.
 
-    The line names the signature, score, and evidence so a later reader can
-    tell a sigtool rename from an analyst's; applying the same DB twice does
-    not repeat it.
+    The line names the new and the replaced name, the signature, score, and
+    evidence, so a later reader (and [`parse_provenance`]) can tell a sigtool
+    rename from an analyst's and undo it; applying the same DB twice does not
+    repeat it. ``replaced`` is the name the function had just before the
+    rename (``proposal.current`` when not given).
     """
+    was = proposal.current if replaced is None else replaced
     line = (
-        f"sigtool: {proposal.name} from {source} "
+        f"sigtool: {proposal.name} (was {was}) from {source} "
         f"(signature {proposal.signature_id or '?'}, score {proposal.score:.3f}, "
         f"{proposal.evidence})"
     )
@@ -612,19 +977,95 @@ def provenance_comment(existing: str, proposal: Proposal, source: str) -> str:
     return f"{existing.rstrip()}\n{line}" if existing.strip() else line
 
 
+# `sigtool: NEW (was OLD) from SOURCE (...)`; lines written before the old
+# name was recorded lack the `(was OLD)` part.
+_PROVENANCE = re.compile(r"sigtool: (?P<new>\S+)(?: \(was (?P<old>\S*)\))? from \S")
+
+
+def parse_provenance(comment: str) -> tuple[str, str | None] | None:
+    """``(new, old)`` from the last sigtool provenance line of a function
+    comment (``old`` is ``None`` for a line that did not record it), or ``None``."""
+    found = None
+    for line in (comment or "").splitlines():
+        match = _PROVENANCE.match(line.strip())
+        if match is not None:
+            found = (match.group("new"), match.group("old"))
+    return found
+
+
+def sigtool_owned(current: str, comment: str, validate: Callable[[str], str] = str) -> bool:
+    """Whether ``current`` is still the name sigtool's last rename gave the
+    function: the name the provenance line records, or that name as IDA
+    stored it (``validate``: ``SN_NOCHECK`` replaces characters IDA refuses).
+    A name changed since then belongs to the analyst."""
+    provenance = parse_provenance(comment)
+    if provenance is None or not current:
+        return False
+    new = provenance[0]
+    return current == new or current == validate(new)
+
+
+@dataclass(frozen=True)
+class Revert:
+    """Undo of sigtool's last rename at ``rva``: ``current`` goes back to
+    ``old`` (empty: clear it, so IDA shows its dummy name again)."""
+
+    rva: int
+    current: str
+    old: str
+    comment: str
+
+
+def revert_plan(
+    functions: Iterable[tuple[int, str, str]], validate: Callable[[str], str] = str
+) -> tuple[list[Revert], list[tuple[str, str]]]:
+    """What "Revert sigtool names" does to ``(rva, current name, comment)``
+    functions, and what it leaves alone why.
+
+    Only a function still carrying sigtool's name is touched; its last
+    provenance line is dropped, so a function renamed twice reverts one step
+    at a time. A dummy old name (``sub_*``) is cleared rather than set, which
+    lets IDA regenerate it.
+    """
+    reverts: list[Revert] = []
+    skipped: list[tuple[str, str]] = []
+    for rva, current, comment in functions:
+        provenance = parse_provenance(comment)
+        if provenance is None:
+            continue
+        new, old = provenance
+        if not sigtool_owned(current, comment, validate):
+            skipped.append((new, f"+{rva:#x} was renamed since, to {current!r}"))
+            continue
+        if old is None:
+            skipped.append((new, f"+{rva:#x}: the comment does not record the old name"))
+            continue
+        lines = comment.splitlines()
+        last = max(i for i, line in enumerate(lines) if _PROVENANCE.match(line.strip()))
+        rest = "\n".join(lines[:last] + lines[last + 1 :]).strip()
+        reverts.append(Revert(rva, current, old if is_meaningful_name(old) else "", rest))
+    return reverts, sorted(skipped)
+
+
 @dataclass(frozen=True)
 class Row:
-    """One chooser row: the address a double-click jumps to, and its cells."""
+    """One chooser row: the address a double-click jumps to (``None``: a row
+    with no address, such as a DB entry), and its cells."""
 
-    ea: int
+    ea: int | None
     cells: tuple[str, ...]
 
 
-def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
+def match_rows(
+    matches: Iterable[dict], base: int, current_name: Callable[[int], str] | None = None
+) -> list[Row]:
     """Chooser rows for ``locate --json`` matches, best first.
 
     A match maps back through its ``rva`` (the IDB may be rebased); one
     without a module has no ``rva`` and cannot be placed, so it is dropped.
+    The label is the IDB's name at the match (``current_name``, given the
+    address) when it is a meaningful one: the CLI only knows the image's
+    symbols, none for a stripped or rebuilt image. Otherwise the CLI's label.
     """
     rows = []
     for match in matches:
@@ -632,6 +1073,8 @@ def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
         if rva is None:
             continue
         ea = base + int(str(rva), 16)
+        name = current_name(ea) if current_name is not None else ""
+        label = name if is_meaningful_name(name) else str(match.get("label") or name or "")
         rows.append(
             Row(
                 ea=ea,
@@ -639,8 +1082,130 @@ def match_rows(matches: Iterable[dict], base: int) -> list[Row]:
                     f"{ea:#x}",
                     f"{float(match.get('score') or 0.0):.3f}",
                     str(match.get("evidence") or ""),
-                    str(match.get("label") or ""),
+                    label,
                     str(len(match.get("matched") or [])),
+                ),
+            )
+        )
+    return rows
+
+
+def locate_actions(rows: list[Row], auto_jump: bool, list_matches: bool) -> tuple[bool, bool]:
+    """Whether to jump to the best locate row, and whether to list the rows.
+
+    Only an ``identified`` best match is an answer worth landing on; a
+    ``candidate`` or ``shape-only`` one is listed for review instead, even
+    when listing is off, so a guess is never the place the cursor ends up.
+    """
+    if not rows:
+        return False, False
+    trusted = rows[0].cells[2] in ACCEPTED_EVIDENCE
+    return auto_jump and trusted, list_matches or not trusted
+
+
+def _keys(keys: Iterable[str]) -> str:
+    return " ".join(keys) or "-"
+
+
+def format_explanation(explain: dict | None, signature: str, where: str) -> str:
+    """``locate --explain --json``'s ``explain`` object as text: why the
+    function at ``where`` is or is not ``signature``'s answer.
+
+    Mirrors the CLI's own text: the deciding gate, every gate, the score
+    against the threshold, the withheld reason, and the matched, inherited,
+    and missed keys (required ones listed apart, as they decide the match).
+    """
+    if not explain:
+        return f"{signature} at {where}: nothing to explain (the CLI returned no explanation)"
+
+    def number(value, digits: int = 3) -> str:
+        return "-" if value is None else f"{float(value):.{digits}f}"
+
+    def short(value) -> str:
+        # Gate values are scores, counts, or floors: 0.65, 7, 0.85.
+        if value is None:
+            return "-"
+        return f"{float(value):.3f}".rstrip("0").rstrip(".")
+
+    decided = str(explain.get("decided") or "?")
+    verdict = "accepted" if decided == "accepted" else f"decided by the {decided} gate"
+    lines = [f"{signature} at {where}: {verdict}"]
+    if explain.get("rank") is not None:
+        lines.append(
+            f"rank {explain['rank']} of {explain.get('matches', '?')} matches, "
+            f"{explain.get('evidence') or 'no evidence label'}"
+        )
+    else:
+        lines.append(f"not among the {explain.get('matches', 0)} matches")
+    lines.append(
+        f"score {number(explain.get('score'))} (threshold {number(explain.get('threshold'), 2)}), "
+        f"similarity {number(explain.get('similarity'))}, required "
+        f"{explain.get('matched_required', '?')}/{explain.get('required', '?')} "
+        f"(min distinct {explain.get('min_distinct', '?')})"
+    )
+    if explain.get("answer_withheld"):
+        lines.append(
+            f"not identified: {explain['answer_withheld']} "
+            f"(answer floor {number(explain.get('answer_floor'), 2)}, "
+            f"rival {number(explain.get('rival'))})"
+        )
+    if explain.get("start") and explain.get("start") != explain.get("address"):
+        lines.append(f"function start {explain['start']}")
+    lines.append("")
+    lines.append("gates:")
+    for gate in explain.get("gates") or []:
+        detail = ""
+        if gate.get("value") is not None or gate.get("needed") is not None:
+            detail = f" {short(gate.get('value'))} vs {short(gate.get('needed'))}"
+        passed = "pass" if gate.get("passed") else "FAIL"
+        lines.append(f"  {gate.get('gate')!s:<18} {passed}{detail}")
+    missed = explain.get("missed") or []
+    required = [str(item.get("key")) for item in missed if item.get("required")]
+    optional = [str(item.get("key")) for item in missed if not item.get("required")]
+    matched = [str(key) for key in explain.get("matched") or []]
+    inherited = [str(key) for key in explain.get("inherited") or []]
+    lines.append("")
+    lines.append(f"matched ({len(matched)}): {_keys(matched)}")
+    if inherited:
+        lines.append(f"inherited from callees ({len(inherited)}): {_keys(inherited)}")
+    lines.append(f"missed, required ({len(required)}): {_keys(required)}")
+    lines.append(f"missed, optional ({len(optional)}): {_keys(optional)}")
+    neighbours = explain.get("neighbours") or {}
+    if neighbours.get("shared") or neighbours.get("missed"):
+        lines.append(
+            f"neighbour keys: shared {_keys(neighbours.get('shared') or [])}; "
+            f"missed {_keys(neighbours.get('missed') or [])}"
+        )
+    if explain.get("cross_isa"):
+        lines.append("cross-ISA comparison (another architecture's sample)")
+    return "\n".join(lines)
+
+
+def describe_db(info: dict) -> str:
+    """One line for a ``db info --json`` document."""
+    parts = [f"{info.get('signatures', '?')} signatures, spec {info.get('spec_version', '?')}"]
+    for field in ("confidence", "arches"):
+        counts = info.get(field) or {}
+        if isinstance(counts, dict) and counts:
+            listed = ", ".join(f"{key} {counts[key]}" for key in sorted(counts))
+            parts.append(f"{'arch' if field == 'arches' else field}: {listed}")
+    return "; ".join(parts)
+
+
+def db_rows(listing: dict) -> list[Row]:
+    """Chooser rows for a ``db list --json`` document, in its (sorted) order."""
+    rows = []
+    for entry in listing.get("signatures") or []:
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            Row(
+                ea=None,
+                cells=(
+                    str(entry.get("name") or ""),
+                    str(entry.get("signature_id") or ""),
+                    "+".join(str(arch) for arch in entry.get("arches") or []),
+                    str(entry.get("confidence") or ""),
                 ),
             )
         )
@@ -745,7 +1310,10 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
         lines.put(None)
 
     threading.Thread(target=pump, daemon=True).start()
-    collected: list[str] = []
+    status = WaitStatus(message)
+    started = time.monotonic()
+    shown = ""
+    shown_at = 0.0
     ida_kernwin.show_wait_box(message)
     try:
         while True:
@@ -756,10 +1324,17 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
             if line is None:
                 break
             if line:
-                collected.append(line)
-                progress = parse_progress(line)
-                if progress is not None:
-                    ida_kernwin.replace_wait_box(f"{message}\n{progress[0]} / {progress[1]}")
+                status.feed(line)
+            now = time.monotonic()
+            # db build prints a line per function: redrawing the wait box for
+            # each would cost more than the work it reports, so redraw at
+            # most ten times a second, and only when the text changed.
+            if now - shown_at >= 0.1:
+                text = status.text(now - started)
+                if text != shown:
+                    ida_kernwin.replace_wait_box(text)
+                    shown = text
+                shown_at = now
             if ida_kernwin.user_cancelled():
                 process.kill()
                 process.wait()
@@ -767,10 +1342,70 @@ def _run_cancellable(args: list[str], message: str, ok_codes: tuple[int, ...] = 
         returncode = process.wait()
     finally:
         ida_kernwin.hide_wait_box()
-    stderr = "".join(collected)
     if returncode not in ok_codes:
-        raise SigtoolError(stderr.strip() or f"exit code {returncode}")
-    return stderr
+        raise SigtoolError(status.error(returncode))
+    return status.stderr()
+
+
+def _run_json(args: list[str]) -> dict:
+    """A quick CLI run that prints JSON on stdout (``db info``, ``db list``)."""
+    try:
+        result = subprocess.run(
+            [_native(), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SigtoolError(f"sigtool-native {' '.join(args[:2])}: {error}") from error
+    if result.returncode != 0:
+        raise SigtoolError(result.stderr.strip() or f"exit code {result.returncode}")
+    try:
+        return json.loads(result.stdout)
+    except ValueError as error:
+        raise SigtoolError(f"sigtool-native {' '.join(args[:2])}: bad JSON: {error}") from error
+
+
+_CLI_PREFIX = "sigtool-native: "
+
+
+def _echo_cli_lines(stderr: str, prefixes: tuple[str, ...] = ("sigtool-native:",)) -> None:
+    """Copy the CLI's own notes (budget warnings, the discovery mode) to the
+    Output window; the wait box swallowed them."""
+    for line in stderr.splitlines():
+        if line.startswith(prefixes):
+            # Not str.removeprefix: IDA 8.4 can embed Python 3.8.
+            note = line[len(_CLI_PREFIX) :] if line.startswith(_CLI_PREFIX) else line
+            ida_kernwin.msg(f"sigtool: {note}\n")
+
+
+# CLI flags newer than some installed binaries, by (path, subcommand, flag).
+_flag_support: dict[tuple[str, str, str], bool] = {}
+
+
+def _supports(subcommand: str, flag: str) -> bool:
+    """Whether the CLI's ``SUBCOMMAND --help`` lists ``flag`` (an older binary
+    rejects an unknown flag as a usage error, so newer ones are offered only
+    when present)."""
+    path = _native()
+    key = (path, subcommand, flag)
+    if key not in _flag_support:
+        try:
+            result = subprocess.run(
+                [path, *subcommand.split(), "--help"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            listed = re.search(rf"(?<![\w-]){re.escape(flag)}\b", result.stdout)
+            _flag_support[key] = listed is not None
+        except (OSError, subprocess.TimeoutExpired):
+            _flag_support[key] = False
+    return _flag_support[key]
 
 
 # Files confirmed as this session's input file, keyed by what would change if
@@ -810,8 +1445,9 @@ def _input_file() -> str:
     if rebuilt is not None:
         return rebuilt
 
-    # Last resort, for a format the IDB cannot be rebuilt into yet (PE): the
-    # binary is not where IDA recorded it nor beside the IDB.
+    # Last resort, for an IDB that is neither ELF nor PE (or whose PE headers
+    # IDA did not keep): the binary is not where IDA recorded it nor beside
+    # the IDB.
     where = f"not at {recorded}" if recorded else "no path recorded"
     path = ida_kernwin.ask_file(
         False, root or "*", f"Where is {root or 'the input file'}? ({where}, not beside the IDB)"
@@ -889,12 +1525,13 @@ def _image_from_idb(root: str) -> str | None:
     # Page by page: a segment's bytes are contiguous in the file only as far
     # as IDA's file-region map says, so each page is placed by its own offset.
     page = 0x1000
-    for segment in segments:
+    extents = file_extents(segments, size)
+    for index, segment in enumerate(segments):
         if segment.file_offset is None:
             continue
-        ea = segment.start
-        while ea < segment.end:
-            take = min(page - (ea % page), segment.end - ea)
+        ea, end = segment.start, segment.start + extents[index]
+        while ea < end:
+            take = min(page - (ea % page), end - ea)
             offset = int(ida_loader.get_fileregion_offset(ea))
             data = ida_bytes.get_bytes(ea, take) if offset >= 0 else None
             if data and offset + len(data) <= size:
@@ -1026,16 +1663,41 @@ def _remember(name: str, value: str) -> None:
         ida_registry.reg_write_string(name, value, REGISTRY_KEY)
 
 
+_QT_BINDINGS = ("PySide6.QtWidgets", "PyQt5.QtWidgets")
+
+
+def qt_binding_order(kernel_version: str, loaded: Iterable[str] = ()) -> list[str]:
+    """The Qt bindings to try for IDA's own ``QApplication``, most likely first.
+
+    IDA 9.2 moved from PyQt5 (Qt 5) to PySide6 (Qt 6). A binding IDA already
+    imported comes first; then the one this IDA version ships, so an older
+    IDA never loads a pip-installed PySide6 next to its own Qt.
+    """
+    match = re.match(r"(\d+)\.(\d+)", kernel_version or "")
+    modern = match is None or (int(match.group(1)), int(match.group(2))) >= (9, 2)
+    order = list(_QT_BINDINGS if modern else reversed(_QT_BINDINGS))
+    present = set(loaded)
+    return [name for name in order if name in present] + [
+        name for name in order if name not in present
+    ]
+
+
 def _qt_clipboard():
-    # IDA 9.2 ships PySide6 (Qt 6); older releases PyQt5. Without a GUI
-    # (idat), IDA 9.2's PyQt5 shim raises NotImplementedError, not ImportError.
-    for module in ("PySide6.QtWidgets", "PyQt5.QtWidgets"):
+    try:
+        version = str(ida_kernwin.get_kernel_version())
+    except Exception:
+        version = ""
+    for name in qt_binding_order(version, sys.modules):
         try:
-            widgets = __import__(module, fromlist=["QApplication"])
+            # Without a GUI (idat) IDA 9.2's PyQt5 shim raises ImportError; a
+            # binding built against another Qt may raise anything.
+            widgets = sys.modules.get(name) or importlib.import_module(name)
+            app = widgets.QApplication.instance()
         except Exception:
             continue
-        app = widgets.QApplication.instance()
-        return app.clipboard() if app is not None else None
+        # A binding with no application is not the one IDA runs on.
+        if app is not None:
+            return app.clipboard()
     return None
 
 
@@ -1056,6 +1718,8 @@ def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
     """Hand a new signature over as the settings say: clipboard, a file beside
     the IDB, or a save dialog when neither is on; the report goes to the
     Output window, and to a dialog only if asked for."""
+    # The report first: a failed save must not lose it.
+    ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
     done = []
     if _setting(SET_COPY_TO_CLIPBOARD) and _set_clipboard(text):
         done.append("copied to the clipboard")
@@ -1064,13 +1728,30 @@ def _deliver_signature(text: str, report: str, label: str, suffix: str) -> None:
         path = output_path(_idb_path(), label, suffix)
     elif not done:
         path = _ask_path("yaml", True, f"{safe_file_name(label)}{suffix}", f"Save {label} as")
-    if path:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(text, encoding="utf-8")
+    while path:
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(text, encoding="utf-8")
+        except OSError as error:
+            failed = f"not saved to {path} ({error})"
+            ida_kernwin.msg(f"sigtool: {label} {failed}\n")
+            path = _ask_path(
+                "yaml",
+                True,
+                f"{safe_file_name(label)}{suffix}",
+                f"Could not save {label}; save it as",
+            )
+            if not path:
+                done.append(failed)
+            continue
         _last_paths["yaml"] = path
         done.append(f"saved to {path}")
-    ida_kernwin.msg(f"sigtool: {label}:\n{report}\n")
-    ida_kernwin.msg(f"sigtool: signature of {label} {' and '.join(done) or 'discarded'}\n")
+        break
+    quality = report_quality(report)
+    ida_kernwin.msg(
+        f"sigtool: signature of {label}{f' ({quality})' if quality else ''} "
+        f"{' and '.join(done) or 'discarded'}\n"
+    )
     if _setting(SET_SHOW_REPORT):
         ida_kernwin.info(f"{report}\n\n{label}: {', '.join(done) or 'not saved'}")
 
@@ -1095,12 +1776,106 @@ def _has_user_name(ea: int) -> bool:
     )
 
 
+def _validated_name(name: str) -> str:
+    """``name`` as ``set_name(..., SN_NOCHECK)`` stores it."""
+    validate = getattr(ida_name, "validate_name", None)
+    if validate is None:
+        return name
+    try:
+        return str(validate(name, ida_name.VNT_IDENT) or name)
+    except Exception:  # an IDA without VNT_IDENT
+        return name
+
+
+def _function_comment(ea: int) -> str:
+    function = ida_funcs.get_func(ea)
+    return "" if function is None else str(ida_funcs.get_func_cmt(function, False) or "")
+
+
+def _sigtool_owned(ea: int) -> bool:
+    """Whether ``ea``'s name is still the one an earlier apply gave it."""
+    return sigtool_owned(
+        str(ida_name.get_ea_name(ea) or ""), _function_comment(ea), _validated_name
+    )
+
+
+def _name_holder(name: str) -> int | None:
+    """The address holding ``name``, also as IDA stored it: an earlier
+    rename went through ``SN_NOCHECK``, which replaces characters IDA
+    refuses, so the raw spelling alone may find nothing."""
+    for spelling in dict.fromkeys((name, _validated_name(name))):
+        ea = ida_name.get_name_ea(ida_idaapi.BADADDR, spelling)
+        if ea != ida_idaapi.BADADDR:
+            return int(ea)
+    return None
+
+
+def _revertible(ea: int, base: int) -> bool:
+    """Whether sigtool can give ``ea`` back its old name: it still has the
+    name sigtool gave it, and its provenance line records the old one (lines
+    written before sigtool recorded old names do not)."""
+    reverts, _skipped = revert_plan(
+        [(ea - base, str(ida_name.get_ea_name(ea) or ""), _function_comment(ea))],
+        _validated_name,
+    )
+    return bool(reverts)
+
+
+def _revert_function(ea: int, base: int) -> Revert | None:
+    """Undo sigtool's last rename of the function at ``ea``; what was done."""
+    reverts, _skipped = revert_plan(
+        [(ea - base, str(ida_name.get_ea_name(ea) or ""), _function_comment(ea))],
+        _validated_name,
+    )
+    if not reverts:
+        return None
+    item = reverts[0]
+    if not ida_name.set_name(ea, item.old, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
+        # The old name is held elsewhere (often by a function a later apply
+        # gave it). Clearing the name and dropping the provenance line here
+        # would lose the analyst's name for good, so both stay as they are;
+        # the caller retries once other reverts have freed names.
+        return None
+    function = ida_funcs.get_func(ea)
+    if function is not None:
+        ida_funcs.set_func_cmt(function, item.comment, False)
+    return item
+
+
 def _add_function(ea: int, base: int) -> int | None:
     """Create a function at ``ea``; the RVA it starts at, or ``None``."""
     if not ida_funcs.add_func(ea):
         return None
     function = ida_funcs.get_func(ea)
     return None if function is None else int(function.start_ea) - base
+
+
+def _signable_start(ea: int) -> int:
+    """Where to sign for a cursor at ``ea``: the function holding it, else code
+    there once the user agrees to make it a function.
+
+    The CLI signs whatever bytes it is pointed at, so a cursor on data would
+    give a signature of noise that still passes its own self-test.
+    """
+    function = ida_funcs.get_func(ea)
+    if function is not None:
+        return int(function.start_ea)
+    if not ida_bytes.is_code(ida_bytes.get_flags(ea)):
+        raise SigtoolError(f"{ea:#x} is not code; put the cursor in a function to sign it")
+    answer = ida_kernwin.ask_yn(
+        1,
+        f"HIDECANCEL\n{ea:#x} is code outside any function.\n\n"
+        "Create a function there and sign it?",
+    )
+    if answer != 1:
+        raise SigtoolCancelled
+    start = _add_function(ea, 0)
+    if start is None:
+        # Code IDA will not make a function of (a tail it already assigned,
+        # say) is still signed from the cursor, as asked.
+        ida_kernwin.msg(f"sigtool: IDA could not create a function at {ea:#x}; signing from it\n")
+        return ea
+    return start
 
 
 def _unsignable(ea: int) -> str | None:
@@ -1152,6 +1927,40 @@ def _db_path(name: str, what: str, given: str | None = None) -> str | None:
     )
 
 
+def _db_signature_count(path: str) -> int | None:
+    """How many signatures the DB at ``path`` holds (``db info``), or ``None``
+    when it is not a DB this CLI reads."""
+    try:
+        result = subprocess.run(
+            [_native(), "db", "info", path, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return int(json.loads(result.stdout)["signatures"]) if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return None
+
+
+def _confirm_replace(path: str, what: str) -> None:
+    """Ask before ``db build`` replaces a DB that is not this IDB's own."""
+    own = {
+        os.path.normcase(os.path.abspath(item)) for item in own_db_paths(_idb_path(), _own_stem())
+    }
+    if not os.path.exists(path) or os.path.normcase(os.path.abspath(path)) in own:
+        return
+    count = _db_signature_count(path)
+    holds = f"holds {count} signatures" if count is not None else "is not a DB this sigtool reads"
+    answer = ida_kernwin.ask_yn(
+        0,
+        f"HIDECANCEL\n{path} already exists and {holds}; it is not this IDB's own DB.\n\n"
+        f"Replace it with the {what}?",
+    )
+    if answer != 1:
+        raise SigtoolCancelled
+
+
 def _sign_to_db(
     image: str, functions: list[dict[str, str]], what: str, name: str, db: str | None = None
 ) -> None:
@@ -1159,6 +1968,7 @@ def _sign_to_db(
     path = _db_path(name, what, db)
     if not path:
         return
+    _confirm_replace(path, what)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         listing = Path(temp) / "functions.json"
@@ -1182,11 +1992,10 @@ def _sign_to_db(
             f"sigtool: signing {what}",
         )
         report = json.loads(report_path.read_text(encoding="utf-8"))
-    for line in stderr.splitlines():
-        if line.startswith("skipped "):
-            ida_kernwin.msg(f"sigtool: {line}\n")
+    _echo_cli_lines(stderr, ("skipped ", "sigtool-native:"))
     _last_paths["db"] = path
-    _remember("db", path)
+    # The DB just signed is the one to apply next, in this IDB or another.
+    _remember("apply_db", path)
     summary = summarize_build(report)
     ida_kernwin.msg(f"sigtool: {summary.splitlines()[0]}; wrote {path}\n")
     ida_kernwin.info(f"{summary}\n\nDB: {path}")
@@ -1200,7 +2009,7 @@ class _Handler(ida_kernwin.action_handler_t):
             self.run(ctx)
         except SigtoolCancelled:
             ida_kernwin.msg("sigtool: cancelled\n")
-        except (SigtoolError, subprocess.TimeoutExpired, OSError) as error:
+        except (SigtoolError, OSError) as error:
             ida_kernwin.warning(f"sigtool: {error}")
         return 1
 
@@ -1217,13 +2026,36 @@ def _generate(image: str, ea: int, output: Path) -> str:
     # Signing builds the image's call graph first, which takes a while on a
     # large image: run it behind the cancellable wait box.
     return _run_cancellable(
-        ["gen", "--file", image, "--rva", hex(rva), "--tool", "IDA", "--output", str(output)],
+        [
+            "gen",
+            "--file",
+            image,
+            "--rva",
+            hex(rva),
+            *name_arguments(ida_funcs.get_func_name(ea)),
+            "--tool",
+            "IDA",
+            "--output",
+            str(output),
+        ],
         f"sigtool: signing {_function_label(ea)}",
     ).strip()
 
 
 def _image_stem() -> str:
     return Path(ida_nalt.get_root_filename() or Path(_idb_path()).stem or "image").name
+
+
+def own_stem(idb_path: str, image_stem: str) -> str:
+    """The name this IDB's own DBs take: the IDB's file name without its
+    extension (``libz-x64.i64`` -> ``libz-x64``), so two IDBs in one folder
+    made from same-named inputs (one library per arch) keep separate DBs;
+    the input's name when there is no IDB path."""
+    return Path(_basename(idb_path)).stem if idb_path else image_stem
+
+
+def _own_stem() -> str:
+    return own_stem(_idb_path(), _image_stem())
 
 
 class GenerateHandler(_Handler):
@@ -1235,6 +2067,8 @@ class GenerateHandler(_Handler):
 
     def run(self, ctx=None) -> None:
         starts = _target_functions(ctx)
+        if len(starts) == 1:
+            starts = [_signable_start(starts[0])]
         image = _input_file()
         if len(starts) > 1:
             functions, skipped = _function_entries(starts)
@@ -1246,7 +2080,7 @@ class GenerateHandler(_Handler):
                     "(see the Output window)"
                 )
             what = f"{len(functions)} selected functions"
-            _sign_to_db(image, functions, what, f"{_image_stem()}.selection", self.db)
+            _sign_to_db(image, functions, what, f"{_own_stem()}.selection", self.db)
             return
         ea = starts[0]
         label = _function_label(ea)
@@ -1261,7 +2095,7 @@ class MergeHandler(_Handler):
     """Sign the function together with other builds of it into one signature."""
 
     def run(self, ctx=None) -> None:
-        ea = _target_functions(ctx)[0]
+        ea = _signable_start(_target_functions(ctx)[0])
         image = _input_file()
         label = _function_label(ea)
         samples = [f"{image}:+{_rva(ea):#x}"]
@@ -1276,7 +2110,12 @@ class MergeHandler(_Handler):
             return
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "merged.yaml"
-            arguments = ["merge", "--name", label, "--output", str(output)]
+            arguments = [
+                "merge",
+                *name_arguments(ida_funcs.get_func_name(ea)),
+                "--output",
+                str(output),
+            ]
             for sample in samples:
                 arguments += ["--sample", sample]
             report = _run_cancellable(
@@ -1286,52 +2125,135 @@ class MergeHandler(_Handler):
         _deliver_signature(text, report, label, ".merged.yaml")
 
 
+@dataclass(frozen=True)
+class LocateSource:
+    """The signature a locate ran with, kept so its rows can be explained."""
+
+    text: str
+    source: str
+    stem: str
+
+
+def _pick_signature(prompt: str) -> LocateSource | None:
+    """The signature on the clipboard (when that setting is on), else a file."""
+    clipboard = _clipboard_text() if _setting(SET_LOCATE_CLIPBOARD) else ""
+    if is_signature_text(clipboard):
+        return LocateSource(clipboard, "the clipboard", "clipboard")
+    path = _ask_path("yaml", False, "*.yaml", prompt)
+    if not path:
+        return None
+    return LocateSource(Path(path).read_text(encoding="utf-8"), Path(path).name, Path(path).stem)
+
+
+def _locate(signature: LocateSource, message: str, extra: Iterable[str] = ()) -> dict:
+    """``locate --json`` of ``signature`` in this IDB's image (hint-free)."""
+    image = _input_file()
+    with tempfile.TemporaryDirectory() as temp:
+        path = Path(temp) / "signature.yaml"
+        path.write_text(signature.text, encoding="utf-8")
+        output = Path(temp) / "matches.json"
+        # Exit 1 is "no accepted match"; the JSON is written either way.
+        stderr = _run_cancellable(
+            [
+                "locate",
+                "--signature",
+                str(path),
+                "--file",
+                image,
+                "--json",
+                str(output),
+                "--yes",
+                # As apply-names: the result must not depend on whether
+                # the input file (with its symbols) sits beside the IDB,
+                # which `auto` would let pick hinted discovery.
+                "--discovery",
+                "hint-free",
+                *extra,
+            ],
+            message,
+            ok_codes=(0, 1),
+        )
+        result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+    _echo_cli_lines(stderr)
+    return result
+
+
+# Text views stay open after their action returns; keep them referenced.
+_OPEN_VIEWS: dict[str, object] = {}
+
+
+def _show_text(title: str, text: str) -> None:
+    """``text`` in the Output window, and in a text view (a dialog in an IDA
+    without ``simplecustviewer_t``)."""
+    for line in text.splitlines():
+        ida_kernwin.msg(f"sigtool: {line}\n")
+    viewer_type = getattr(ida_kernwin, "simplecustviewer_t", None)
+    if viewer_type is None:
+        ida_kernwin.info(text)
+        return
+    previous = _OPEN_VIEWS.pop(title, None)
+    if previous is not None:
+        with contextlib.suppress(Exception):
+            previous.Close()
+    viewer = viewer_type()
+    if not viewer.Create(title):
+        ida_kernwin.info(text)
+        return
+    for line in text.splitlines():
+        viewer.AddLine(line)
+    viewer.Show()
+    _OPEN_VIEWS[title] = viewer
+
+
+def _explain(signature: LocateSource, ea: int) -> None:
+    """Explain why ``signature`` does or does not match the function at ``ea``."""
+    where = f"{ea:#x} ({ida_name.get_ea_name(ea) or _function_label(ea)})"
+    result = _locate(
+        signature,
+        f"sigtool: explaining the signature from {signature.source} at {ea:#x}",
+        ["--explain", "--expect", hex(_rva(ea))],
+    )
+    name = str(result.get("signature") or signature.stem)
+    text = format_explanation(result.get("explain"), name, where)
+    truncation = describe_truncation(result)
+    if truncation:
+        text += f"\n\n{truncation}"
+    _show_text(f"sigtool: explain {name}", text)
+
+
 class LocateHandler(_Handler):
     """Scan this IDB with a signature (the clipboard's, else a file) and jump to it."""
 
     def run(self, ctx=None) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            signature = None
-            clipboard = _clipboard_text() if _setting(SET_LOCATE_CLIPBOARD) else ""
-            if is_signature_text(clipboard):
-                signature = str(Path(temp) / "clipboard.yaml")
-                Path(signature).write_text(clipboard, encoding="utf-8")
-                source = "the clipboard"
-            else:
-                signature = _ask_path("yaml", False, "*.yaml", "Signature to locate in this IDB")
-                if not signature:
-                    return
-                source = Path(signature).name
-            image = _input_file()
-            output = Path(temp) / "matches.json"
-            # Exit 1 is "no accepted match"; the JSON is written either way.
-            _run_cancellable(
-                [
-                    "locate",
-                    "--signature",
-                    signature,
-                    "--file",
-                    image,
-                    "--json",
-                    str(output),
-                    "--yes",
-                ],
-                f"sigtool: locating the signature from {source}",
-                ok_codes=(0, 1),
-            )
-            result = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
-        name = str(result.get("signature") or Path(signature).stem)
-        rows = match_rows(result.get("matches", []), int(ida_nalt.get_imagebase()))
+        signature = _pick_signature("Signature to locate in this IDB")
+        if signature is None:
+            return
+        source = signature.source
+        result = _locate(signature, f"sigtool: locating the signature from {source}")
+        name = str(result.get("signature") or signature.stem)
+        truncation = describe_truncation(result)
+        rows = match_rows(
+            result.get("matches", []), int(ida_nalt.get_imagebase()), ida_name.get_ea_name
+        )
         if not rows:
             ida_kernwin.msg(f"sigtool: no match for {name} (from {source}) in this IDB\n")
-            ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB")
+            note = f"\n\n{truncation}" if truncation else ""
+            if truncation_skips_code(result):
+                note += ", so the function may be in code the scan skipped"
+            ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB{note}")
             return
         ida_kernwin.msg(f"sigtool: {name} (from {source}): {len(rows)} match(es)\n")
         for row in rows:
             ida_kernwin.msg(f"sigtool:   {' '.join(row.cells)}\n")
-        if _setting(SET_LIST_MATCHES):
+        jump, listed = locate_actions(rows, _setting(SET_AUTO_JUMP), _setting(SET_LIST_MATCHES))
+        if not jump and _setting(SET_AUTO_JUMP):
+            ida_kernwin.msg(
+                f"sigtool: not jumping: the best match is {rows[0].cells[2]}, not identified "
+                "(review the list)\n"
+            )
+        if listed:
             show_results(
-                f"sigtool: matches for {name}",
+                f"sigtool: matches for {name}" + (f" ({truncation})" if truncation else ""),
                 [
                     ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
                     ["Score", 8],
@@ -1340,9 +2262,41 @@ class LocateHandler(_Handler):
                     ["Matched", 8],
                 ],
                 rows,
+                explain=signature,
             )
-        if _setting(SET_AUTO_JUMP):
+        if jump:
             ida_kernwin.jumpto(rows[0].ea)
+
+
+class ExplainHandler(_Handler):
+    """Explain the locate verdict on the function under the cursor."""
+
+    def run(self, ctx=None) -> None:
+        ea = _target_functions(ctx)[0]
+        signature = _pick_signature(f"Signature to explain at {ea:#x}")
+        if signature is not None:
+            _explain(signature, ea)
+
+
+def _chooser_of(ctx) -> ResultChooser | None:
+    title = getattr(ctx, "widget_title", None)
+    if not title and getattr(ctx, "widget", None) is not None:
+        title = ida_kernwin.get_widget_title(ctx.widget)
+    return _OPEN_CHOOSERS.get(str(title or ""))
+
+
+class ExplainRowHandler(_Handler):
+    """Explain the selected row of a locate result list (its right-click menu)."""
+
+    def run(self, ctx=None) -> None:
+        chooser = _chooser_of(ctx)
+        selection = _chosen(getattr(ctx, "chooser_selection", None))
+        if chooser is None or chooser.explain is None or not selection:
+            raise SigtoolError("select a row of a locate result list to explain")
+        index = selection[0]
+        if not 0 <= index < len(chooser.rows):
+            raise SigtoolError(f"no row {index} in {chooser.title}")
+        _explain(chooser.explain, chooser.rows[index].ea)
 
 
 class SignAllHandler(_Handler):
@@ -1358,15 +2312,23 @@ class SignAllHandler(_Handler):
             ida_kernwin.warning("sigtool: no named functions to sign (only sub_* and stubs)")
             return
         what = f"{len(functions)} named functions"
-        _sign_to_db(_input_file(), functions, what, _image_stem(), self.db)
+        _sign_to_db(_input_file(), functions, what, _own_stem(), self.db)
 
 
 class ResultChooser(ida_kernwin.Choose):
     """A non-modal list of addresses; Enter or a double-click jumps to the row."""
 
-    def __init__(self, title: str, columns: list[list], rows: list[Row]) -> None:
+    def __init__(
+        self,
+        title: str,
+        columns: list[list],
+        rows: list[Row],
+        explain: LocateSource | None = None,
+    ) -> None:
         super().__init__(title, columns)
         self.rows = rows
+        # The signature of a locate result list, for "Explain this row".
+        self.explain = explain
 
     def OnGetSize(self) -> int:
         return len(self.rows)
@@ -1375,11 +2337,12 @@ class ResultChooser(ida_kernwin.Choose):
         return list(self.rows[n].cells)
 
     def OnGetEA(self, n: int) -> int:
-        return self.rows[n].ea
+        ea = self.rows[n].ea
+        return ida_idaapi.BADADDR if ea is None else ea
 
     def OnSelectLine(self, n):
         index = n[0] if isinstance(n, list) else n
-        if 0 <= index < len(self.rows):
+        if 0 <= index < len(self.rows) and self.rows[index].ea is not None:
             ida_kernwin.jumpto(self.rows[index].ea)
         return (ida_kernwin.Choose.NOTHING_CHANGED,)
 
@@ -1394,7 +2357,9 @@ class ResultChooser(ida_kernwin.Choose):
 _OPEN_CHOOSERS: dict[str, ResultChooser] = {}
 
 
-def show_results(title: str, columns: list[list], rows: list[Row]) -> None:
+def show_results(
+    title: str, columns: list[list], rows: list[Row], explain: LocateSource | None = None
+) -> None:
     """Open ``rows`` in a non-modal chooser, replacing one with the same title.
 
     IDA reactivates an open chooser of the same title instead of showing new
@@ -1403,7 +2368,7 @@ def show_results(title: str, columns: list[list], rows: list[Row]) -> None:
     previous = _OPEN_CHOOSERS.pop(title, None)
     if previous is not None:
         previous.Close()
-    chooser = ResultChooser(title, columns, rows)
+    chooser = ResultChooser(title, columns, rows, explain)
     _OPEN_CHOOSERS[title] = chooser
     chooser.Show()
 
@@ -1412,15 +2377,18 @@ class RenameChooser(ida_kernwin.Choose):
     """The proposed renames, selected per [`default_selection`]; the rows still
     selected are applied."""
 
-    def __init__(self, proposals: list[Proposal], base: int) -> None:
+    def __init__(self, proposals: list[Proposal], base: int, note: str | None = None) -> None:
+        title = "sigtool: proposed renames (select the rows to apply)"
         super().__init__(
-            "sigtool: proposed renames (select the rows to apply)",
+            f"{title} ({note})" if note else title,
             [
                 ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
                 ["Current name", 24],
                 ["New name", 32],
                 ["Score", 8],
                 ["Evidence", 10],
+                ["Withheld", 12],
+                ["Matched", 8],
             ],
             flags=ida_kernwin.Choose.CH_MULTI,
             deflt=default_selection(proposals, _setting(SET_PRESELECT_USER_NAMES)),
@@ -1432,6 +2400,8 @@ class RenameChooser(ida_kernwin.Choose):
                 item.name,
                 f"{item.score:.3f}",
                 item.evidence,
+                item.withheld,
+                "" if item.matched is None else str(item.matched),
             ]
             for item in proposals
         ]
@@ -1479,56 +2449,90 @@ class ApplyNamesHandler(_Handler):
         if not db:
             return
         _last_paths["db"] = db
-        _remember("db", db)
+        _remember("apply_db", db)
         image = _input_file()
+        try:
+            ida_kernwin.msg(
+                f"sigtool: applying {db}: {describe_db(_run_json(['db', 'info', db, '--json']))}\n"
+            )
+        except SigtoolError as error:
+            # The scan reports an unreadable DB itself, with a better message.
+            ida_kernwin.msg(f"sigtool: cannot read {db}'s summary: {error}\n")
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "hits.json"
             # Exit 1 is "no accepted match", not a failure. Hint-free discovery
             # is the mode that resolves a module's signatures jointly.
-            _run_cancellable(
-                [
-                    "scan",
-                    "--file",
-                    image,
-                    "--db",
-                    db,
-                    "--discovery",
-                    "hint-free",
-                    "--json",
-                    str(output),
-                ],
+            arguments = [
+                "scan",
+                "--file",
+                image,
+                "--db",
+                db,
+                "--discovery",
+                "hint-free",
+                "--json",
+                str(output),
+            ]
+            # The slowest action: show which phase it is in and how many
+            # signatures are done, when the CLI can say.
+            if _supports("scan", "--progress"):
+                arguments.append("--progress")
+            stderr = _run_cancellable(
+                arguments,
                 "sigtool: scanning this IDB with the DB",
                 ok_codes=(0, 1),
             )
-            hits = (
-                json.loads(output.read_text(encoding="utf-8")).get("hits", [])
-                if output.exists()
-                else []
-            )
+            document = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+        _echo_cli_lines(stderr)
+        hits = document.get("hits", [])
+        truncation = describe_truncation(document)
         base = int(ida_nalt.get_imagebase())
 
         def name_owner(name: str) -> int | None:
-            ea = ida_name.get_name_ea(ida_idaapi.BADADDR, name)
-            return None if ea == ida_idaapi.BADADDR else int(ea) - base
+            # A name an earlier apply gave another function may move here:
+            # the newer match wins, and that function gets its old name back.
+            ea = _name_holder(name)
+            if ea is None or _revertible(ea, base):
+                return None
+            return ea - base
 
         proposals, skipped = choose_renames(
             hits,
             current_name=lambda rva: ida_name.get_ea_name(base + rva),
-            user_named=lambda rva: _has_user_name(base + rva),
+            # sigtool's own earlier renames are replaced (and preselected)
+            # like dummy names; only an analyst's name is protected.
+            user_named=lambda rva: _has_user_name(base + rva) and not _sigtool_owned(base + rva),
             name_owner=name_owner,
             # Listed but not preselected (see `default_selection`).
             overwrite_user=True,
+            # Unsure matches are only worth listing where someone reviews them.
+            review=(
+                REVIEW_EVIDENCE + (SHAPE_ONLY_EVIDENCE if _setting(SET_REVIEW_SHAPE_ONLY) else ())
+            )
+            if _setting(SET_CONFIRM_RENAMES)
+            else (),
         )
         for name, reason in skipped:
             ida_kernwin.msg(f"sigtool: not renaming {name}: {reason}\n")
+        unsure = sum(1 for item in proposals if not item.trusted)
+        if unsure:
+            ida_kernwin.msg(f"sigtool: {unsure} unsure matches listed for review, unselected\n")
         if not proposals:
+            note = f"\n\n{truncation}" if truncation else ""
             ida_kernwin.warning(
                 f"sigtool: no renames to propose ({len(hits)} hits, {len(skipped)} skipped; "
-                "see the Output window)"
+                f"see the Output window){note}"
             )
             return
+        if truncation:
+            consequence = (
+                "; code the scan skipped got no proposals"
+                if truncation_skips_code(document)
+                else ""
+            )
+            ida_kernwin.msg(f"sigtool: {truncation}{consequence}\n")
         if _setting(SET_CONFIRM_RENAMES):
-            chosen = RenameChooser(proposals, base).ask()
+            chosen = RenameChooser(proposals, base, truncation).ask()
         else:
             chosen = default_selection(proposals, _setting(SET_PRESELECT_USER_NAMES))
         source = Path(db).name
@@ -1546,6 +2550,21 @@ class ApplyNamesHandler(_Handler):
             if problem is not None:
                 ida_kernwin.msg(f"sigtool: not renaming {item.name}: {problem}\n")
                 continue
+            holder = _name_holder(item.name)
+            if (
+                holder is not None
+                and holder != ea
+                and _sigtool_owned(holder)
+                and _revert_function(holder, base) is None
+            ):
+                ida_kernwin.msg(
+                    f"sigtool: not renaming {item.name}: {holder:#x} holds it and "
+                    "its old name is in use, so it cannot be reverted\n"
+                )
+                continue
+            # The name being replaced as it is now, not as the proposal saw
+            # it: reverting a holder earlier in this batch may have changed it.
+            replaced = str(ida_name.get_ea_name(ea) or "") or item.current
             # SN_NOCHECK replaces characters IDA does not allow in names (a
             # name from another toolchain's mangling) instead of failing.
             if not ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
@@ -1556,7 +2575,9 @@ class ApplyNamesHandler(_Handler):
                 # A regular, not repeatable, comment: it stays on the function
                 # instead of repeating at every call site.
                 existing = ida_funcs.get_func_cmt(function, False) or ""
-                ida_funcs.set_func_cmt(function, provenance_comment(existing, item, source), False)
+                ida_funcs.set_func_cmt(
+                    function, provenance_comment(existing, item, source, replaced), False
+                )
             rows.append(
                 Row(
                     ea=ea,
@@ -1570,7 +2591,7 @@ class ApplyNamesHandler(_Handler):
                     ),
                 )
             )
-        ida_kernwin.msg(f"sigtool: renamed {len(rows)} of {len(proposals)} proposed functions\n")
+        ida_kernwin.msg(f"sigtool: renamed {len(rows)} of {len(chosen)} selected functions\n")
         ida_kernwin.refresh_idaview_anyway()
         if rows:
             show_results(
@@ -1587,9 +2608,96 @@ class ApplyNamesHandler(_Handler):
             )
 
 
+class RevertNamesHandler(_Handler):
+    """Undo the renames apply-names made, where the name is still sigtool's."""
+
+    def run(self, ctx=None) -> None:
+        base = int(ida_nalt.get_imagebase())
+        functions = [
+            (int(ea) - base, str(ida_name.get_ea_name(ea) or ""), _function_comment(ea))
+            for ea in idautils.Functions()
+        ]
+        reverts, skipped = revert_plan(functions, _validated_name)
+        for name, reason in skipped:
+            ida_kernwin.msg(f"sigtool: not reverting {name}: {reason}\n")
+        if not reverts:
+            ida_kernwin.warning(
+                "sigtool: no sigtool renames to revert"
+                + (f" ({len(skipped)} renamed since; see the Output window)" if skipped else "")
+            )
+            return
+        if (
+            ida_kernwin.ask_yn(
+                0,
+                f"HIDECANCEL\nRevert {len(reverts)} names sigtool applied to their old names?",
+            )
+            != 1
+        ):
+            return
+        rows = []
+        pending = list(reverts)
+        # Two passes: an old name held by another function being reverted is
+        # free once that function has its own old name back.
+        for _attempt in range(2):
+            failed = []
+            for item in pending:
+                ea = base + item.rva
+                done = _revert_function(ea, base)
+                if done is None:
+                    failed.append(item)
+                    continue
+                restored = done.old or str(ida_name.get_ea_name(ea) or "")
+                rows.append(Row(ea=ea, cells=(f"{ea:#x}", done.current, restored)))
+            if not failed or len(failed) == len(pending):
+                pending = failed
+                break
+            pending = failed
+        for item in pending:
+            ida_kernwin.msg(
+                f"sigtool: left {base + item.rva:#x} as {item.current}: its old name "
+                f"{item.old!r} is used by another function; rename that one and revert again\n"
+            )
+        ida_kernwin.msg(f"sigtool: reverted {len(rows)} of {len(reverts)} sigtool names\n")
+        ida_kernwin.refresh_idaview_anyway()
+        if rows:
+            show_results(
+                "sigtool: reverted names",
+                [
+                    ["Address", 16 | ida_kernwin.Choose.CHCOL_HEX],
+                    ["sigtool name", 32],
+                    ["Restored name", 24],
+                ],
+                rows,
+            )
+
+
+class ShowDbHandler(_Handler):
+    """List a signatures DB's signatures: name, id, arches, confidence."""
+
+    def __init__(self, db: str | None = None) -> None:
+        super().__init__()
+        self.db = db
+
+    def run(self, ctx=None) -> None:
+        db = self.db
+        if not db or not os.path.isfile(db):
+            db = _ask_path("db", False, "*.db", "Signatures DB to show")
+        if not db:
+            return
+        _last_paths["db"] = db
+        summary = describe_db(_run_json(["db", "info", db, "--json"]))
+        rows = db_rows(_run_json(["db", "list", db, "--json"]))
+        ida_kernwin.msg(f"sigtool: {db}: {summary}\n")
+        show_results(
+            f"sigtool: {Path(db).name}: {summary}",
+            [["Name", 32], ["Signature", 32], ["Arches", 16], ["Confidence", 12]],
+            rows,
+        )
+
+
 class MenuForm(ida_kernwin.Form):
     """The action menu (IDA-Fusion style): one radio row per action, and the
-    signatures DB that sign-all writes and apply-names reads."""
+    signatures DB that apply-names reads (sign-all writes it only when typed in)."""
 
     # (control name, label, hint); the radio index is the position here.
     CHOICES = (
@@ -1614,6 +2722,17 @@ class MenuForm(ida_kernwin.Form):
             "Every function with a meaningful name",
         ),
         ("rApply", "Apply names from the DB", "Rename identified matches of the DB's signatures"),
+        ("rShowDb", "Show the DB's contents", "Every signature in the DB below"),
+        (
+            "rExplain",
+            "Explain the locate result at the cursor",
+            "Why the signature (clipboard, else a file) does or does not match here",
+        ),
+        (
+            "rRevert",
+            "Revert sigtool names",
+            "Restore the names apply replaced, where the name is still sigtool's",
+        ),
         ("rSettings", "Configure settings", ""),
     )
 
@@ -1630,8 +2749,8 @@ class MenuForm(ida_kernwin.Form):
                 "",
                 *rows,
                 "",
-                "<#Written by sign-all and generate-on-selection, read by apply-names#"
-                "Signatures DB:{iDb}>",
+                "<#Read by apply-names. Sign-all writes this IDB's own DB "
+                "unless you enter another path here#Signatures DB:{iDb}>",
                 "",
             ]
         )
@@ -1652,11 +2771,21 @@ class SettingsForm(ida_kernwin.Form):
     def __init__(self) -> None:
         names = [f"s{index}" for index in range(len(SETTINGS))]
         rows = []
-        for index, (name, (_flag, label)) in enumerate(zip(names, SETTINGS, strict=True)):
+        # Not zip(..., strict=True): IDA 8.4 can run Python 3.8, where that
+        # raises TypeError and the form never opens.
+        for index, (_flag, label) in enumerate(SETTINGS):
             closing = "{cSettings}>" if index == len(SETTINGS) - 1 else ""
-            rows.append(f"<{label}:{{{name}}}>{closing}")
+            rows.append(f"<{label}:{{{names[index]}}}>{closing}")
         form = "\n".join(["sigtool settings", "", *rows, ""])
         super().__init__(form, {"cSettings": ida_kernwin.Form.ChkGroupControl(tuple(names))})
+
+
+def menu_index(remembered: str) -> int:
+    """The menu row to preselect for the remembered action's control name
+    (``rApply``); the first row for anything unknown, including the numeric
+    index older versions stored."""
+    names = [row[0] for row in MenuForm.CHOICES]
+    return names.index(remembered) if remembered in names else 0
 
 
 def show_menu(choice: int, db: str) -> tuple[int, str] | None:
@@ -1688,28 +2817,34 @@ class MenuHandler(_Handler):
     """Open the action menu; Configure settings returns to it, as in IDA-Fusion."""
 
     def run(self, ctx=None) -> None:
-        choice = int(_remembered("choice", "0") or 0)
-        db = _remembered("db", "")
-        if not db:
-            db = output_path(_idb_path(), _image_stem(), ".db")
+        choice = menu_index(_remembered("choice", ""))
+        # The field shows the DB to apply; apply-names remembers it, the
+        # menu does not, so a path typed for signing does not become it.
+        shown = _remembered("apply_db", "") or own_db_paths(_idb_path(), _own_stem())[0]
+        db = shown
         while True:
             picked = show_menu(choice, db)
             if picked is None:
                 return
             choice, db = picked
-            _remember("choice", str(choice))
-            if db:
-                _remember("db", db)
+            if not 0 <= choice < len(MenuForm.CHOICES):
+                return
             name = MenuForm.CHOICES[choice][0]
+            # By control name: an index moves when an upgrade adds actions.
+            _remember("choice", name)
             if name != "rSettings":
                 break
             show_settings()
+        idb, stem = _idb_path(), _own_stem()
         handlers = {
-            "rGen": lambda: GenerateHandler(db),
+            "rGen": lambda: GenerateHandler(signing_db_path(db, shown, idb, stem, True)),
             "rMerge": MergeHandler,
             "rLocate": LocateHandler,
-            "rSignAll": lambda: SignAllHandler(db),
+            "rSignAll": lambda: SignAllHandler(signing_db_path(db, shown, idb, stem, False)),
             "rApply": lambda: ApplyNamesHandler(db),
+            "rRevert": RevertNamesHandler,
+            "rExplain": ExplainHandler,
+            "rShowDb": lambda: ShowDbHandler(db),
         }
         # The menu acts on the cursor, as the hotkey's context is no view.
         handlers[name]().run(None)
@@ -1719,8 +2854,11 @@ ACTIONS = (
     (GEN_ACTION, GEN_LABEL, GenerateHandler, ""),
     (MERGE_ACTION, MERGE_LABEL, MergeHandler, ""),
     (LOCATE_ACTION, LOCATE_LABEL, LocateHandler, ""),
+    (EXPLAIN_ACTION, EXPLAIN_LABEL, ExplainHandler, ""),
     (SIGN_ALL_ACTION, SIGN_ALL_LABEL, SignAllHandler, ""),
     (APPLY_ACTION, APPLY_LABEL, ApplyNamesHandler, ""),
+    (REVERT_ACTION, REVERT_LABEL, RevertNamesHandler, ""),
+    (SHOW_DB_ACTION, SHOW_DB_LABEL, ShowDbHandler, ""),
 )
 
 
@@ -1728,6 +2866,13 @@ class PopupHooks(ida_kernwin.UI_Hooks):
     """Attach the actions to the disassembly and Functions right-click menus."""
 
     def populating_widget_popup(self, form, popup, *_args) -> None:
+        # A locate result list (a chooser this plugin opened) gets "Explain
+        # this row"; the other actions belong to the code views.
+        if ida_kernwin.get_widget_type(form) == getattr(ida_kernwin, "BWN_CHOOSER", None):
+            chooser = _OPEN_CHOOSERS.get(str(ida_kernwin.get_widget_title(form) or ""))
+            if chooser is not None and chooser.explain is not None:
+                ida_kernwin.attach_action_to_popup(form, popup, EXPLAIN_ROW_ACTION)
+            return
         if ida_kernwin.get_widget_type(form) not in (
             ida_kernwin.BWN_DISASM,
             ida_kernwin.BWN_FUNCS,
@@ -1763,6 +2908,12 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
                 ida_kernwin.action_desc_t(action, label, handler(), hotkey or None)
             )
             ida_kernwin.attach_action_to_menu(menu_path, action, ida_kernwin.SETMENU_APP)
+        # Only on a locate result list's right-click menu (PopupHooks).
+        ida_kernwin.register_action(
+            ida_kernwin.action_desc_t(
+                EXPLAIN_ROW_ACTION, EXPLAIN_ROW_LABEL, ExplainRowHandler(), None
+            )
+        )
         self._hooks = PopupHooks()
         self._hooks.hook()
         return ida_idaapi.PLUGIN_KEEP
@@ -1776,6 +2927,7 @@ class SigtoolPlugin(ida_idaapi.plugin_t):
             self._hooks.unhook()
             self._hooks = None
         ida_kernwin.unregister_action(OPEN_ACTION)
+        ida_kernwin.unregister_action(EXPLAIN_ROW_ACTION)
         for action, *_rest in ACTIONS:
             ida_kernwin.unregister_action(action)
         if self._menu:

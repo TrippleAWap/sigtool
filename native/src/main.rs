@@ -50,12 +50,14 @@ use sigtool_native::errors::{DecodeError, SourceFormatError};
 use sigtool_native::generate::{generate_in, GenerateError, GenerationResult};
 use sigtool_native::identity::{container, identify, Container, ImageIdentity};
 use sigtool_native::matcher::{
-    evidence, explain, hinted_floors, scan, scan_in, Explanation, Match, ScanContext,
-    DEFAULT_MAX_RECOVERIES,
+    evidence, explain, hinted_floors, matched_required, scan, scan_in, Explanation, Match,
+    ScanContext, DEFAULT_MAX_RECOVERIES,
 };
 use sigtool_native::merge::{merge_in, MergeSample};
 use sigtool_native::proc_win::{ProcessError, ProcessSource};
-use sigtool_native::scanner::{scan_all, scan_modules, ScanHit, SignatureScanner};
+use sigtool_native::scanner::{
+    scan_all_with, scan_modules, withheld, ScanHit, ScanPhase, SignatureScanner,
+};
 use sigtool_native::sigfile::Signature;
 use sigtool_native::source::{ByteSource, Module};
 
@@ -245,6 +247,10 @@ struct ScanArgs {
     /// With --pid, scan only this module (name or file name, as `gen --module`)
     #[arg(long, value_name = "NAME", requires = "pid")]
     module: Option<String>,
+    /// Print `phase NAME` and `progress N/M` lines to stderr while a file or
+    /// raw blob is scanned (about one per percent of signatures matched)
+    #[arg(long, conflicts_with = "path")]
+    progress: bool,
 }
 
 #[derive(Args)]
@@ -512,9 +518,7 @@ fn write_outputs(
             "stdout".to_string()
         }
         Some(path) => {
-            std::fs::write(path, text.as_bytes()).map_err(|error| {
-                CliError::input(format!("cannot write {}: {error}", path.display()))
-            })?;
+            write_atomic(path, text.as_bytes())?;
             path.display().to_string()
         }
     };
@@ -1132,12 +1136,20 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
 
     let hints = use_hints(source, &args.discovery);
     let only = only_module(source, args.module.as_deref())?;
-    let (hits, coverage) = scan_source(source, &signatures, hints, args.pid.is_some(), only)?;
+    let (hits, coverage) = scan_source(
+        source,
+        &signatures,
+        hints,
+        args.pid.is_some(),
+        only,
+        args.progress,
+    )?;
     warn_coverage(&coverage);
 
     if let Some(path) = &args.json {
         let mut document = scan_document(source, &hits);
         document.insert("truncated".to_string(), coverage_value(&coverage));
+        document.insert("signatures".to_string(), signatures_value(&signatures)?);
         write_json(path, &document)?;
     }
     for hit in &hits {
@@ -1162,20 +1174,36 @@ fn run_scan(args: ScanArgs) -> Result<u8, CliError> {
 
 /// One `scan` of one target, the same for `--file`, `--pid` and each file of
 /// `--path`. `only` (a module base, `--module`) applies to `--pid`.
+/// `progress` (`--progress`) prints the phases and matched counts of a file
+/// scan to stderr.
 fn scan_source(
     source: &dyn ByteSource,
     signatures: &[Signature],
     hints: bool,
     live: bool,
     only: Option<u64>,
+    progress: bool,
 ) -> Result<(Vec<ScanHit>, Coverage), CliError> {
     let mut coverage = Coverage::new();
     let hits = if !live {
+        let printer = ProgressPrinter::default();
+        let hook = |phase: ScanPhase, done: usize, total: usize| printer.report(phase, done, total);
+        let hook: Option<&(dyn Fn(ScanPhase, usize, usize) + Sync)> = progress.then_some(&hook);
+        if let Some(hook) = hook {
+            hook(ScanPhase::Context, 0, signatures.len());
+        }
         // Files get the bench's path (see `run_locate`).
         let context = ScanContext::build(source);
         coverage.add_context(&context);
         coverage.add_source(source, hints);
-        let all = scan_all(source, &context, signatures, hints);
+        let all = scan_all_with(
+            source,
+            &context,
+            signatures,
+            hints,
+            hook,
+            Some(&mut coverage),
+        );
         scan_hits(source, signatures, all)?
     } else if !hints {
         // A process one module at a time (see `run_locate`).
@@ -1194,6 +1222,33 @@ fn scan_source(
         hits
     };
     Ok((hits, coverage))
+}
+
+/// `scan --progress` output: a `phase NAME` line when a phase starts, and
+/// during matching a `progress N/M` line each time another percent of the
+/// signatures has finished (every signature below 100), so front-ends get
+/// about a hundred lines however large the DB. The scanner reports matched
+/// counts in order, one call at a time.
+#[derive(Default)]
+struct ProgressPrinter {
+    /// Last percent printed, `None` before the first `progress` line.
+    last: std::sync::Mutex<Option<usize>>,
+}
+
+impl ProgressPrinter {
+    fn report(&self, phase: ScanPhase, done: usize, total: usize) {
+        if done == 0 {
+            eprintln!("phase {}", phase.name());
+            return;
+        }
+        let percent = done * 100 / total.max(1);
+        let mut last = self.last.lock().unwrap_or_else(|error| error.into_inner());
+        if last.is_some_and(|last| percent <= last) {
+            return;
+        }
+        *last = Some(percent);
+        eprintln!("progress {done}/{total}");
+    }
 }
 
 /// The base of the module `--module` names, checked against the target.
@@ -1489,7 +1544,7 @@ fn batch_line(
         let source =
             FileSource::from_bytes(&data, &file_name(path)).map_err(classify_source_error)?;
         let hints = use_hints(&source, discovery);
-        let (hits, coverage) = scan_source(&source, signatures, hints, false, None)?;
+        let (hits, coverage) = scan_source(&source, signatures, hints, false, None, false)?;
         let mut document = scan_document(&source, &hits);
         Ok::<_, CliError>((
             source.arch().as_str().to_string(),
@@ -1571,6 +1626,8 @@ fn scan_hits(
                     .unwrap_or_default(),
                 first_seen: 0,
                 evidence: evidence(&matches, index),
+                matched: matched_required(signature, matched),
+                answer_withheld: withheld(&matches, index),
             });
         }
     }
@@ -1607,6 +1664,16 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
                 "evidence".to_string(),
                 Value::String(hit.evidence.label().to_string()),
             );
+            // Why a best match is not the answer, and how much of the
+            // signature it holds, so a front-end can rank and explain hits
+            // without a `locate --explain` per signature.
+            entry.insert("matched".to_string(), Value::Number(hit.matched.into()));
+            if let Some(reason) = hit.answer_withheld {
+                entry.insert(
+                    "answer_withheld".to_string(),
+                    Value::String(reason.to_string()),
+                );
+            }
             entry.insert("region".to_string(), Value::String(hit.region.clone()));
             entry.insert(
                 "label".to_string(),
@@ -1624,6 +1691,39 @@ fn scan_document(source: &dyn ByteSource, hits: &[ScanHit]) -> BTreeMap<String, 
         .collect();
     document.insert("hits".to_string(), Value::Array(entries));
     document
+}
+
+/// `scan --json`'s `signatures`: each scanned signature's confidence and
+/// sample arches by signature id, so a front-end can weigh a hit without
+/// reading the DB itself.
+fn signatures_value(signatures: &[Signature]) -> Result<Value, CliError> {
+    let mut map = serde_json::Map::new();
+    for signature in signatures {
+        let id = signature
+            .signature_id()
+            .map_err(|error| CliError::input(error.to_string()))?;
+        let arches: BTreeSet<&str> = signature
+            .provenance
+            .iter()
+            .map(|sample| sample.arch.as_str())
+            .collect();
+        let mut entry = serde_json::Map::new();
+        entry.insert(
+            "arches".to_string(),
+            Value::Array(
+                arches
+                    .into_iter()
+                    .map(|arch| Value::String(arch.to_string()))
+                    .collect(),
+            ),
+        );
+        entry.insert(
+            "confidence".to_string(),
+            Value::String(signature.confidence.clone()),
+        );
+        map.insert(id, Value::Object(entry));
+    }
+    Ok(Value::Object(map))
 }
 
 // -- db ----------------------------------------------------------------------
@@ -1786,9 +1886,7 @@ fn run_db_build(args: DbBuildArgs) -> Result<u8, CliError> {
         }
     }
     let bytes = db.encode();
-    std::fs::write(&args.output, &bytes).map_err(|error| {
-        CliError::input(format!("cannot write {}: {error}", args.output.display()))
-    })?;
+    write_atomic(&args.output, &bytes)?;
     eprintln!(
         "wrote {} signatures to {} ({} bytes, spec {})",
         db.len(),
@@ -2277,6 +2375,110 @@ fn write_json(path: &Path, document: &BTreeMap<String, Value>) -> Result<(), Cli
         .map_err(|error| CliError::input(format!("cannot encode JSON: {error}")))?;
     std::fs::write(path, format!("{text}\n"))
         .map_err(|error| CliError::input(format!("cannot write {}: {error}", path.display())))
+}
+
+/// Write `bytes` to `path` through `.NAME.sigtool-tmp` in the same
+/// directory, renamed over `path` once complete, so a crash, a full disk, or
+/// a cancel mid-write leaves the previous file whole: a DB a front-end
+/// rebuilds in place is otherwise truncated, and every later scan of it
+/// refused. The temporary name is fixed per target, so a killed run leaves at
+/// most one stale file, which the next run replaces.
+///
+/// Only a regular file (or a missing one) is replaced this way. A symlink is
+/// followed and its target replaced, so the link survives; a device, FIFO,
+/// or Windows device name (`NUL`) is written in place as before, since a
+/// rename would replace the node itself. A read-only target is refused as an
+/// in-place write refuses it (a reference DB protected with `chmod 444`
+/// stays), the replacement keeps the old file's permissions, and a directory
+/// the user cannot create files in falls back to the in-place write. A hard
+/// link to the old file keeps the old contents, as with any editor's save.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    use std::io::Write;
+    let fail = |error: std::io::Error| {
+        CliError::input(format!("cannot write {}: {error}", path.display()))
+    };
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::canonicalize(path) {
+            Ok(resolved) => resolved,
+            // A dangling link: write through it as the old code did.
+            Err(_) => return std::fs::write(path, bytes).map_err(fail),
+        },
+        Ok(meta) if !meta.is_file() => return std::fs::write(path, bytes).map_err(fail),
+        _ if is_windows_device(path) => return std::fs::write(path, bytes).map_err(fail),
+        _ => path.to_path_buf(),
+    };
+    let existing = std::fs::metadata(&target).ok();
+    if existing
+        .as_ref()
+        .is_some_and(|meta| meta.permissions().readonly())
+    {
+        return std::fs::write(&target, bytes).map_err(fail);
+    }
+    let Some(name) = target.file_name() else {
+        return Err(CliError::input(format!(
+            "cannot write {}: not a file name",
+            path.display()
+        )));
+    };
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(name);
+    temporary_name.push(".sigtool-tmp");
+    let temporary = target.with_file_name(temporary_name);
+    let mut file = match std::fs::File::create(&temporary) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return std::fs::write(&target, bytes).map_err(fail);
+        }
+        Err(error) => return Err(fail(error)),
+    };
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| match &existing {
+            Some(meta) => std::fs::set_permissions(&temporary, meta.permissions()),
+            None => Ok(()),
+        });
+    drop(file);
+    let renamed = written.and_then(|()| std::fs::rename(&temporary, &target));
+    match renamed {
+        Ok(()) => Ok(()),
+        // Windows refuses to rename over a file another process holds open
+        // without FILE_SHARE_DELETE (a reader that keeps the DB open); the
+        // in-place write that worked before still does.
+        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            std::fs::remove_file(&temporary).ok();
+            std::fs::write(&target, bytes).map_err(fail)
+        }
+        Err(error) => {
+            std::fs::remove_file(&temporary).ok();
+            Err(fail(error))
+        }
+    }
+}
+
+/// Whether `path` names a Windows device (`NUL`, `CON`, `COM1`, ...), which
+/// Windows opens as the device whatever the directory or extensions
+/// (`nul.so.db` too, so the name up to its first dot decides).
+fn is_windows_device(path: &Path) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.len() == 4
+        && stem.as_bytes()[3].is_ascii_digit()
+        && stem.as_bytes()[3] != b'0')
 }
 
 fn json_number(value: f64) -> Value {

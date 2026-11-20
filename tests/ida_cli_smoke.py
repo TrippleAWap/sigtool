@@ -12,10 +12,15 @@ a licensed IDA, see AGENTS.md).
     python tests/ida_cli_smoke.py --corpus corpus/build-real --arch arm64 \\
         --library lz4 --sign clang-O2 --apply gcc-Os
 
+    python tests/ida_cli_smoke.py --corpus corpus/build-real --rebase 0x10000000
+
 Steps: sign one function (generate, then merge it with another arch's build), locate
-it, sign every ground-truth function of the ``--sign`` build into a DB, and
-apply the DB to the stripped ``--apply`` build. Exit 0 when every step's
-assertion holds; the renames' precision against ground truth is printed.
+it, sign every ground-truth function of the ``--sign`` build into a DB (and
+cancel one such run), sign and locate from the IDB alone (no input file, one
+patched byte), and apply the DB to the stripped ``--apply`` build, from the IDB
+alone and from the file. ``--rebase`` moves every IDB address by that much, as
+IDA's rebase does. Exit 0 when every step's assertion holds; the renames'
+precision against ground truth is printed.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -40,17 +46,30 @@ BADADDR = 0xFFFFFFFFFFFFFFFF
 class FakeIdb:
     """One IDB: function starts and sizes, names, comments, and the UI log."""
 
-    def __init__(self, image: Path, functions: dict[int, tuple[str | None, int]]) -> None:
+    def __init__(
+        self, image: Path, functions: dict[int, tuple[str | None, int]], delta: int = 0
+    ) -> None:
         self.image = image
         # Where IDA recorded the input file and where the IDB lives; a moved
         # IDB records a path that no longer exists.
         self.recorded = str(image)
         self.idb_path = str(image) + ".i64"
-        self.sha256 = hashlib.sha256(image.read_bytes()).digest()
-        self.size = image.stat().st_size
-        self.functions = functions
-        self.code = executable_ranges(image)
-        self.names = {ea: name for ea, (name, _size) in functions.items() if name}
+        self.content = image.read_bytes()
+        self.sha256 = hashlib.sha256(self.content).digest()
+        self.size = len(self.content)
+        # A rebased IDB (an Android library, a process image) maps the file
+        # `delta` above its own addresses; `functions` are at file addresses.
+        self.delta = delta
+        self.functions = {ea + delta: row for ea, row in functions.items()}
+        self.code = [(low + delta, high + delta) for low, high in executable_ranges(image)]
+        self.sections = [
+            (name, start + delta, end + delta, offset, perm)
+            for name, start, end, offset, perm in elf_sections(image)
+        ]
+        self.names = {ea: name for ea, (name, _size) in self.functions.items() if name}
+        # Bytes patched in the IDB: address -> the file's original value (the
+        # IDB holds it inverted).
+        self.patched: dict[int, int] = {}
         self.comments: dict[int, str] = {}
         self.answers: deque = deque()
         self.screen_ea = 0
@@ -60,6 +79,16 @@ class FakeIdb:
         self.choosers: list = []
         self.registry: dict = {}
         self.clipboard = ""
+        self.wait_texts: list[str] = []
+        self.messages: list[str] = []
+        self.prompts: list[str] = []
+        # `user_cancelled` answers True from this poll on (None: never).
+        self.cancel_after: int | None = None
+        self.polls = 0
+
+    def user_cancelled(self) -> bool:
+        self.polls += 1
+        return self.cancel_after is not None and self.polls >= self.cancel_after
 
     def answer(self, *values) -> None:
         self.answers.extend(values)
@@ -67,6 +96,7 @@ class FakeIdb:
     def next_answer(self, prompt: str):
         if not self.answers:
             raise AssertionError(f"unexpected dialog: {prompt}")
+        self.prompts.append(prompt)
         return self.answers.popleft()
 
 
@@ -89,15 +119,16 @@ def install_fakes(idb: FakeIdb) -> None:
     kernwin.BWN_DISASM, kernwin.BWN_FUNCS, kernwin.BWN_PSEUDOCODE = 27, 3, 46
     kernwin.action_handler_t = type("action_handler_t", (), {})
     kernwin.UI_Hooks = type("UI_Hooks", (), {})
-    kernwin.msg = lambda text: sys.stdout.write(f"  [ida] {text}")
+    kernwin.msg = lambda text: idb.messages.append(text) or sys.stdout.write(f"  [ida] {text}")
     kernwin.info = lambda text: idb.infos.append(text)
     kernwin.warning = lambda text: idb.warnings.append(text)
     kernwin.ask_file = lambda _save, _mask, prompt: idb.next_answer(prompt)
     kernwin.ask_yn = lambda _default, prompt: idb.next_answer(prompt)
     kernwin.ask_str = lambda _default, _hist, prompt: idb.next_answer(prompt)
-    kernwin.show_wait_box = kernwin.replace_wait_box = lambda _text: None
+    kernwin.show_wait_box = lambda _text: None
+    kernwin.replace_wait_box = lambda text: idb.wait_texts.append(text)
     kernwin.hide_wait_box = lambda: None
-    kernwin.user_cancelled = lambda: False
+    kernwin.user_cancelled = lambda: idb.user_cancelled()
     kernwin.get_screen_ea = lambda: idb.screen_ea
     kernwin.jumpto = lambda ea: idb.jumps.append(ea) or True
     kernwin.refresh_idaview_anyway = lambda: None
@@ -139,7 +170,7 @@ def install_fakes(idb: FakeIdb) -> None:
     nalt.retrieve_input_file_sha256 = lambda: idb.sha256
     nalt.retrieve_input_file_size = lambda: idb.size
     nalt.set_root_filename = lambda path: setattr(idb, "recorded", path)
-    nalt.get_imagebase = lambda: 0
+    nalt.get_imagebase = lambda: idb.delta
 
     loader = module("ida_loader")
     loader.PATH_TYPE_IDB = 1
@@ -180,7 +211,11 @@ def install_fakes(idb: FakeIdb) -> None:
         return next((ea for ea, owned in idb.names.items() if owned == text), BADADDR)
 
     def set_name(ea, text, _flags):
-        idb.names[ea] = text
+        # An empty name clears it; IDA shows its dummy name again.
+        if text:
+            idb.names[ea] = text
+        else:
+            idb.names.pop(ea, None)
         return True
 
     name.get_name_ea = get_name_ea
@@ -193,23 +228,20 @@ def install_fakes(idb: FakeIdb) -> None:
 
     # Segments as IDA's ELF loader makes them: one per allocated section, at
     # its file offset (none for `.bss`), with the file's bytes. The image's
-    # path stands in for the IDB's contents, so it is read even when the
+    # bytes stand in for the IDB's contents, so they are read even when the
     # "input file" has moved away.
-    sections = elf_sections(idb.image)
-
     class Seg:
         def __init__(self, row) -> None:
             self.name, self.start_ea, self.end_ea, self.offset, self.perm = row
             self.type = 0
 
     def segment_at(ea: int):
-        return next((Seg(row) for row in sections if row[1] <= ea < row[2]), None)
+        return next((Seg(row) for row in idb.sections if row[1] <= ea < row[2]), None)
 
     def file_offset(ea: int) -> int:
         seg = segment_at(ea)
         return -1 if seg is None or seg.offset is None else seg.offset + ea - seg.start_ea
 
-    content = idb.image.read_bytes()
     segment = module("ida_segment")
     segment.SEG_XTRN = 1
     segment.SEGPERM_EXEC, segment.SEGPERM_WRITE = 1, 2
@@ -219,14 +251,28 @@ def install_fakes(idb: FakeIdb) -> None:
 
     def get_bytes(ea: int, size: int):
         offset = file_offset(ea)
-        return None if offset < 0 else content[offset : offset + size]
+        if offset < 0:
+            return None
+        data = bytearray(idb.content[offset : offset + size])
+        for at, original in idb.patched.items():
+            if ea <= at < ea + len(data):
+                data[at - ea] = original ^ 0xFF
+        return bytes(data)
+
+    def visit_patched_bytes(start: int, end: int, callback) -> int:
+        for at, original in sorted(idb.patched.items()):
+            if start <= at < end:
+                result = callback(at, file_offset(at), original, original ^ 0xFF)
+                if result:
+                    return result
+        return 0
 
     bytes_.get_bytes = get_bytes
-    bytes_.visit_patched_bytes = lambda _start, _end, _callback: 0
+    bytes_.visit_patched_bytes = visit_patched_bytes
 
     idautils = module("idautils")
     idautils.Functions = lambda: sorted(idb.functions)
-    idautils.Segments = lambda: [row[1] for row in sections]
+    idautils.Segments = lambda: [row[1] for row in idb.sections]
 
     def no_pe_header():
         raise RuntimeError("not a PE database")
@@ -385,10 +431,19 @@ def main() -> int:
         "--merge-arch", default="arm64", help="arch of the second merge sample (same build)"
     )
     parser.add_argument("--function", default=None, help="function to generate and locate")
+    parser.add_argument(
+        "--shape-only", action="store_true", help="also list shape-only matches when applying"
+    )
     # A floor that catches a broken plugin-to-CLI contract (a wrong base or
     # RVA parse renames almost nothing right), not the matcher's precision
     # target: that is measured by the real-corpus bench.
     parser.add_argument("--min-precision", type=float, default=0.8)
+    parser.add_argument(
+        "--rebase",
+        type=lambda text: int(text, 0),
+        default=0,
+        help="model IDBs rebased by this much (IDA's Edit > Segments > Rebase program)",
+    )
     args = parser.parse_args()
 
     native = args.native or ROOT / "native" / "target" / "release" / (
@@ -404,12 +459,17 @@ def main() -> int:
     sign_image = args.corpus / sign_rel
     apply_image = args.corpus / "stripped" / apply_rel
 
-    idb = FakeIdb(sign_image, dict(sign_truth))
+    shift = args.rebase
+    idb = FakeIdb(sign_image, dict(sign_truth), shift)
     install_fakes(idb)
     sys.path.insert(0, str(ROOT))
     import ida_plugin as plugin
 
     plugin._clipboard_text = lambda: idb.clipboard
+    # Every CLI document the plugin reads budgets from, to check it does.
+    budget_reads: list[dict] = []
+    describe_truncation = plugin.describe_truncation
+    plugin.describe_truncation = lambda doc: budget_reads.append(doc) or describe_truncation(doc)
     plugin._set_clipboard = lambda text: setattr(idb, "clipboard", text) or True
 
     by_name = {name: ea for ea, (name, _size) in sign_truth.items()}
@@ -420,6 +480,8 @@ def main() -> int:
         key=lambda name: sign_truth[by_name[name]][1],
     )
     print(f"native {native}\nsign   {sign_image}\napply  {apply_image}\nfunction {target}")
+    if shift:
+        print(f"rebase {shift:#x}")
 
     with tempfile.TemporaryDirectory() as temp_name:
         temp = Path(temp_name)
@@ -428,7 +490,7 @@ def main() -> int:
         outputs = temp / "sigtool"
         yaml = outputs / f"{target}.yaml"
         merged = outputs / f"{target}.merged.yaml"
-        idb.screen_ea = by_name[target] + 1
+        idb.screen_ea = by_name[target] + shift + 1
         plugin.GenerateHandler().run()
         check(
             yaml.exists() and "spec_version:" in yaml.read_text(),
@@ -456,19 +518,66 @@ def main() -> int:
         check(
             not idb.answers
             and bool(rows)
-            and rows[0].ea == by_name[target]
-            and idb.jumps[-1] == by_name[target],
+            and rows[0].ea == by_name[target] + shift
+            and idb.jumps[-1] == by_name[target] + shift,
             f"locate takes the clipboard, lists {target} first, and jumps ({len(rows)} rows)",
         )
         idb.clipboard = "not a signature"
         idb.answer(str(yaml))
         plugin.LocateHandler().run()
         check(not idb.answers, "without one on the clipboard, locate asks for a file")
+        check(
+            len(budget_reads) == 2 and all("truncated" in doc for doc in budget_reads),
+            "locate reads the exhausted budgets from both JSON documents",
+        )
+
+        # Explain: at the cursor (asking for the signature file, as the
+        # clipboard holds none), then from the locate list's first row.
+        idb.screen_ea = by_name[target] + shift + 1
+        idb.answer(str(yaml))
+        plugin.ExplainHandler().run()
+        explained = idb.infos[-1] if idb.infos else ""
+        check(
+            not idb.answers
+            and explained.startswith(f"{target} at {by_name[target] + shift:#x}")
+            and "\ngates:\n" in explained
+            and "\nmatched (" in explained,
+            f"explain at the cursor shows the gates ({explained.splitlines()[0]})",
+        )
+        listing = idb.choosers[-1]
+        row_ctx = types.SimpleNamespace(widget_title=listing.title, chooser_selection=[0])
+        plugin.ExplainRowHandler().run(row_ctx)
+        check(
+            idb.infos[-1].startswith(f"{target} at {listing.rows[0].ea:#x}")
+            and "rank 1 of" in idb.infos[-1],
+            "explain this row explains the locate list's best match",
+        )
 
         db = outputs / f"{sign_image.name}.db"
         plugin.SignAllHandler().run()
         summary = idb.infos[-1]
         check(db.exists() and "signed " in summary, summary.splitlines()[0])
+        plugin.ShowDbHandler(str(db)).run()
+        listing = idb.choosers[-1]
+        signed = int(summary.split()[1])
+        check(
+            listing.title.startswith(f"sigtool: {db.name}: {signed} signatures, spec ")
+            and len(listing.rows) == signed
+            and all(row.ea is None and row.cells[1] for row in listing.rows),
+            f"the DB's contents list its {signed} signatures ({listing.title})",
+        )
+        check(
+            "\nverdicts: " in summary and "\nconfidence: " in summary,
+            "the sign-all summary counts verdicts and confidence: "
+            + "; ".join(summary.splitlines()[1:3]),
+        )
+        # db build --functions prints progress lines: the wait box must show
+        # the count, not only the elapsed-time suffix every text ends with.
+        check(
+            any(re.search(r"\d+ / \d+, \d+ s$", text) for text in idb.wait_texts)
+            and all(text.endswith(" s") for text in idb.wait_texts),
+            f"the wait box shows progress and the elapsed time ({idb.wait_texts[-1:]})",
+        )
 
         # The Functions view's selection, not the cursor: three named rows
         # (indices into the sorted function list) sign into one DB.
@@ -482,6 +591,32 @@ def main() -> int:
         check(
             selected_db.exists() and idb.infos[-1].startswith("signed 3 of 3"),
             "generate on a Functions-view selection signs those rows into the menu's DB",
+        )
+
+        # Cancel in the wait box kills the CLI before it writes anything.
+        cancelled_db = temp / "cancelled.db"
+        started: list[subprocess.Popen] = []
+        popen = subprocess.Popen
+
+        class Recorded(popen):
+            def __init__(self, *rest, **named) -> None:
+                super().__init__(*rest, **named)
+                started.append(self)
+
+        idb.cancel_after = idb.polls + 2
+        subprocess.Popen = Recorded
+        try:
+            plugin.SignAllHandler(str(cancelled_db)).activate(None)
+        finally:
+            subprocess.Popen = popen
+            idb.cancel_after = None
+        check(
+            bool(started)
+            and all(process.poll() is not None for process in started)
+            and "sigtool: cancelled\n" in idb.messages
+            and not cancelled_db.exists()
+            and not list(temp.glob(".cancelled.db.*")),
+            "cancel kills the CLI, logs the cancel, and leaves no DB or temporary file",
         )
 
         # A moved IDB: the recorded path is gone, the binary sits beside the
@@ -506,8 +641,23 @@ def main() -> int:
         plugin._verified_inputs.clear()
         relocated.unlink()
         # With no matching file anywhere, the image is rebuilt from the IDB,
-        # without a dialog, and signs like the stripped copy of the binary.
-        plugin.GenerateHandler().run()
+        # without a dialog, and signs like the stripped copy of the binary,
+        # even with a byte of the function patched in the IDB. The analyst
+        # renamed the function; the signature carries that name.
+        renamed = f"{target}_renamed"
+        idb.names[by_name[target] + shift] = renamed
+        relocated = moved / "sigtool" / f"{renamed}.yaml"
+        patched_ea = by_name[target] + shift + 1
+        original = idb.content[plugin.ida_loader.get_fileregion_offset(patched_ea)]
+        idb.patched[patched_ea] = original
+        check(
+            plugin.ida_bytes.get_bytes(patched_ea, 1) != bytes([original]),
+            f"the IDB holds a patched byte at {patched_ea:#x}",
+        )
+        try:
+            plugin.GenerateHandler().run()
+        except plugin.SigtoolError as error:
+            check(False, f"generate from the IDB alone: {error}")
         reference = temp / "stripped.yaml"
         stripped_copy = args.corpus / "stripped" / sign_rel
         subprocess.run(
@@ -520,6 +670,8 @@ def main() -> int:
                 hex(by_name[target]),
                 "--tool",
                 "IDA",
+                "--name",
+                renamed,
                 "--output",
                 str(reference),
             ],
@@ -533,18 +685,63 @@ def main() -> int:
             and relocated.read_bytes() == reference.read_bytes(),
             "without the binary, the IDB alone signs like the stripped file (no dialog)",
         )
+        check(
+            f"\nname: {renamed}\n" in relocated.read_text(encoding="utf-8"),
+            f"the signature is named {renamed}, the IDA name",
+        )
+        # The clipboard holds that signature; locate finds it in the IDB alone.
+        idb.jumps.clear()
+        plugin.LocateHandler().run()
+        rows = idb.choosers[-1].rows if idb.choosers else []
+        check(
+            bool(rows)
+            and rows[0].ea == by_name[target] + shift
+            and idb.jumps[-1:] == [by_name[target] + shift],
+            f"locate in the IDB alone lists {target} first and jumps to it",
+        )
 
         # The other build, stripped: only its exported functions are named.
-        exports = dynamic_functions(apply_image)
+        exports = {ea + shift: name for ea, name in dynamic_functions(apply_image).items()}
         apply_idb_functions = {
-            ea: (exports.get(ea), size) for ea, (_name, size) in apply_truth.items()
+            ea: (exports.get(ea + shift), size) for ea, (_name, size) in apply_truth.items()
         }
-        idb.__init__(apply_image, apply_idb_functions)
-        idb.idb_path = str(temp / f"{apply_image.name}.i64")
+        apply_truth = {ea + shift: row for ea, row in apply_truth.items()}
+
+        # First from the IDB alone: the renames must be the ones the file gives.
+        idb.__init__(apply_image, apply_idb_functions, shift)
+        if args.shape_only:
+            idb.registry["settings"] = plugin.DEFAULT_SETTINGS | plugin.SET_REVIEW_SHAPE_ONLY
+        idb.recorded = str(temp / "gone" / apply_image.name)
+        idb.idb_path = str(temp / "rebuilt-apply" / f"{apply_image.name}.i64")
+        plugin.ApplyNamesHandler(str(db)).run()
+        from_idb = {ea: name for ea, name in idb.names.items() if ea not in exports}
+
+        idb.__init__(apply_image, apply_idb_functions, shift)
+        idb.idb_path = str(temp / "apply" / f"{apply_image.name}.i64")
+        if args.shape_only:
+            idb.registry["settings"] = plugin.DEFAULT_SETTINGS | plugin.SET_REVIEW_SHAPE_ONLY
+        before_apply = dict(idb.names)
         # The menu hands apply-names the DB sign-all wrote: no dialog.
+        progress_seen: list[tuple[int, int]] = []
+
+        class RecordingStatus(plugin.WaitStatus):
+            def feed(self, line: str) -> None:
+                super().feed(line)
+                if self.progress is not None:
+                    progress_seen.append(self.progress)
+
+        plugin.WaitStatus = RecordingStatus
         plugin.ApplyNamesHandler(str(db)).run()
         check(not idb.answers, "apply-names takes the menu's DB without a dialog")
+        check("truncated" in budget_reads[-1], "apply-names reads the scan's exhausted budgets")
+        # The plugin ships with this CLI, so the newer scan flags must be there.
+        check(plugin._supports("scan", "--progress"), "the CLI offers scan --progress")
+        check(bool(progress_seen), f"apply-names saw scan progress ({progress_seen[-1:]})")
         renamed = {ea: name for ea, name in idb.names.items() if ea not in exports}
+        check(
+            from_idb == renamed,
+            f"apply from the IDB alone renames as from the file ({len(from_idb)} renames)",
+        )
         right = sum(1 for ea, name in renamed.items() if apply_truth.get(ea, ("",))[0] == name)
         precision = right / len(renamed) if renamed else 0.0
         print(
@@ -555,6 +752,27 @@ def main() -> int:
             if apply_truth.get(ea, ("",))[0] != name:
                 truth = apply_truth.get(ea, (None,))[0]
                 print(f"     wrong: {ea:#x} named {name}, ground truth {truth}")
+        review = next(c for c in idb.choosers if c.title.startswith("sigtool: proposed renames"))
+        unsure = [
+            (index, int(cells[0], 16), cells[2], cells[4])
+            for index, cells in enumerate(review.items)
+            if cells[4] != "identified"
+        ]
+        for kind in ("candidate", "shape-only"):
+            rows = [row for row in unsure if row[3] == kind]
+            good = sum(1 for _i, ea, name, _k in rows if apply_truth.get(ea, ("",))[0] == name)
+            print(f"     review rows ({kind}): {len(rows)}, {good} right by ground truth")
+        check(
+            all(cells[6].isdigit() for cells in review.items)
+            and all(review.items[index][5] for index, *_rest in unsure),
+            "every proposed rename shows its matched count, and every unsure one "
+            "why the CLI withheld it",
+        )
+        check(
+            not any(index in review.deflt for index, *_rest in unsure)
+            and not any(renamed.get(ea) == name for _i, ea, name, _k in unsure),
+            f"{len(unsure)} unsure matches are listed unselected and not applied",
+        )
         check(len(renamed) > 0, "apply renamed functions")
         check(precision >= args.min_precision, f"rename precision >= {args.min_precision}")
         check(
@@ -564,6 +782,47 @@ def main() -> int:
         check(
             idb.choosers[-1].title.startswith("sigtool: renamed"),
             "renames are listed in a results chooser",
+        )
+        check(
+            all(plugin._sigtool_owned(ea) for ea in renamed),
+            "the renamed functions count as sigtool's, not the analyst's",
+        )
+        # Sign-all from the menu in this IDB: the field shows the DB just
+        # applied (the other IDB's), but signing writes this IDB's own DB.
+        reference_db = db.read_bytes()
+        shown = []
+        sign_all = [row[0] for row in plugin.MenuForm.CHOICES].index("rSignAll")
+        plugin.show_menu = lambda _choice, field: shown.append(field) or (sign_all, field)
+        plugin.MenuHandler().run()
+        own_db = Path(idb.idb_path).parent / "sigtool" / f"{apply_image.name}.db"
+        check(
+            shown == [str(db)]
+            and not idb.answers
+            and own_db.exists()
+            and db.read_bytes() == reference_db,
+            "menu sign-all writes this IDB's own DB and leaves the applied DB alone",
+        )
+        # Pointed at the other IDB's DB, it asks first, naming its count; No
+        # keeps the DB.
+        signed = int(re.match(r"signed (\d+) ", summary).group(1))
+        idb.answer(0)
+        plugin.SignAllHandler(str(db)).activate(None)
+        check(
+            not idb.answers
+            and f"holds {signed} signatures" in idb.prompts[-1]
+            and str(db) in idb.prompts[-1]
+            and db.read_bytes() == reference_db
+            and idb.messages[-1] == "sigtool: cancelled\n",
+            "replacing another IDB's DB asks first, and No keeps it",
+        )
+        # Revert: every sigtool name goes back to what it replaced.
+        idb.answer(1)
+        plugin.RevertNamesHandler().run()
+        check(
+            not idb.answers
+            and idb.names == before_apply
+            and not any("sigtool:" in text for text in idb.comments.values()),
+            f"revert restores the {len(renamed)} old names and drops the provenance lines",
         )
     return 0
 

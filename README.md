@@ -131,14 +131,86 @@ ld ARM32, Thumb, and AArch64 images (`examples/sectionless.rs`).
 
 ### In IDA
 
-`ida_plugin.py` (IDA 8.4+ / 9.x) is a thin wrapper over `sigtool-native`: copy
-the file into `%IDAUSR%/plugins` with the binary next to it (or put the binary
-on `PATH`, or set `SIGTOOL_NATIVE`; the copy next to the plugin wins over
-`PATH`). It adds **generate signature here** (report, save, merge
-more samples) and **locate signature in this IDB** to Edit > Plugins and the
-disassembly and Functions context menus. Addresses cross the boundary as RVAs,
-so rebased databases work, and a signature made in IDA is byte-identical to
-one made with the CLI.
+`ida_plugin.py` is a thin front-end over `sigtool-native`. It never extracts
+features itself: it hands the CLI an image file and module-relative
+addresses (RVAs, so rebased databases work) and shows the JSON that comes
+back. A signature made in IDA is byte-identical to one made with
+`sigtool-native gen --file IMAGE --rva RVA`.
+
+**Not yet run in a real IDA.** No IDA version has run the plugin yet
+(`PLAN.md`, M12). It is checked against the IDAPython API sources, by unit
+tests over stubbed IDA modules (`tests/test_ida_plugin.py`), and by
+`tests/ida_cli_smoke.py`, which runs every action against the real CLI with
+a fake IDB. How the dialogs, choosers, menus, and wait box look and behave in
+IDA is unverified.
+
+**Install.**
+
+- **IDA 9.0 and later:** use the release's
+  `sigtool-ida-plugin-<version>-<platform>.zip`. It is in the HCLI / Plugin
+  Manager format and bundles the plugin with its `sigtool-native` binary.
+  The manifest (`packaging/ida-plugin.json`) lists 9.x versions only,
+  because older IDAs ignore that folder layout.
+- **IDA 8.4:** copy `ida_plugin.py` into `%IDAUSR%/plugins` and put
+  `sigtool-native` next to it. This flat install should work but has not been
+  tested.
+
+The packaged plugin needs IDAPython 3.10 or later; the flat 8.4 install also
+runs on Python 3.8. The binary is found through `SIGTOOL_NATIVE`, then
+next to the plugin, then on `PATH`; the copy next to the plugin beats `PATH`.
+On first use the plugin warns when the binary writes a different signature
+spec than it expects.
+
+**Opening it.** Ctrl-Alt-G, or Edit > Plugins > sigtool, opens the action
+menu. It has one radio row per action, the signatures DB that apply-names
+reads, and **Configure settings**, and it remembers the last action and the
+last DB applied or signed. Sign-all and generate on a selection write this
+IDB's own DB (`sigtool/<IDB name>.db` beside the IDB, `<IDB name>.selection.db`
+for a selection, so two IDBs of same-named inputs keep separate DBs) unless you type another
+path into the field, and they ask before replacing a DB that is not this
+IDB's own.
+The actions also appear in a top-level `sigtool` menu (or under Edit >
+Plugins when IDA cannot add one) and on the right-click menus of the
+disassembly, pseudocode, and Functions views. In the Functions view they act
+on the selected rows.
+
+| Action | What it does |
+| --- | --- |
+| generate signature | Signs the function under the cursor. By default the signature is copied to the clipboard and saved as `sigtool/<function>.yaml` beside the IDB, and the Output window shows its quality (for example `weak, single-arch`). With several rows selected in the Functions view, signs them into this IDB's `.selection.db` instead. |
+| merge with another build | Signs the function together with the same function in other image files, each given as an address or `+RVA`, into one multi-arch signature. |
+| locate signature in this IDB | Scans hint-free with the signature on the clipboard, or else a file. The match list shows IDA's current names. The plugin jumps only to an `identified` best match; for a `candidate` or `shape-only` best match it opens the list instead. Right-click a row and pick **explain this row** to see why that row matched. |
+| explain the locate result at the cursor | Runs `locate --explain --expect <RVA>` for the function under the cursor (or the cursor itself outside any function) and shows the result in a text view: the deciding gate, each gate's result, the score against the threshold, the reason an answer was withheld, and the matched, inherited, and missed keys (required ones listed separately). |
+| sign all named functions to a DB | Signs every function with a meaningful name in one `db build --file IMAGE --functions LIST` run. It skips `sub_*` and other IDA dummy names, thunks, externs, and stubs under five bytes. The summary counts verdicts and confidence levels and lists the functions it skipped. |
+| apply names from a DB | Runs `scan --db --discovery hint-free`, which resolves the signatures of one module jointly, then proposes renames in a chooser. `identified` answers start selected, except ones that would replace a user name. `candidate` matches (and `shape-only` ones, if that setting is on) are listed unselected, with Withheld and Matched columns, for review. The plugin skips a name already used elsewhere in the IDB, two signatures claiming one address, and one name claiming two addresses. Each rename adds a comment line `sigtool: NEW (was OLD) from DB (...)`. A later apply replaces sigtool's own earlier names the way it replaces dummy names, but never the analyst's names. The wait box shows the elapsed time, plus the scan phase and progress when the CLI supports `scan --progress`. |
+| revert sigtool names | Uses those comment lines to restore the old name of every function that still has the name sigtool gave it. A dummy old name is cleared instead, so IDA regenerates it. A function renamed twice reverts one step per run. |
+| show a DB's contents | Lists the DB's signatures (`db list --json`): name, signature id, arches, and confidence, with the `db info` summary as the title. Apply also writes that summary to the Output window before it scans. |
+
+When a scan runs out of a work budget (see [Limitations](#limitations)), the
+locate and apply warnings and list titles, and the sign-all summary, say
+`incomplete: budgets ran out: ...`. In that case "no match" is not a real
+negative. The CLI's own warning lines go to the Output window.
+
+**Settings**, kept in IDA's registry: copy new signatures to the clipboard;
+save signatures and DBs in a `sigtool` folder beside the IDB without a
+dialog; show the quality report in a dialog; locate the signature on the
+clipboard; auto jump to an identified best match; list every match; confirm
+renames in a list; also preselect renames that replace user names; also list
+shape-only matches for review. All are on by default except the report
+dialog and the last two.
+
+**The image the CLI reads.** The IDB is all the plugin needs:
+
+- **The input file**, when it is on disk: the path IDA recorded, or a file
+  of the same name beside the IDB (for an IDB copied to another machine or
+  folder). A file is used only when its SHA-256 matches the one IDA stored.
+  A file found somewhere new is recorded in the IDB.
+- **An image rebuilt from the IDB**, otherwise: every byte IDA loaded, with
+  patches reverted, back at its file offset. ELF gets a section table made
+  from the segments, and PE gets its NT headers from IDA's copy. Signatures
+  from a rebuilt image are byte-identical to ones from the stripped file
+  (ELF) or from the file itself (PE).
+
+A file dialog asks for the input file only when neither works.
 
 ## Measure
 
