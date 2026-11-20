@@ -673,6 +673,16 @@ def _elf_loads(image: bytes, is64: bool) -> list[tuple[int, int, int]]:
     return loads
 
 
+def _elf_filed(loads: list[tuple[int, int, int]], file_size: int, offset: int, size: int) -> int:
+    """How many of a segment's ``size`` bytes at file ``offset`` the file
+    holds: up to the end of the ``PT_LOAD`` data that holds them (its
+    ``p_filesz``), else the end of the file."""
+    for load_offset, _vaddr, filesz in loads:
+        if load_offset <= offset < load_offset + filesz:
+            return max(0, min(size, load_offset + filesz - offset, file_size - offset))
+    return max(0, min(size, file_size - offset))
+
+
 def rebase_delta(image: bytes, segments: Iterable[Segment], is64: bool) -> int | None:
     """How far the IDB moved ``image`` from its own addresses (IDA's Rebase
     program), from where its file-backed segments sit against the ``PT_LOAD``
@@ -715,6 +725,7 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
     delta = rebase_delta(image, segments, is64)
     if delta is None:
         return None
+    loads = _elf_loads(image, is64)
     entry = struct.Struct("<IIQQQQIIQQ" if is64 else "<IIIIIIIIII")
     names = bytearray(b"\0")
     rows = [entry.pack(*([0] * 10))]
@@ -730,17 +741,35 @@ def rebuild_elf(image: bytes, segments: Iterable[Segment]) -> bytes | None:
         flags = _SHF_ALLOC
         flags |= _SHF_EXECINSTR if segment.executable else 0
         flags |= _SHF_WRITE if segment.writable else 0
-        kind = _SHT_NOBITS if segment.file_offset is None else _SHT_PROGBITS
-        offset = segment.file_offset or 0
         size = segment.end - segment.start
-        if kind == _SHT_PROGBITS and offset + size > len(image):
+        offset = segment.file_offset or 0
+        if segment.file_offset is not None and offset >= len(image):
             return None
+        filed = 0 if segment.file_offset is None else _elf_filed(loads, len(image), offset, size)
         address = segment.start - delta
-        if not 0 <= address < (1 << (64 if is64 else 32)):
+        if address < 0 or address + size > (1 << (64 if is64 else 32)):
             return None
-        rows.append(
-            entry.pack(name_offset(segment.name), kind, flags, address, offset, size, 0, 0, 1, 0)
-        )
+        name = name_offset(segment.name)
+        if filed:
+            rows.append(entry.pack(name, _SHT_PROGBITS, flags, address, offset, filed, 0, 0, 1, 0))
+        if filed < size:
+            # A LOAD whose memory size exceeds its file size (.bss merged into
+            # the data segment, as a section-less image keeps it): the tail is
+            # zero-fill, not the file bytes that follow.
+            rows.append(
+                entry.pack(
+                    name,
+                    _SHT_NOBITS,
+                    flags,
+                    address + filed,
+                    offset + filed,
+                    size - filed,
+                    0,
+                    0,
+                    1,
+                    0,
+                )
+            )
     table_name = name_offset(".shstrtab")
     names_offset = len(image)
     rows.append(entry.pack(table_name, _SHT_STRTAB, 0, 0, names_offset, len(names), 0, 0, 1, 0))

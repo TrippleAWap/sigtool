@@ -694,6 +694,24 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual(self.section_addresses(plain), [0x1000, 0x2000, 0x2040])
         self.assertEqual(plugin.rebuild_elf(image, shifted), plain)
 
+    def test_elf_segment_with_a_zero_fill_tail_ends_its_file_data_at_p_filesz(self):
+        # A section-less image's data LOAD holds 0x40 file bytes and 0x80 in
+        # memory, and is last in the file; IDA maps it as one 0x80 segment.
+        image = self.elf_with_loads()
+        segments = [
+            plugin.Segment("LOAD", 0x0, 0x1100, 0x0, True, False),
+            plugin.Segment("LOAD", 0x2000, 0x2080, 0x1100, False, True),
+        ]
+        out = plugin.rebuild_elf(image, segments)
+        self.assertIsNotNone(out)
+        shoff = struct.unpack_from("<Q", out, 0x28)[0]
+        count = struct.unpack_from("<H", out, 0x3C)[0]
+        rows = [struct.unpack_from("<IIQQQQ", out, shoff + 64 * i) for i in range(1, count - 1)]
+        self.assertEqual(
+            [(kind, address, offset, size) for _name, kind, _flags, address, offset, size in rows],
+            [(1, 0x0, 0x0, 0x1100), (1, 0x2000, 0x1100, 0x40), (8, 0x2040, 0x1140, 0x40)],
+        )
+
     def test_elf_segments_that_disagree_on_the_rebase_are_refused(self):
         segments = self.segments()
         segments[1] = plugin.Segment(".data", 0x3000, 0x3040, 0x1100, False, True)
