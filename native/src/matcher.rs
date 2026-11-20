@@ -1105,10 +1105,6 @@ impl ScanContext {
         Some(self.frequencies[0].get()?.as_ref()?.carriers(matched))
     }
 
-    /// Build the image's feature frequencies now instead of on the first
-    /// accepted match. A multi-signature scan calls this before scanning in
-    /// parallel, so the table is built across all cores once rather than by
-    /// whichever worker gets there first while the others wait on it.
     /// The image's hint-free known starts ([`hint_free_starts`]), the same
     /// for every signature: [`candidate_starts`] rebuilt the set once per
     /// signature scanned.
@@ -1117,6 +1113,10 @@ impl ScanContext {
             .get_or_init(|| hint_free_starts(source, &self.code))
     }
 
+    /// Build the image's feature frequencies now instead of on the first
+    /// accepted match. A multi-signature scan calls this before scanning in
+    /// parallel, so the table is built across all cores once rather than by
+    /// whichever worker gets there first while the others wait on it.
     pub fn prepare_frequencies<S: ByteSource + ?Sized>(&self, source: &S, hints: bool) {
         self.frequencies[usize::from(hints)]
             .get_or_init(|| Frequencies::build(source, &self.features, hints));
@@ -3544,12 +3544,6 @@ fn swept_starts_from<S: ByteSource + ?Sized>(source: &S, address: u64) -> Vec<u6
     starts
 }
 
-/// Order candidate starts for the fewest wasted recoveries.
-///
-/// Exact starts (symbols when hinted, direct call targets otherwise) come first,
-/// closest to a landmark; swept starts follow, earliest address first, since the
-/// prologue precedes the anchor that found them. Distant candidates of both
-/// kinds rank last, by address.
 /// Hint-free exact starts: every direct call target in `code` and every
 /// unwind entry.
 ///
@@ -3567,6 +3561,12 @@ fn hint_free_starts<S: ByteSource + ?Sized>(source: &S, code: &CodeIndex) -> Has
     starts
 }
 
+/// Order candidate starts for the fewest wasted recoveries.
+///
+/// Exact starts (symbols when hinted, direct call targets otherwise) come first,
+/// closest to a landmark; swept starts follow, earliest address first, since the
+/// prologue precedes the anchor that found them. Distant candidates of both
+/// kinds rank last, by address.
 fn rank(hint_starts: &HashSet<u64>, swept_starts: HashSet<u64>, landmarks: &[u64]) -> Vec<u64> {
     // (near, kind, sort_key, start)
     let mut ranked: Vec<(u8, u8, u64, u64)> = Vec::new();
