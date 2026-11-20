@@ -154,11 +154,16 @@ impl Coverage {
 
     /// Record `entry`; a budget already recorded keeps its first entry.
     pub fn push(&mut self, entry: Exhausted) {
-        if self
+        if let Some(item) = self
             .exhausted
-            .iter()
-            .any(|item| item.budget == entry.budget)
+            .iter_mut()
+            .find(|item| item.budget == entry.budget)
         {
+            // One entry per budget, counting the largest overrun: several
+            // modules of a process can each skip a joint group.
+            if entry.count > item.count {
+                item.count = entry.count;
+            }
             return;
         }
         self.exhausted.push(entry);
