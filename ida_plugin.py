@@ -294,7 +294,10 @@ class WaitStatus:
         return "".join(self.collected)
 
     def error(self, returncode: int) -> str:
-        return self.stderr().strip() or f"exit code {returncode}"
+        # `db build` prints a `skipped RVA NAME: reason` line per function it
+        # could not sign; a failure's message is the CLI's error after them.
+        lines = [line for line in self.collected if not line.startswith("skipped ")]
+        return "".join(lines).strip() or f"exit code {returncode}"
 
 
 def describe_truncation(document: dict) -> str | None:

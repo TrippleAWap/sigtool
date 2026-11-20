@@ -106,12 +106,14 @@ class NameTests(unittest.TestCase):
         status.feed("progress 7/40\n")
         self.assertEqual(status.text(12.7), "sigtool: scanning\nmatch, 7 / 40, 12 s")
 
-    def test_wait_status_keeps_progress_out_of_the_error(self):
+    def test_wait_status_keeps_progress_and_skips_out_of_the_error(self):
+        # A failed sign-all prints one `skipped` line per function before its
+        # error; the warning shows the error, the Output window the rest.
         status = plugin.WaitStatus("sigtool: signing")
         for line in ("progress 1/3\n", "phase match\n", "skipped 0x10 f: no\n", "error: bad\n"):
             status.feed(line)
         self.assertEqual(status.stderr(), "skipped 0x10 f: no\nerror: bad\n")
-        self.assertEqual(status.error(2), "skipped 0x10 f: no\nerror: bad")
+        self.assertEqual(status.error(2), "error: bad")
         self.assertEqual(plugin.WaitStatus("x").error(3), "exit code 3")
 
     def test_menu_remembers_the_action_by_name(self):
