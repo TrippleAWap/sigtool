@@ -2721,6 +2721,14 @@ class SettingsForm(ida_kernwin.Form):
         super().__init__(form, {"cSettings": ida_kernwin.Form.ChkGroupControl(tuple(names))})
 
 
+def menu_index(remembered: str) -> int:
+    """The menu row to preselect for the remembered action's control name
+    (``rApply``); the first row for anything unknown, including the numeric
+    index older versions stored."""
+    names = [row[0] for row in MenuForm.CHOICES]
+    return names.index(remembered) if remembered in names else 0
+
+
 def show_menu(choice: int, db: str) -> tuple[int, str] | None:
     """Show the menu with ``choice`` and ``db`` filled in; what was chosen, or None."""
     form = MenuForm()
@@ -2750,7 +2758,7 @@ class MenuHandler(_Handler):
     """Open the action menu; Configure settings returns to it, as in IDA-Fusion."""
 
     def run(self, ctx=None) -> None:
-        choice = int(_remembered("choice", "0") or 0)
+        choice = menu_index(_remembered("choice", ""))
         # The field shows the DB to apply; apply-names remembers it, the
         # menu does not, so a path typed for signing does not become it.
         shown = _remembered("apply_db", "") or own_db_paths(_idb_path(), _own_stem())[0]
@@ -2760,8 +2768,11 @@ class MenuHandler(_Handler):
             if picked is None:
                 return
             choice, db = picked
-            _remember("choice", str(choice))
+            if not 0 <= choice < len(MenuForm.CHOICES):
+                return
             name = MenuForm.CHOICES[choice][0]
+            # By control name: an index moves when an upgrade adds actions.
+            _remember("choice", name)
             if name != "rSettings":
                 break
             show_settings()

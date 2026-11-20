@@ -114,6 +114,13 @@ class NameTests(unittest.TestCase):
         self.assertEqual(status.error(2), "skipped 0x10 f: no\nerror: bad")
         self.assertEqual(plugin.WaitStatus("x").error(3), "exit code 3")
 
+    def test_menu_remembers_the_action_by_name(self):
+        names = [row[0] for row in plugin.MenuForm.CHOICES]
+        self.assertEqual(plugin.menu_index("rApply"), names.index("rApply"))
+        # An index stored by an older version, or garbage, selects the first row.
+        for stale in ("5", "", "rGone"):
+            self.assertEqual(plugin.menu_index(stale), 0)
+
     def test_own_db_is_named_after_the_idb_not_the_input(self):
         folder = Path("work")
         x64_idb, arm_idb = str(folder / "libz-x64.i64"), str(folder / "libz-arm64.i64")
