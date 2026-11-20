@@ -306,19 +306,40 @@ def describe_truncation(document: dict) -> str | None:
     A scan past a budget (README "Limits") misses functions it never reached,
     so "no match" or a short rename list is not a real negative then.
     """
-    entries = document.get("truncated") or []
-    if not isinstance(entries, list) or not entries:
-        return None
-    parts = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        budget = str(entry.get("budget") or "?").replace("_", " ")
+    parts, joint = [], []
+    for entry in _truncated(document):
+        budget = str(entry.get("budget") or "?")
         limit = entry.get("limit")
+        if budget in _JOINT_BUDGETS:
+            # The code was scanned; only joint resolution of one module's
+            # signatures was left out, so its matches were judged alone.
+            pairs = entry.get("count")
+            size = f"{pairs} pairs, " if pairs is not None else ""
+            joint.append(f"joint resolution skipped a module ({size}limit {limit})")
+            continue
+        budget = budget.replace("_", " ")
         parts.append(f"{budget} (limit {limit})" if limit is not None else budget)
-    if not parts:
-        return None
-    return f"incomplete: budgets ran out: {', '.join(parts)}"
+    text = [f"incomplete: budgets ran out: {', '.join(parts)}"] if parts else []
+    if joint:
+        text.append(f"{'; '.join(joint)}, so matches there were judged alone")
+    return "; ".join(text) or None
+
+
+# `joint_pairs` is the CLI's key; `joint pairs` what the first plugin build expected.
+_JOINT_BUDGETS = ("joint_pairs", "joint pairs")
+
+
+def _truncated(document: dict) -> list[dict]:
+    entries = document.get("truncated") or []
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def truncation_skips_code(document: dict) -> bool:
+    """Whether a budget that ran out left code unscanned (every budget but
+    the joint pair cap, which only leaves out joint resolution)."""
+    return any(str(entry.get("budget")) not in _JOINT_BUDGETS for entry in _truncated(document))
 
 
 def _counts(values: Iterable[str]) -> str:
@@ -2201,11 +2222,9 @@ class LocateHandler(_Handler):
         )
         if not rows:
             ida_kernwin.msg(f"sigtool: no match for {name} (from {source}) in this IDB\n")
-            note = (
-                f"\n\n{truncation}, so the function may be in code the scan skipped"
-                if truncation
-                else ""
-            )
+            note = f"\n\n{truncation}" if truncation else ""
+            if truncation_skips_code(result):
+                note += ", so the function may be in code the scan skipped"
             ida_kernwin.warning(f"sigtool: no match for {name!r} in this IDB{note}")
             return
         ida_kernwin.msg(f"sigtool: {name} (from {source}): {len(rows)} match(es)\n")
@@ -2491,7 +2510,12 @@ class ApplyNamesHandler(_Handler):
             )
             return
         if truncation:
-            ida_kernwin.msg(f"sigtool: {truncation}; code the scan skipped got no proposals\n")
+            consequence = (
+                "; code the scan skipped got no proposals"
+                if truncation_skips_code(document)
+                else ""
+            )
+            ida_kernwin.msg(f"sigtool: {truncation}{consequence}\n")
         if _setting(SET_CONFIRM_RENAMES):
             chosen = RenameChooser(proposals, base, truncation).ask()
         else:

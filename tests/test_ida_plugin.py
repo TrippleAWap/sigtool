@@ -188,13 +188,23 @@ class NameTests(unittest.TestCase):
         document = {
             "truncated": [
                 {"budget": "reference_index", "count": 4000000, "limit": 4000000},
-                {"budget": "joint pairs", "count": None, "limit": 65536},
+                {"budget": "joint_pairs", "count": 70000000, "limit": 67108864},
             ]
         }
+        self.assertTrue(plugin.truncation_skips_code(document))
+        # The joint cap leaves no code unscanned: only joint resolution.
+        joint = {"truncated": [document["truncated"][1]]}
+        self.assertFalse(plugin.truncation_skips_code(joint))
+        self.assertEqual(
+            plugin.describe_truncation(joint),
+            "joint resolution skipped a module (70000000 pairs, limit 67108864), "
+            "so matches there were judged alone",
+        )
         self.assertEqual(
             plugin.describe_truncation(document),
-            "incomplete: budgets ran out: reference index (limit 4000000), "
-            "joint pairs (limit 65536)",
+            "incomplete: budgets ran out: reference index (limit 4000000); "
+            "joint resolution skipped a module (70000000 pairs, limit 67108864), "
+            "so matches there were judged alone",
         )
         summary = plugin.summarize_build({"signed": 0, "functions": [], **document})
         self.assertEqual(summary.splitlines()[0], "signed 0 of 0 functions")
