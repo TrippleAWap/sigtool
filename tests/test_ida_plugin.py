@@ -986,6 +986,14 @@ class NativeDiscoveryTests(unittest.TestCase):
             if isinstance(node, ast.Call) and any(k.arg == "strict" for k in node.keywords)
         ]
         self.assertEqual(strict, [])
+        # Methods that parse on 3.8 but exist only from 3.9 or later.
+        newer = {"removeprefix", "removesuffix", "is_relative_to", "bit_count", "lcm"}
+        used = [
+            (node.lineno, node.attr)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and node.attr in newer
+        ]
+        self.assertEqual(used, [])
 
     def test_expected_spec_matches_the_crate(self):
         spec = (Path(__file__).resolve().parent.parent / "native" / "src" / "spec.rs").read_text()

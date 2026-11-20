@@ -155,7 +155,8 @@ IDA is unverified.
   `sigtool-native` next to it. This flat install should work but has not been
   tested.
 
-Python 3.10+ is required. The binary is found through `SIGTOOL_NATIVE`, then
+The packaged plugin needs IDAPython 3.10 or later; the flat 8.4 install also
+runs on Python 3.8. The binary is found through `SIGTOOL_NATIVE`, then
 next to the plugin, then on `PATH`; the copy next to the plugin beats `PATH`.
 On first use the plugin warns when the binary writes a different signature
 spec than it expects.

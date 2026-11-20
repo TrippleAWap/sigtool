@@ -1334,12 +1334,17 @@ def _run_json(args: list[str]) -> dict:
         raise SigtoolError(f"sigtool-native {' '.join(args[:2])}: bad JSON: {error}") from error
 
 
+_CLI_PREFIX = "sigtool-native: "
+
+
 def _echo_cli_lines(stderr: str, prefixes: tuple[str, ...] = ("sigtool-native:",)) -> None:
     """Copy the CLI's own notes (budget warnings, the discovery mode) to the
     Output window; the wait box swallowed them."""
     for line in stderr.splitlines():
         if line.startswith(prefixes):
-            ida_kernwin.msg(f"sigtool: {line.removeprefix('sigtool-native: ')}\n")
+            # Not str.removeprefix: IDA 8.4 can embed Python 3.8.
+            note = line[len(_CLI_PREFIX) :] if line.startswith(_CLI_PREFIX) else line
+            ida_kernwin.msg(f"sigtool: {note}\n")
 
 
 # CLI flags newer than some installed binaries, by (path, subcommand, flag).
