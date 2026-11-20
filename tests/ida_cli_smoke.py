@@ -571,8 +571,10 @@ def main() -> int:
             "the sign-all summary counts verdicts and confidence: "
             + "; ".join(summary.splitlines()[1:3]),
         )
+        # db build --functions prints progress lines: the wait box must show
+        # the count, not only the elapsed-time suffix every text ends with.
         check(
-            any(text.endswith(" s") for text in idb.wait_texts)
+            any(re.search(r"\d+ / \d+, \d+ s$", text) for text in idb.wait_texts)
             and all(text.endswith(" s") for text in idb.wait_texts),
             f"the wait box shows progress and the elapsed time ({idb.wait_texts[-1:]})",
         )
@@ -612,8 +614,9 @@ def main() -> int:
             bool(started)
             and all(process.poll() is not None for process in started)
             and "sigtool: cancelled\n" in idb.messages
-            and not cancelled_db.exists(),
-            "cancel kills the CLI, logs the cancel, and leaves no DB",
+            and not cancelled_db.exists()
+            and not list(temp.glob(".cancelled.db.*")),
+            "cancel kills the CLI, logs the cancel, and leaves no DB or temporary file",
         )
 
         # A moved IDB: the recorded path is gone, the binary sits beside the
