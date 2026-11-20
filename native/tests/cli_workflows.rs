@@ -950,40 +950,53 @@ fn outputs_replace_the_old_file_whole() {
         ],
         &[],
     );
-    // Only a write through a temporary file and a rename replaces a
-    // read-only target in a writable directory (an in-place write cannot
-    // open it), and a symlinked output keeps its link and updates the file
-    // it points at.
+    // A hard link to the old file keeps the old bytes only when the output is
+    // a new file renamed over the path (an in-place write changes both), and
+    // that file keeps the old one's mode. A read-only target is refused as an
+    // in-place write refuses it, and a symlinked output keeps its link and
+    // updates the file it points at.
     #[cfg(unix)]
-    let (locked_text, link_kept, linked_text) = {
+    let (hard_link_text, kept_mode, locked, locked_writable, locked_text, link_kept, linked_text) = {
         use std::os::unix::fs::PermissionsExt;
-        let locked = out.join("locked.yaml");
-        std::fs::write(&locked, b"stale").unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
-        run(&[
-            "gen",
-            "--file",
-            x64.to_str().unwrap(),
-            "--rva",
-            &x64_rva,
-            "--output",
-            locked.to_str().unwrap(),
-        ]);
+        let gen_to = |path: &Path| {
+            sigtool(
+                &[
+                    "gen",
+                    "--file",
+                    x64.to_str().unwrap(),
+                    "--rva",
+                    &x64_rva,
+                    "--output",
+                    path.to_str().unwrap(),
+                ],
+                &[],
+            )
+        };
+        let replaced = out.join("replaced.yaml");
+        std::fs::write(&replaced, b"stale").unwrap();
+        std::fs::set_permissions(&replaced, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let hard_link = dir.join("hard-link.yaml");
+        std::fs::hard_link(&replaced, &hard_link).unwrap();
+        assert!(gen_to(&replaced).status.success());
+        let locked_path = out.join("locked.yaml");
+        std::fs::write(&locked_path, b"stale").unwrap();
+        std::fs::set_permissions(&locked_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let locked_writable = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&locked_path)
+            .is_ok();
+        let locked = gen_to(&locked_path);
         let shared = dir.join("shared.yaml");
         std::fs::write(&shared, b"stale").unwrap();
         let link = out.join("link.yaml");
         std::os::unix::fs::symlink(&shared, &link).unwrap();
-        run(&[
-            "gen",
-            "--file",
-            x64.to_str().unwrap(),
-            "--rva",
-            &x64_rva,
-            "--output",
-            link.to_str().unwrap(),
-        ]);
+        assert!(gen_to(&link).status.success());
         (
-            std::fs::read_to_string(&locked).unwrap(),
+            std::fs::read_to_string(&hard_link).unwrap(),
+            std::fs::metadata(&replaced).unwrap().permissions().mode() & 0o777,
+            locked,
+            locked_writable,
+            std::fs::read_to_string(&locked_path).unwrap(),
             std::fs::symlink_metadata(&link)
                 .unwrap()
                 .file_type()
@@ -1009,9 +1022,21 @@ fn outputs_replace_the_old_file_whole() {
     #[cfg(unix)]
     {
         assert_eq!(
-            locked_text, gen_stdout,
-            "gen --output over a read-only file"
+            hard_link_text, "stale",
+            "gen --output wrote the old file in place"
         );
+        assert_eq!(kept_mode, 0o640, "gen --output dropped the old file's mode");
+        // Root ignores file modes: there an in-place write succeeds too.
+        if locked_writable {
+            assert!(locked.status.success(), "gen --output as root");
+        } else {
+            assert_eq!(
+                locked.status.code(),
+                Some(2),
+                "gen --output over a read-only file"
+            );
+            assert_eq!(locked_text, "stale", "a refused write changed the file");
+        }
         assert!(link_kept, "gen --output replaced the symlink itself");
         assert_eq!(linked_text, gen_stdout, "gen --output through a symlink");
     }

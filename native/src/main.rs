@@ -2387,7 +2387,11 @@ fn write_json(path: &Path, document: &BTreeMap<String, Value>) -> Result<(), Cli
 /// Only a regular file (or a missing one) is replaced this way. A symlink is
 /// followed and its target replaced, so the link survives; a device, FIFO,
 /// or Windows device name (`NUL`) is written in place as before, since a
-/// rename would replace the node itself.
+/// rename would replace the node itself. A read-only target is refused as an
+/// in-place write refuses it (a reference DB protected with `chmod 444`
+/// stays), the replacement keeps the old file's permissions, and a directory
+/// the user cannot create files in falls back to the in-place write. A hard
+/// link to the old file keeps the old contents, as with any editor's save.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     use std::io::Write;
     let fail = |error: std::io::Error| {
@@ -2403,6 +2407,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
         _ if is_windows_device(path) => return std::fs::write(path, bytes).map_err(fail),
         _ => path.to_path_buf(),
     };
+    let existing = std::fs::metadata(&target).ok();
+    if existing
+        .as_ref()
+        .is_some_and(|meta| meta.permissions().readonly())
+    {
+        return std::fs::write(&target, bytes).map_err(fail);
+    }
     let Some(name) = target.file_name() else {
         return Err(CliError::input(format!(
             "cannot write {}: not a file name",
@@ -2413,10 +2424,21 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     temporary_name.push(name);
     temporary_name.push(".sigtool-tmp");
     let temporary = target.with_file_name(temporary_name);
-    let written = std::fs::File::create(&temporary).and_then(|mut file| {
-        file.write_all(bytes)?;
-        file.sync_all()
-    });
+    let mut file = match std::fs::File::create(&temporary) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return std::fs::write(&target, bytes).map_err(fail);
+        }
+        Err(error) => return Err(fail(error)),
+    };
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| match &existing {
+            Some(meta) => std::fs::set_permissions(&temporary, meta.permissions()),
+            None => Ok(()),
+        });
+    drop(file);
     let renamed = written.and_then(|()| std::fs::rename(&temporary, &target));
     match renamed {
         Ok(()) => Ok(()),
