@@ -715,7 +715,7 @@ fn scan_progress_reports_phases_without_changing_the_result() {
 /// signature's best hit the rule that withholds its answer exactly when it is
 /// not `identified`; `signatures` gives every scanned signature's confidence
 /// and arches by id. `bottom` scanned alone has forty lookalikes, so its best
-/// hit, if any, is withheld.
+/// hit is withheld.
 #[test]
 fn scan_json_explains_withheld_answers_and_lists_signatures() {
     if !common::have_tools(&["clang", "ld.lld", "llvm-nm"]) {
@@ -784,9 +784,15 @@ fn scan_json_explains_withheld_answers_and_lists_signatures() {
         .find(|hit| hit["name"] == "top")
         .expect("top found");
     assert!(top["matched"].as_u64().unwrap() >= 1, "{top}");
-    if let Some(best) = alone["hits"].as_array().unwrap().first() {
-        assert!(best["answer_withheld"].is_string(), "{alone}");
-    }
+    // The fixture must produce a withheld answer, or the per-hit check above
+    // holds without `answer_withheld` ever being written.
+    let best = alone["hits"]
+        .as_array()
+        .unwrap()
+        .first()
+        .unwrap_or_else(|| panic!("bottom alone found nothing: {alone}"));
+    assert_ne!(best["evidence"], "identified", "{alone}");
+    assert!(best["answer_withheld"].is_string(), "{alone}");
     let rows = list["signatures"].as_array().unwrap();
     let signatures = together["signatures"].as_object().expect("signatures map");
     assert_eq!(signatures.len(), rows.len(), "{together}");
