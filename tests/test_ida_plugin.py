@@ -433,6 +433,13 @@ class ProvenanceTests(unittest.TestCase):
         kept = plugin.provenance_comment("analyst note\n", self.proposal(), "zlib.db")
         self.assertEqual(kept, f"analyst note\n{first}")
 
+    def test_comment_records_the_name_replaced_at_rename_time(self):
+        # Two earlier sigtool names swapped by a new DB: reverting the holder
+        # first gave this function back `sub_200`, which is what it replaces
+        # now, not the `deflate` the proposal saw.
+        line = plugin.provenance_comment("", self.proposal(), "zlib.db", "sub_200_restored")
+        self.assertEqual(plugin.parse_provenance(line), ("inflate", "sub_200_restored"))
+
     def test_last_provenance_line_is_parsed(self):
         self.assertIsNone(plugin.parse_provenance(""))
         self.assertIsNone(plugin.parse_provenance("analyst: sigtool: x from y"))

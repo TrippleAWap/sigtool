@@ -955,16 +955,20 @@ def rename_blocker(
     return None
 
 
-def provenance_comment(existing: str, proposal: Proposal, source: str) -> str:
+def provenance_comment(
+    existing: str, proposal: Proposal, source: str, replaced: str | None = None
+) -> str:
     """``existing`` function comment plus a line recording where a rename came from.
 
     The line names the new and the replaced name, the signature, score, and
     evidence, so a later reader (and [`parse_provenance`]) can tell a sigtool
     rename from an analyst's and undo it; applying the same DB twice does not
-    repeat it.
+    repeat it. ``replaced`` is the name the function had just before the
+    rename (``proposal.current`` when not given).
     """
+    was = proposal.current if replaced is None else replaced
     line = (
-        f"sigtool: {proposal.name} (was {proposal.current}) from {source} "
+        f"sigtool: {proposal.name} (was {was}) from {source} "
         f"(signature {proposal.signature_id or '?'}, score {proposal.score:.3f}, "
         f"{proposal.evidence})"
     )
@@ -2547,6 +2551,9 @@ class ApplyNamesHandler(_Handler):
                     "its old name is in use, so it cannot be reverted\n"
                 )
                 continue
+            # The name being replaced as it is now, not as the proposal saw
+            # it: reverting a holder earlier in this batch may have changed it.
+            replaced = str(ida_name.get_ea_name(ea) or "") or item.current
             # SN_NOCHECK replaces characters IDA does not allow in names (a
             # name from another toolchain's mangling) instead of failing.
             if not ida_name.set_name(ea, item.name, ida_name.SN_NOWARN | ida_name.SN_NOCHECK):
@@ -2557,7 +2564,9 @@ class ApplyNamesHandler(_Handler):
                 # A regular, not repeatable, comment: it stays on the function
                 # instead of repeating at every call site.
                 existing = ida_funcs.get_func_cmt(function, False) or ""
-                ida_funcs.set_func_cmt(function, provenance_comment(existing, item, source), False)
+                ida_funcs.set_func_cmt(
+                    function, provenance_comment(existing, item, source, replaced), False
+                )
             rows.append(
                 Row(
                     ea=ea,
